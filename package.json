@@ -80,8 +80,8 @@
     }
   },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^26.7.0",
+    "electron": "^40.6.0",
+    "electron-builder": "^25.1.8",
     "sharp": "^0.34.5"
   },
   "dependencies": {

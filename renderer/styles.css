@@ -3022,6 +3022,69 @@ dialog input, dialog select {
   100% { bottom: -120px; opacity: 0; }
 }
 
+/* === Mega Cat Celebration (500 QSOs) === */
+.mega-celebration {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(26, 26, 46, 0.97) 0%, rgba(0, 0, 0, 0.99) 100%);
+  animation: mega-fade 8s ease-in-out forwards;
+  cursor: pointer;
+}
+.mega-banner {
+  font-size: 36px;
+  font-weight: 900;
+  color: #4ecca3;
+  text-shadow: 0 0 30px rgba(78, 204, 163, 0.8), 0 0 60px rgba(78, 204, 163, 0.4);
+  text-align: center;
+  animation: mega-pulse 1s ease-in-out infinite alternate;
+  margin: 20px 0;
+}
+.mega-sparkles {
+  font-size: 32px;
+  animation: mega-sparkle-spin 2s linear infinite;
+  letter-spacing: 8px;
+}
+.mega-cats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 10px;
+}
+.mega-cat {
+  font-size: 56px;
+  display: inline-block;
+}
+.mc-1 { animation: mega-bounce 0.6s ease-in-out infinite alternate; }
+.mc-2 { animation: mega-bounce 0.6s ease-in-out 0.1s infinite alternate; }
+.mc-3 { animation: mega-bounce 0.6s ease-in-out 0.2s infinite alternate; }
+.mc-4 { animation: mega-bounce 0.6s ease-in-out 0.3s infinite alternate; }
+.mc-5 { animation: mega-bounce 0.6s ease-in-out 0.4s infinite alternate; }
+@keyframes mega-fade {
+  0%   { opacity: 0; }
+  8%   { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes mega-pulse {
+  from { transform: scale(1); }
+  to   { transform: scale(1.08); }
+}
+@keyframes mega-bounce {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-20px); }
+}
+@keyframes mega-sparkle-spin {
+  0%   { transform: rotate(-3deg) scale(1); }
+  25%  { transform: rotate(3deg) scale(1.1); }
+  50%  { transform: rotate(-3deg) scale(1); }
+  75%  { transform: rotate(3deg) scale(1.1); }
+  100% { transform: rotate(-3deg) scale(1); }
+}
+
 /* === Activator Mode === */
 #activator-view {
   display: flex;
@@ -3679,6 +3742,28 @@ body.activator-spots-on #cw-keyer-status,
 body.activator-spots-on #cw-text-display,
 body.activator-spots-on .solar-pill {
   display: none !important;
+}
+
+/* Activator + RBN split layout — show RBN view below activator toolbar */
+body.activator-rbn-on #activator-view {
+  flex: 0 0 auto;
+  overflow: hidden;
+  order: 1;
+}
+body.activator-rbn-on main {
+  display: block !important;
+  flex: 1;
+  min-height: 0;
+  order: 2;
+}
+body.activator-rbn-on #split-container,
+body.activator-rbn-on #dxcc-view,
+body.activator-rbn-on header {
+  display: none !important;
+}
+body.activator-rbn-on #rbn-view {
+  display: flex !important;
+  height: 100%;
 }
 
 /* Quick-log bar */

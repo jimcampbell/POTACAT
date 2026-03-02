@@ -1220,6 +1220,8 @@ function updateRbnButton() {
     viewRbnBtn.classList.add('hidden');
     if (currentView === 'rbn') setView('table');
   }
+  // Also update the activator toolbar RBN button (safe even before DOM ref is set)
+  if (typeof updateActivatorRbnButton === 'function') updateActivatorRbnButton();
 }
 
 function updateLoggingVisibility() {
@@ -2838,10 +2840,14 @@ document.addEventListener('keydown', (e) => {
     window.api.qsoPopoutOpen(); // opens or focuses existing pop-out
     return;
   }
-  // F4 — Test cat celebration animation
+  // F4 — Test cat celebration animation (Shift+F4 for mega)
   if (e.key === 'F4' && !e.target.matches('input, select, textarea')) {
     e.preventDefault();
-    showCatCelebration('Meow! You hit 10 QSOs! \ud83c\udf89');
+    if (e.shiftKey) {
+      showMegaCelebration('500 QSOs today! You are UNSTOPPABLE!');
+    } else {
+      showCatCelebration('10 QSOs today! Keep going!');
+    }
     return;
   }
   // F5 — Check for updates
@@ -4279,6 +4285,10 @@ function showLogToast(message, opts) {
 }
 
 // --- Cat Celebration ---
+const QSO_MILESTONES = [10, 25, 50, 100, 150, 200, 250, 500];
+const celebratedMilestones = new Set();
+let lastKnownDailyQsoCount = 0;
+
 function showCatCelebration(message) {
   const existing = document.querySelector('.cat-celebration');
   if (existing) existing.remove();
@@ -4289,7 +4299,58 @@ function showCatCelebration(message) {
   container.addEventListener('animationend', () => container.remove());
 }
 
-const celebratedCallsigns = new Set();
+function showMegaCelebration(message) {
+  const existing = document.querySelector('.mega-celebration');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'mega-celebration';
+  overlay.innerHTML = `
+    <div class="mega-cats">
+      <span class="mega-cat mc-1">\ud83d\udc08\u200d\u2b1b</span>
+      <span class="mega-cat mc-2">\ud83d\udc08</span>
+      <span class="mega-cat mc-3">\ud83d\udc08\u200d\u2b1b</span>
+      <span class="mega-cat mc-4">\ud83d\udc08</span>
+      <span class="mega-cat mc-5">\ud83d\udc08\u200d\u2b1b</span>
+    </div>
+    <div class="mega-banner">${message}</div>
+    <div class="mega-sparkles">\u2728\ud83c\udf89\ud83c\udf8a\u2728\ud83c\udf89\ud83c\udf8a\u2728</div>
+  `;
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+  setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 8000);
+}
+
+function getTodayUtcQsoCount() {
+  const now = new Date();
+  const todayUtc = now.getUTCFullYear().toString() +
+    String(now.getUTCMonth() + 1).padStart(2, '0') +
+    String(now.getUTCDate()).padStart(2, '0');
+  let count = 0;
+  for (const entries of workedQsos.values()) {
+    for (const e of entries) {
+      if (e.date === todayUtc) count++;
+    }
+  }
+  return count;
+}
+
+function checkQsoMilestone() {
+  const count = getTodayUtcQsoCount();
+  // Reset celebrated milestones if day rolled over (count dropped)
+  if (count < lastKnownDailyQsoCount) celebratedMilestones.clear();
+  lastKnownDailyQsoCount = count;
+  for (const m of QSO_MILESTONES) {
+    if (count >= m && !celebratedMilestones.has(m)) {
+      celebratedMilestones.add(m);
+      if (m === 500) {
+        showMegaCelebration(`500 QSOs today! You are UNSTOPPABLE!`);
+      } else {
+        showCatCelebration(`${m} QSOs today! Keep going!`);
+      }
+      break; // one celebration at a time
+    }
+  }
+}
 
 // --- Events ---
 // Band/mode dropdowns already wired via initMultiDropdown()
@@ -4838,14 +4899,6 @@ window.api.onSpots((spots) => {
     pendingSpots = spots;
     return;
   }
-  // Check for activators crossing 10 QSOs
-  for (const s of spots) {
-    if (s.count === 10 && s.source === 'pota' && !celebratedCallsigns.has(s.callsign)) {
-      celebratedCallsigns.add(s.callsign);
-      showCatCelebration(`${s.callsign} hit 10 QSOs at ${s.reference}!`);
-      break; // one celebration at a time
-    }
-  }
   allSpots = spots;
   render();
 });
@@ -4983,8 +5036,19 @@ window.api.onUpdateDownloaded(() => {
 });
 
 // --- Worked QSOs listener ---
+let workedQsosInitialized = false;
 window.api.onWorkedQsos((entries) => {
   workedQsos = new Map(entries);
+  if (!workedQsosInitialized) {
+    // Seed count and pre-mark passed milestones on first load
+    workedQsosInitialized = true;
+    lastKnownDailyQsoCount = getTodayUtcQsoCount();
+    for (const m of QSO_MILESTONES) {
+      if (lastKnownDailyQsoCount >= m) celebratedMilestones.add(m);
+    }
+  } else {
+    checkQsoMilestone();
+  }
   render();
 });
 
@@ -5910,7 +5974,7 @@ function getFilteredRbnSpots() {
 }
 
 function rerenderRbn() {
-  if (currentView === 'rbn') {
+  if (currentView === 'rbn' || activatorRbnVisible) {
     renderRbnMarkers();
     renderRbnTable();
   }
@@ -6906,8 +6970,10 @@ function setAppMode(mode) {
     if (dxCommandBarEl) dxCommandBarEl.classList.add('hidden');
     // Show activator
     activatorView.classList.remove('hidden');
-    // Apply activator-spots layout if toggled on
+    // Apply activator-spots or activator-rbn layout if toggled on
     applyActivatorSpotsLayout();
+    applyActivatorRbnLayout();
+    updateActivatorRbnButton();
     // Focus park ref if empty, otherwise callsign
     if (!primaryParkRef()) {
       activatorParkRefInput.focus();
@@ -6938,10 +7004,13 @@ function setAppMode(mode) {
     if (dxCommandBarEl) dxCommandBarEl.classList.remove('hidden');
     // Hide activator
     activatorView.classList.add('hidden');
-    // Clean up activator-spots layout
+    // Clean up activator-spots and activator-rbn layout
     document.body.classList.remove('activator-spots-on');
+    document.body.classList.remove('activator-rbn-on');
     activatorSpotsSplitter.classList.add('hidden');
     activatorSpotsBtn.classList.remove('active');
+    activatorRbnVisible = false;
+    if (activatorRbnBtn) activatorRbnBtn.classList.remove('active');
     // Restore event banner visibility via its own logic
     updateEventBanner();
     render();
@@ -6980,7 +7049,12 @@ function applyActivatorSpotsLayout() {
 function toggleActivatorSpots() {
   activatorSpotsVisible = !activatorSpotsVisible;
   localStorage.setItem(ACTIVATOR_SPOTS_KEY, activatorSpotsVisible ? '1' : '0');
-  if (!activatorSpotsVisible) {
+  // Close RBN if opening spots (mutually exclusive)
+  if (activatorSpotsVisible && activatorRbnVisible) {
+    activatorRbnVisible = false;
+    applyActivatorRbnLayout();
+  }
+  if (!activatorSpotsVisible && !activatorRbnVisible) {
     if (headerEl) headerEl.classList.add('hidden');
     if (mainEl) mainEl.classList.add('hidden');
   }
@@ -6994,6 +7068,52 @@ document.getElementById('activator-spots-popout-btn').addEventListener('click', 
   if (activatorSpotsVisible) toggleActivatorSpots();
   window.api.spotsPopoutOpen();
 });
+
+// --- Activator RBN Toggle ---
+const activatorRbnBtn = document.getElementById('activator-rbn-btn');
+let activatorRbnVisible = false;
+
+function updateActivatorRbnButton() {
+  if (enableRbn) {
+    activatorRbnBtn.classList.remove('hidden');
+  } else {
+    activatorRbnBtn.classList.add('hidden');
+    if (activatorRbnVisible) toggleActivatorRbn();
+  }
+}
+
+function applyActivatorRbnLayout() {
+  if (activatorRbnVisible && appMode === 'activator') {
+    document.body.classList.add('activator-rbn-on');
+    activatorRbnBtn.classList.add('active');
+    if (mainEl) mainEl.classList.remove('hidden');
+    // Init RBN map if needed and refresh
+    if (!rbnMap) initRbnMap();
+    setTimeout(() => { if (rbnMap) rbnMap.invalidateSize(); }, 0);
+    renderRbnMarkers();
+    renderRbnTable();
+  } else {
+    document.body.classList.remove('activator-rbn-on');
+    activatorRbnBtn.classList.remove('active');
+  }
+}
+
+function toggleActivatorRbn() {
+  activatorRbnVisible = !activatorRbnVisible;
+  // RBN and spots are mutually exclusive
+  if (activatorRbnVisible && activatorSpotsVisible) {
+    activatorSpotsVisible = false;
+    localStorage.setItem(ACTIVATOR_SPOTS_KEY, '0');
+    applyActivatorSpotsLayout();
+  }
+  if (!activatorRbnVisible && !activatorSpotsVisible) {
+    if (headerEl) headerEl.classList.add('hidden');
+    if (mainEl) mainEl.classList.add('hidden');
+  }
+  applyActivatorRbnLayout();
+}
+
+activatorRbnBtn.addEventListener('click', toggleActivatorRbn);
 
 // --- Activator toolbar: Logbook, Settings, CAT ---
 const activatorCatStatusEl = document.getElementById('activator-cat-status');

@@ -76,20 +76,40 @@
           <label class="spots-toggle"><input type="checkbox" id="spots-hide-worked"> Hide worked stations</label>
           <label class="spots-toggle" id="spots-hide-parks-label"><input type="checkbox" id="spots-hide-parks"> Hide worked parks</label>
           <label class="spots-toggle"><input type="checkbox" id="spots-hide-oob"> Hide out-of-band</label>
-          <div class="spots-panel-divider" id="spots-events-divider" style="display:none;"></div>
-          <div class="spots-panel-section-label" id="spots-events-label" style="display:none;">Events</div>
+          <div class="spots-panel-divider" id="spots-events-divider"></div>
+          <div class="spots-panel-section-label" id="spots-events-label">Events &amp; Awards</div>
           <div id="spots-events-container"></div>
+          <div class="spots-toggle" style="display:flex;align-items:center;justify-content:space-between;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="spots-dxcc"> DXCC Tracker</label>
+            <button type="button" id="dxcc-board-btn" class="event-overlay-btn" style="font-size:10px;padding:1px 6px;">Board</button>
+          </div>
         </div>
       </div>
       <button id="scan-btn" title="Scan through spots">Scan</button>
-      <button id="settings-btn" title="Settings">Settings</button>
+      <div class="multi-dropdown" id="settings-dropdown">
+        <button class="multi-dropdown-btn" type="button" id="settings-btn" title="Settings">Settings</button>
+        <div class="settings-dropdown-panel">
+          <label class="switch-label compact">
+            <span>Dark</span>
+            <div class="switch"><input type="checkbox" id="quick-light-mode"><span class="switch-slider"></span></div>
+            <span>Light</span>
+          </label>
+          <div class="spots-panel-divider"></div>
+          <label class="switch-label compact">
+            <span>Hunter</span>
+            <div class="switch"><input type="checkbox" id="quick-activator-mode"><span class="switch-slider"></span></div>
+            <span>Activator</span>
+          </label>
+          <div class="spots-panel-divider"></div>
+          <button type="button" id="open-settings-btn" class="settings-dropdown-link">Open Settings...</button>
+        </div>
+      </div>
       <button id="logbook-btn" title="View/Edit Logbook (F2)">Logbook</button>
       <div class="view-toggle">
         <button id="view-table-btn" class="view-btn active" title="Table view">Table</button>
         <button id="view-map-btn" class="view-btn" title="Map view">Map</button>
         <button id="popout-map-btn" class="view-btn popout-btn" title="Pop-out map window">&#x2197;</button>
         <button id="view-rbn-btn" class="view-btn hidden" title="Reverse Beacon Network">RBN</button>
-        <button id="view-dxcc-btn" class="view-btn hidden" title="DXCC Tracker">DXCC</button>
       </div>
     </div>
     <div class="status-bar">
@@ -117,19 +137,20 @@
       <span id="hotkeys-hint" class="hotkeys-hint" title="Keyboard shortcuts (F1)">F1 Hotkeys</span>
       <span id="spot-count"></span>
     </div>
-    <div id="cat-popover" class="cat-popover hidden">
-      <div class="cat-popover-rigs" id="cat-popover-rigs"></div>
-      <div class="cat-popover-divider"></div>
-      <label class="cat-popover-wsjtx">
-        <input type="checkbox" id="cat-popover-wsjtx"> WSJT-X Mode
-      </label>
-      <div id="cat-popover-wsjtx-port" class="cat-popover-port hidden">
-        <label>UDP Port:
-          <input type="number" id="cat-popover-wsjtx-port-input" min="1024" max="65535" style="width:70px;">
-        </label>
-      </div>
-    </div>
   </header>
+
+  <div id="cat-popover" class="cat-popover hidden">
+    <div class="cat-popover-rigs" id="cat-popover-rigs"></div>
+    <div class="cat-popover-divider"></div>
+    <label class="cat-popover-wsjtx">
+      <input type="checkbox" id="cat-popover-wsjtx"> WSJT-X Mode
+    </label>
+    <div id="cat-popover-wsjtx-port" class="cat-popover-port hidden">
+      <label>UDP Port:
+        <input type="number" id="cat-popover-wsjtx-port-input" min="1024" max="65535" style="width:70px;">
+      </label>
+    </div>
+  </div>
 
   <div id="update-banner" class="hidden">
     <span id="update-message"></span>
@@ -149,6 +170,121 @@
     <button id="event-dismiss" title="Dismiss">&times;</button>
   </div>
 
+  <!-- Activator Mode View -->
+  <div id="activator-view" class="hidden">
+    <div class="activator-toolbar">
+      <button id="activator-back" class="activator-back-btn" title="Switch to Hunter mode">&larr; Hunter</button>
+      <div class="activator-toolbar-sep"></div>
+      <div class="activator-park-input-wrap">
+        <input type="text" id="activator-park-ref" placeholder="Park ref (e.g. K-1234)" maxlength="12" spellcheck="false" autocomplete="off">
+        <div id="activator-park-dropdown" class="activator-dropdown hidden"></div>
+      </div>
+      <span id="activator-park-name" class="activator-park-name"></span>
+      <input type="text" id="activator-grid" class="activator-grid" placeholder="Grid" maxlength="6" spellcheck="false" autocomplete="off" title="Park grid square (editable)">
+      <span id="activator-park-extra" class="activator-park-extra hidden" title="Additional parks"></span>
+      <div class="activator-freq-group">
+        <input type="text" id="activator-freq" placeholder="14.074" maxlength="10" spellcheck="false" autocomplete="off" title="Frequency in MHz — type and press Enter to tune radio">
+        <span id="activator-band-label" class="activator-band-label">--</span>
+      </div>
+      <select id="activator-mode">
+        <option value="SSB">SSB</option>
+        <option value="CW">CW</option>
+        <option value="FT8">FT8</option>
+        <option value="FT4">FT4</option>
+        <option value="FM">FM</option>
+        <option value="RTTY">RTTY</option>
+        <option value="PSK31">PSK31</option>
+      </select>
+      <button id="activator-start-btn" class="activator-start-btn">Start Activation</button>
+      <button id="activator-continue-btn" class="activator-continue-btn hidden">Continue</button>
+      <button id="activator-stop-btn" class="activator-stop-btn hidden">Stop Activation</button>
+      <div id="activator-counter" class="activator-counter" title="Contacts logged (10 = valid activation)">0</div>
+      <button id="activator-map-btn" class="activator-map-btn" title="Open activation map">Map</button>
+      <button id="activator-spots-btn" class="activator-spots-btn" title="Show/hide hunter spots">Spots</button>
+      <button id="activator-spots-popout-btn" class="activator-spots-btn" title="Pop out spots window" style="padding:4px 6px;font-size:11px;">&#x2197;</button>
+      <button id="activator-rbn-btn" class="activator-spots-btn hidden" title="Show/hide Reverse Beacon Network">RBN</button>
+      <button id="activator-history-btn" class="activator-history-btn" title="Past Activations">Past</button>
+      <span id="activator-timer" class="activator-timer" title="Activation duration">--:--</span>
+      <span id="activator-utc" class="activator-utc"></span>
+      <button id="activator-export" class="activator-export-btn" title="Export activation ADIF">Export ADIF</button>
+      <button id="activator-logbook-btn" class="activator-export-btn" title="View/Edit Logbook (F2)">Logbook</button>
+      <button id="activator-settings-btn" class="activator-export-btn" title="Open Settings">Settings</button>
+      <span id="activator-cat-status" class="status disconnected" title="Disconnected" style="cursor:pointer;font-size:11px;margin-left:4px;">CAT</span>
+    </div>
+    <div id="activator-quick-log" class="activator-quick-log hidden">
+      <input type="text" id="activator-callsign" placeholder="Callsign(s)" maxlength="60" spellcheck="false" autocomplete="off" style="text-transform:uppercase;">
+      <div class="activator-rst-group rst-split-mode hidden">
+        <label>S:</label>
+        <div class="rst-digits" id="activator-rst-sent-digits">
+          <input type="text" class="rst-digit" maxlength="1" data-idx="0" inputmode="numeric">
+          <input type="text" class="rst-digit" maxlength="1" data-idx="1" inputmode="numeric">
+          <input type="text" class="rst-digit" maxlength="1" data-idx="2" inputmode="numeric">
+        </div>
+      </div>
+      <div class="activator-rst-group rst-split-mode hidden">
+        <label>R:</label>
+        <div class="rst-digits" id="activator-rst-rcvd-digits">
+          <input type="text" class="rst-digit" maxlength="1" data-idx="0" inputmode="numeric">
+          <input type="text" class="rst-digit" maxlength="1" data-idx="1" inputmode="numeric">
+          <input type="text" class="rst-digit" maxlength="1" data-idx="2" inputmode="numeric">
+        </div>
+      </div>
+      <div class="activator-rst-group rst-n1mm-mode">
+        <label>S:</label>
+        <input type="text" class="rst-input" id="activator-rst-sent" maxlength="3" inputmode="numeric" value="599" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="activator-rst-group rst-n1mm-mode">
+        <label>R:</label>
+        <input type="text" class="rst-input" id="activator-rst-rcvd" maxlength="3" inputmode="numeric" value="599" spellcheck="false" autocomplete="off">
+      </div>
+      <span id="activator-op-name" class="activator-op-name"></span>
+      <div class="activator-hunter-park-wrap">
+        <input type="text" id="activator-hunter-park" placeholder="P2P ref" maxlength="12" spellcheck="false" autocomplete="off" title="Hunter's park ref (park-to-park)">
+        <span id="activator-hunter-park-extra" class="activator-park-extra hidden"></span>
+        <div id="activator-hunter-dropdown" class="activator-dropdown hidden"></div>
+      </div>
+      <button id="activator-log-btn" class="activator-log-btn" title="Log contact (Enter)">Log</button>
+    </div>
+    <div id="activator-history-panel" class="activator-history-panel hidden">
+      <div class="activator-history-header">
+        <h4>Past Activations</h4>
+        <button id="activator-history-close" class="activator-history-close" title="Close">&times;</button>
+      </div>
+      <div id="activator-history-list" class="activator-history-list"></div>
+    </div>
+    <div id="activation-map-panel" class="activation-map-panel hidden">
+      <div class="activation-map-header">
+        <h4 id="activation-map-title">Activation Map</h4>
+        <button id="activation-map-close" class="activator-history-close" title="Close">&times;</button>
+      </div>
+      <div id="activation-map" class="activation-map"></div>
+    </div>
+    <div class="activator-log-table-wrap">
+      <table id="activator-log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Time</th>
+            <th>Callsign</th>
+            <th>Name</th>
+            <th>Freq</th>
+            <th>Mode</th>
+            <th>RST S</th>
+            <th>RST R</th>
+            <th>Band</th>
+            <th class="act-log-del-col"></th>
+          </tr>
+        </thead>
+        <tbody id="activator-log-body"></tbody>
+      </table>
+      <div id="activator-idle-msg" class="activator-idle-msg">
+        <p>Select a park and click <strong>Start Activation</strong> to begin logging.<br><span style="color:var(--text-dim);font-size:13px;">Or click <strong>Past</strong> to resume a previous activation.</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="activator-spots-splitter" class="activator-spots-splitter hidden"></div>
+
   <main>
     <div id="split-container" class="split-horizontal">
       <div id="table-pane">
@@ -165,6 +301,7 @@
                 <th data-sort="reference" data-col="reference">Ref</th>
                 <th data-sort="parkName" data-col="parkName">Name</th>
                 <th data-sort="locationDesc" data-col="locationDesc">State</th>
+                <th data-sort="grid" data-col="grid">Grid</th>
                 <th data-sort="distance" data-col="distance" id="dist-header">Dist (mi)</th>
                 <th data-sort="bearing" data-col="bearing" class="bearing-col">Heading</th>
                 <th data-sort="spotTime" data-col="spotTime" id="time-header">Age</th>
@@ -179,7 +316,9 @@
         <div id="dx-command-bar" class="dx-command-bar hidden">
           <span class="dx-command-label">DX&gt;</span>
           <select id="dx-command-node" class="dx-command-node" title="Send to this node"></select>
-          <input type="text" id="dx-command-input" class="dx-command-input" maxlength="80" placeholder="e.g. DX 14025.0 W1AW great signal">
+          <input type="text" id="dx-spot-call" class="dx-command-field dx-spot-call" maxlength="15" placeholder="Callsign">
+          <input type="text" id="dx-spot-freq" class="dx-command-field dx-spot-freq" maxlength="10" placeholder="Freq (kHz)">
+          <input type="text" id="dx-spot-note" class="dx-command-field dx-spot-note" maxlength="60" placeholder="Note">
           <button type="button" id="dx-command-send" class="dx-command-btn">Send</button>
         </div>
       </div>
@@ -216,18 +355,35 @@
     </div>
     <div id="dxcc-view" class="hidden">
       <div class="dxcc-header">
-        <span class="dxcc-progress"><span id="dxcc-count">0 / 0</span> entities confirmed</span>
-        <div class="multi-dropdown" id="dxcc-mode-filter">
-          <button class="multi-dropdown-btn" type="button">Mode: <span class="multi-dropdown-text">All</span></button>
-          <div class="multi-dropdown-menu">
-            <label class="multi-dropdown-item"><input type="checkbox" value="all" checked> All</label>
-            <label class="multi-dropdown-item"><input type="checkbox" value="CW"> CW</label>
-            <label class="multi-dropdown-item"><input type="checkbox" value="SSB"> SSB</label>
-            <label class="multi-dropdown-item"><input type="checkbox" value="FT8"> FT8</label>
-            <label class="multi-dropdown-item"><input type="checkbox" value="FT4"> FT4</label>
-            <label class="multi-dropdown-item"><input type="checkbox" value="RTTY"> RTTY</label>
-          </div>
-        </div>
+        <label class="dxcc-filter-label">Band:
+          <select id="dxcc-band-select">
+            <option value="all">All Bands</option>
+            <option value="160m">160m</option>
+            <option value="80m">80m</option>
+            <option value="60m">60m</option>
+            <option value="40m">40m</option>
+            <option value="30m">30m</option>
+            <option value="20m">20m</option>
+            <option value="17m">17m</option>
+            <option value="15m">15m</option>
+            <option value="12m">12m</option>
+            <option value="10m">10m</option>
+            <option value="6m">6m</option>
+          </select>
+        </label>
+        <label class="dxcc-filter-label">Mode:
+          <select id="dxcc-mode-select">
+            <option value="all">All Modes</option>
+            <option value="phone">Phone</option>
+            <option value="cw">CW</option>
+            <option value="digital">Digital</option>
+          </select>
+        </label>
+        <span class="dxcc-progress">
+          <span id="dxcc-count">0 / 100</span>
+          <span id="dxcc-award-label"></span>
+        </span>
+        <span id="dxcc-challenge" class="dxcc-challenge hidden"></span>
       </div>
       <div class="dxcc-table-container">
         <table class="dxcc-matrix">
@@ -251,7 +407,7 @@
           <tbody id="dxcc-matrix-body"></tbody>
         </table>
       </div>
-      <div id="dxcc-placeholder" class="hidden">No log file loaded. Go to Settings to select your ADIF or SQLite export.</div>
+      <div id="dxcc-placeholder" class="hidden">No QSOs logged yet. Log some contacts or import a log to see DXCC progress.</div>
     </div>
     <div id="rbn-view" class="hidden">
       <div class="rbn-header">
@@ -333,6 +489,15 @@
       <span id="conn-rbn" class="conn-pill hidden"><span class="conn-dot"></span> RBN</span>
       <span id="conn-pskr" class="conn-pill hidden"><span class="conn-dot"></span> FreeDV</span>
     </div>
+    <!-- 0.5 App Mode -->
+    <fieldset class="source-toggles">
+      <legend>App Mode</legend>
+      <div style="display:flex;gap:16px;align-items:center;">
+        <label class="radio-label"><input type="radio" name="set-app-mode" value="hunter" checked> Hunter <span style="color:#888;font-size:12px;">(spot browser)</span></label>
+        <label class="radio-label"><input type="radio" name="set-app-mode" value="activator"> Activator <span style="color:#888;font-size:12px;">(park logging)</span></label>
+      </div>
+      <span class="help-text" style="display:block;margin-top:4px;">Hunter mode shows live spots. Activator mode provides a rapid logging interface for park activations.</span>
+    </fieldset>
     <!-- 1. Station -->
     <fieldset class="source-toggles collapsible">
       <legend class="collapsible-legend" data-target="station-body">Station <span class="collapse-arrow">&#9662;</span></legend>
@@ -468,6 +633,12 @@
             <button type="button" id="hamlib-test-btn">Test Connection</button>
             <span id="hamlib-test-result" style="font-size:12px;"></span>
           </div>
+        </div>
+        <label class="radio-label"><input type="radio" name="radio-type" value="rigctldnet"> rigctld Network</label>
+        <div id="rigctldnet-config" class="radio-sub hidden">
+          <span class="help-text">Connect to a remote rigctld server (e.g. on another machine)</span>
+          <label>Host: <input type="text" id="set-rigctldnet-host" placeholder="192.168.1.100" value="127.0.0.1"></label>
+          <label>Port: <input type="number" id="set-rigctldnet-port" min="1" max="65535" value="4532"></label>
         </div>
         <div class="rig-editor-buttons">
           <button type="button" id="rig-save-btn">Save Rig</button>
@@ -613,6 +784,8 @@
         <label style="margin-top:10px;">Default TX Power (W):
           <input type="number" id="set-default-power" min="1" max="5000" value="100">
         </label>
+        <label class="checkbox-label"><input type="checkbox" id="set-n1mm-rst"> N1MM-style RST logging</label>
+        <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Single text field per RST — type full report and auto-advance to next field</span>
         <label class="checkbox-label"><input type="checkbox" id="set-send-to-logbook"> Send Data to Logbook</label>
         <div id="logbook-config" class="hidden" style="margin-left:12px;margin-top:4px;">
           <label>Logbook:
@@ -637,10 +810,12 @@
         </div>
       </div>
     </fieldset>
-    <!-- Events -->
+    <!-- Events & Awards -->
     <fieldset class="source-toggles">
-      <legend>Events</legend>
+      <legend>Events &amp; Awards</legend>
       <div id="settings-events-list" style="font-size:12px;color:var(--text-secondary);padding:4px 0;">No active events</div>
+      <label class="checkbox-label"><input type="checkbox" id="set-enable-dxcc"> DXCC Tracker</label>
+      <span class="help-text" style="margin-left:12px;display:block;">Uses your POTACAT logfile to track DXCC progress.</span>
     </fieldset>
 
     <!-- 8. Display (trimmed — bearing moved to Antenna, SmartSDR absorbed) -->
@@ -676,17 +851,7 @@
         <label>Radio IP:
           <input type="text" id="set-smartsdr-host" placeholder="127.0.0.1" style="width:140px;">
         </label>
-        <span class="help-text">Connect to FlexRadio on port 4992</span>
-        <div style="margin-top:8px;">
-          <span style="font-size:12px;color:var(--text-secondary);">Sources to show on panadapter:</span>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-pota" checked> POTA</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-sota" checked> SOTA</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-cluster" checked> DX Cluster</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-rbn"> RBN</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-wwff" checked> WWFF</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-llota" checked> LLOTA</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-smartsdr-pskr" checked> FreeDV</label>
-        </div>
+        <span class="help-text">Connect to FlexRadio on port 4992. Spots shown on the panadapter match your current table/map filters.</span>
         <label style="margin-top:8px;">Max spot age (minutes):
           <input type="number" id="set-smartsdr-max-age" min="0" max="120" value="15" style="width:60px;">
         </label>
@@ -702,17 +867,7 @@
         <label style="margin-left:8px;">Port:
           <input type="number" id="set-tci-port" placeholder="50001" min="1" max="65535" style="width:80px;">
         </label>
-        <span class="help-text">Connect to Thetis/ExpertSDR3 TCI server (WebSocket)</span>
-        <div style="margin-top:8px;">
-          <span style="font-size:12px;color:var(--text-secondary);">Sources to show on panadapter:</span>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-pota" checked> POTA</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-sota" checked> SOTA</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-cluster" checked> DX Cluster</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-rbn"> RBN</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-wwff" checked> WWFF</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-llota" checked> LLOTA</label>
-          <label class="checkbox-label"><input type="checkbox" id="set-tci-pskr" checked> FreeDV</label>
-        </div>
+        <span class="help-text">Connect to Thetis/ExpertSDR3 TCI server (WebSocket). Spots shown on the panadapter match your current table/map filters.</span>
         <label style="margin-top:8px;">Max spot age (minutes):
           <input type="number" id="set-tci-max-age" min="0" max="120" value="15" style="width:60px;">
         </label>
@@ -762,19 +917,6 @@
         </div>
       </div>
     </fieldset>
-    <!-- 10. DXCC Tracker -->
-    <fieldset class="source-toggles">
-      <legend>DXCC Tracker</legend>
-      <label class="checkbox-label"><input type="checkbox" id="set-enable-dxcc"> DXCC Tracker</label>
-      <div id="adif-picker" class="hidden" style="margin-top:6px;margin-left:12px;">
-        <label style="margin-bottom:4px;">Log File:
-          <div style="display:flex;gap:6px;margin-top:4px;">
-            <input type="text" id="set-adif-path" readonly placeholder="No file selected" style="flex:1;">
-            <button type="button" id="adif-browse-btn">Browse</button>
-          </div>
-        </label>
-      </div>
-    </fieldset>
     <!-- 10. About (merged Privacy + Diagnostics) -->
     <fieldset class="source-toggles">
       <legend>About</legend>
@@ -784,13 +926,15 @@
       <span class="help-text" style="margin-left:12px;display:block;">Helps improve POTACAT. Only sends: a random ID, app version, OS, and session duration. No callsign, grid, settings, or frequencies are ever collected. You can opt out at any time.</span>
       <label class="checkbox-label"><input type="checkbox" id="set-verbose-log"> Verbose CAT log</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Show a log button in the status bar with raw CAT commands and responses</span>
+      <label class="checkbox-label"><input type="checkbox" id="set-light-icon"> Use light app icon</label>
+      <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Switches the taskbar and title bar icon to a light variant — easier to see on dark desktop panels</span>
     </fieldset>
     <div class="dialog-buttons">
       <button id="settings-save">Save</button>
       <button id="settings-cancel">Cancel</button>
     </div>
     <div class="settings-footer">
-      <div class="settings-version">v0.9.20 beta &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
+      <div class="settings-version">v0.9.28 beta &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
       <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
       <div class="settings-links">
         <a href="#" id="discord-link">Discord</a>
@@ -814,7 +958,7 @@
     </div>
     <div style="display:flex;gap:8px;">
       <label style="flex:1;">Callsign:
-        <input type="text" id="log-callsign" maxlength="12" style="text-transform:uppercase;">
+        <input type="text" id="log-callsign" maxlength="60" placeholder="e.g. K0OTC or K0OTC,NO4D" style="text-transform:uppercase;">
       </label>
       <label style="flex:1;">Name:
         <input type="text" id="log-op-name" readonly tabindex="-1" style="color:#b0bec5;background:transparent;border-color:#333;">
@@ -851,25 +995,27 @@
     </label>
     <div style="display:flex;gap:8px;">
       <label style="flex:1;">RST Sent:
-        <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
-          <div class="rst-digits" id="rst-sent-digits">
+        <div class="rst-split-mode hidden" style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+          <div class="rst-digits" id="rst-sent-split">
             <input type="text" class="rst-digit" maxlength="1" data-idx="0" inputmode="numeric">
             <input type="text" class="rst-digit" maxlength="1" data-idx="1" inputmode="numeric">
             <input type="text" class="rst-digit" maxlength="1" data-idx="2" inputmode="numeric">
           </div>
-          <button type="button" class="rst-quick-btn" data-target="rst-sent-digits" data-value="59">59</button>
-          <button type="button" class="rst-quick-btn" data-target="rst-sent-digits" data-value="599">599</button>
+        </div>
+        <div class="rst-n1mm-mode" style="margin-top:4px;">
+          <input type="text" class="rst-input" id="rst-sent-n1mm" maxlength="3" inputmode="numeric" value="599" spellcheck="false" autocomplete="off">
         </div>
       </label>
       <label style="flex:1;">RST Received:
-        <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
-          <div class="rst-digits" id="rst-rcvd-digits">
+        <div class="rst-split-mode hidden" style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+          <div class="rst-digits" id="rst-rcvd-split">
             <input type="text" class="rst-digit" maxlength="1" data-idx="0" inputmode="numeric">
             <input type="text" class="rst-digit" maxlength="1" data-idx="1" inputmode="numeric">
             <input type="text" class="rst-digit" maxlength="1" data-idx="2" inputmode="numeric">
           </div>
-          <button type="button" class="rst-quick-btn" data-target="rst-rcvd-digits" data-value="59">59</button>
-          <button type="button" class="rst-quick-btn" data-target="rst-rcvd-digits" data-value="599">599</button>
+        </div>
+        <div class="rst-n1mm-mode" style="margin-top:4px;">
+          <input type="text" class="rst-input" id="rst-rcvd-n1mm" maxlength="3" inputmode="numeric" value="599" spellcheck="false" autocomplete="off">
         </div>
       </label>
     </div>
@@ -925,10 +1071,14 @@
       <tbody>
         <tr><td><kbd>F1</kbd></td><td>Keyboard shortcuts</td></tr>
         <tr><td><kbd>F2</kbd></td><td>View/Edit Logbook</td></tr>
+        <tr><td><kbd>F5</kbd></td><td>Check for updates</td></tr>
         <tr><td><kbd>F11</kbd></td><td>Welcome / setup screen</td></tr>
+        <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Navigate spots &amp; tune radio</td></tr>
         <tr><td><kbd>Space</kbd></td><td>Start / stop scan</td></tr>
         <tr><td><kbd>S</kbd></td><td>Toggle split mode</td></tr>
         <tr><td><kbd>Ctrl+L</kbd></td><td>Quick Log (unspotted QSO)</td></tr>
+        <tr><td><kbd>Ctrl+M</kbd></td><td>Multi-park dialog (activator)</td></tr>
+        <tr><td><kbd>Alt+R</kbd></td><td>Reload last entry (activator)</td></tr>
         <tr><td><kbd>Ctrl+R</kbd></td><td>Quick re-spot</td></tr>
         <tr><td><kbd>Ctrl+=</kbd></td><td>Zoom in</td></tr>
         <tr><td><kbd>Ctrl+&minus;</kbd></td><td>Zoom out</td></tr>
@@ -936,6 +1086,42 @@
         <tr><td><kbd>Esc</kbd></td><td>Close dialog</td></tr>
       </tbody>
     </table>
+  </dialog>
+
+  <!-- Multi-park dialog (Ctrl+M) -->
+  <dialog id="multipark-dialog">
+    <div class="log-dialog-header">
+      <h3 id="multipark-title">My Parks</h3>
+      <button type="button" id="multipark-close" class="log-dialog-x" title="Close">&times;</button>
+    </div>
+    <div id="multipark-slots" class="multipark-slots"></div>
+    <button type="button" id="multipark-add" class="multipark-add-btn">+ Add Park</button>
+    <div class="dialog-buttons">
+      <button type="button" id="multipark-cancel">Cancel</button>
+      <button type="button" id="multipark-ok" class="log-save-btn">OK</button>
+    </div>
+  </dialog>
+
+  <!-- Export choice dialog (multi-park activations) -->
+  <dialog id="export-choice-dlg">
+    <div class="log-dialog-header">
+      <h3>Export Activation ADIF</h3>
+      <button type="button" id="export-choice-close" class="log-dialog-x" title="Close">&times;</button>
+    </div>
+    <p style="font-size:13px;color:var(--text-secondary);margin:8px 0;">You have multiple parks. How would you like to export?</p>
+    <div class="dialog-buttons">
+      <button type="button" id="export-choice-combined">Combined File</button>
+      <button type="button" id="export-choice-perpark" class="log-save-btn">Per-Park Files</button>
+    </div>
+  </dialog>
+
+  <!-- What's New dialog (shown after version update) -->
+  <dialog id="whats-new-dialog">
+    <div class="log-dialog-header">
+      <h3 id="whats-new-title">What's New</h3>
+      <button type="button" id="whats-new-close" class="log-dialog-x" title="Close">&times;</button>
+    </div>
+    <div id="whats-new-body" style="max-height:400px;overflow-y:auto;padding:8px 0;font-size:13px;line-height:1.5;color:var(--text-secondary);"></div>
   </dialog>
 
   <!-- Welcome dialog (first run) -->
@@ -978,6 +1164,12 @@
       <label class="checkbox-label"><input type="checkbox" id="welcome-enable-sota" checked> SOTA spots</label>
       <label class="checkbox-label"><input type="checkbox" id="welcome-enable-wwff"> WWFF spots</label>
       <label class="checkbox-label"><input type="checkbox" id="welcome-enable-llota"> LLOTA spots</label>
+    </div>
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;">
+      <span style="font-weight:600;font-size:13px;">Start as:</span>
+      <label class="radio-label"><input type="radio" name="welcome-app-mode" value="hunter" checked> Hunter</label>
+      <label class="radio-label"><input type="radio" name="welcome-app-mode" value="activator"> Activator</label>
+      <span class="help-text" style="font-size:11px;color:#888;">You can switch any time in Settings</span>
     </div>
     <div class="welcome-import-section">
       <div style="font-weight:bold;margin-bottom:4px;">Import Your Data (optional)</div>
@@ -1083,6 +1275,12 @@
           <label class="checkbox-label" style="margin-top:6px;display:flex;align-items:center;gap:6px;">
             <input type="checkbox" id="welcome-rig-dtr-off"> Disable DTR/RTS
           </label>
+        </div>
+        <label class="radio-label"><input type="radio" name="welcome-radio-type" value="rigctldnet"> rigctld Network</label>
+        <div id="welcome-rigctldnet-config" class="radio-sub hidden">
+          <span class="help-text">Connect to a remote rigctld server (e.g. on another machine)</span>
+          <label>Host: <input type="text" id="welcome-rigctldnet-host" placeholder="192.168.1.100" value="127.0.0.1"></label>
+          <label>Port: <input type="number" id="welcome-rigctldnet-port" min="1" max="65535" value="4532"></label>
         </div>
         <div class="rig-editor-buttons">
           <button type="button" id="welcome-rig-save-btn">Save Rig</button>

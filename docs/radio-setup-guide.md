@@ -191,6 +191,45 @@ Some radios need the DTR/RTS lines managed carefully. Try toggling the **Disable
 
 ---
 
+## rigctld Network (flrig, grig, etc.)
+
+**Best for:** Radios controlled by flrig, grig, or any software that exposes a rigctld-compatible TCP server — especially on Linux (Raspberry Pi, etc.)
+
+If you already use **flrig** to control your radio, you don't need POTACAT's bundled Hamlib at all. flrig includes a built-in rigctld emulation server that POTACAT can connect to directly over TCP.
+
+### Setup
+
+1. Open Settings and add a new rig
+2. Select **rigctld Network**
+3. Set the host:
+   - Same machine as flrig: `127.0.0.1`
+   - Different machine: enter the IP address of the computer running flrig (e.g., `192.168.1.50`)
+4. Set the port to `4532` (flrig's default rigctld port)
+5. Save
+
+### Enabling the rigctld Server in flrig
+
+1. In flrig, go to **Config → Setup → Server**
+2. Make sure the rigctld server is enabled
+3. Note the port number (default `4532`)
+
+> **Tip:** flrig also has an XML-RPC server (port 12345) — POTACAT does **not** use XML-RPC. Make sure you're connecting to the rigctld port, not the XML-RPC port.
+
+### Common Uses
+
+- **Raspberry Pi + flrig:** flrig handles the serial connection to your radio, POTACAT connects over TCP on the same Pi or over the LAN
+- **Xiegu X6100 / G90 via flrig:** flrig supports CI-V radios that don't work with Serial CAT (Kenwood)
+- **Remote operation:** flrig on the radio PC, POTACAT on your operating PC — connect over LAN
+- **Sharing the radio:** flrig owns the serial port and multiple programs (POTACAT, WSJT-X, fldigi) can connect via separate rigctld clients
+
+### Troubleshooting
+
+- **Connection refused:** Make sure flrig is running and the rigctld server is enabled. Check that the port matches.
+- **Wrong frequency / no response:** Verify flrig can control the radio directly (tune via flrig's UI). If flrig itself can't talk to the radio, POTACAT won't be able to either.
+- **Firewall:** If connecting across machines, make sure the firewall on the flrig machine allows inbound TCP on the rigctld port.
+
+---
+
 ## Using POTACAT with Win4Yaesu Suite
 
 **Best for:** Running POTACAT alongside Win4Yaesu Suite without CAT port conflicts

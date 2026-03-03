@@ -31,6 +31,7 @@ let enableBandActivity = false;
 let licenseClass = 'none';
 let hideOutOfBand = false;
 let enableLogging = false;
+let n1mmRst = false; // N1MM-style single-field RST inputs
 let defaultPower = 100;
 let tuneClick = false;
 let enableSplit = false;
@@ -55,12 +56,31 @@ let myCallsign = '';
 let lastTunedSpot = null; // last clicked/tuned spot for quick respot
 let popoutOpen = false; // pop-out map window is open
 let qsoPopoutOpen = false; // pop-out QSO log window is open
+let spotsPopoutOpen = false; // pop-out spots window is open
+let actmapPopoutOpen = false; // pop-out activation map window is open
 let dxccData = null;  // { entities: [...] } from main process
 let enableWsjtx = false;
 let wsjtxDecodes = []; // recent decodes from WSJT-X (FIFO, max 50)
 let wsjtxState = null; // last WSJT-X status (freq, mode, etc.)
 const qrzData = new Map(); // callsign → { fname, name, addr2, state, country }
 let qrzFullName = false; // show first+last or just first
+
+// --- Activator Mode State ---
+let appMode = 'hunter'; // 'hunter' or 'activator'
+let activatorParkRefs = [];   // [{ref:'K-1234', name:'Cedar Falls SP'}, ...]  max 3
+let activatorParkGrid = '';   // Maidenhead grid for active park (auto from lat/lon, user-editable)
+let hunterParkRefs = [];      // [{ref:'K-5678', name:'Shenandoah NF'}]  max 3, resets per QSO
+let activatorContacts = []; // in-memory QSO list for current activation session
+let activatorFreqKhz = 0;  // from CAT
+let activationActive = false; // true while activation is running
+let activationStartTime = 0;  // Date.now() when activation started
+let activationTimerInterval = null;
+let activatorSpotsVisible = false; // show hunter spot table below activator view
+
+/** Get primary activator park ref */
+function primaryParkRef() { return activatorParkRefs[0]?.ref || ''; }
+/** Get primary activator park name */
+function primaryParkName() { return activatorParkRefs[0]?.name || ''; }
 
 /** Clean up QRZ name: title-case, drop trailing single-letter initial */
 function cleanQrzName(raw) {
@@ -117,6 +137,7 @@ const spotsHideWorked = document.getElementById('spots-hide-worked');
 const spotsHideParks = document.getElementById('spots-hide-parks');
 const spotsHideParksLabel = document.getElementById('spots-hide-parks-label');
 const spotsHideOob = document.getElementById('spots-hide-oob');
+const spotsDxcc = document.getElementById('spots-dxcc');
 const settingsBtn = document.getElementById('settings-btn');
 const logbookBtn = document.getElementById('logbook-btn');
 const settingsDialog = document.getElementById('settings-dialog');
@@ -149,6 +170,7 @@ const rotorConfig = document.getElementById('rotor-config');
 const setRotorHost = document.getElementById('set-rotor-host');
 const setRotorPort = document.getElementById('set-rotor-port');
 const setVerboseLog = document.getElementById('set-verbose-log');
+const setLightIcon = document.getElementById('set-light-icon');
 const setEnableSplitView = document.getElementById('set-enable-split-view');
 const splitOrientationConfig = document.getElementById('split-orientation-config');
 const continentFilterEl = document.getElementById('continent-filter');
@@ -157,6 +179,9 @@ const hamlibConfig = document.getElementById('hamlib-config');
 const flexConfig = document.getElementById('flex-config');
 const tcpcatConfig = document.getElementById('tcpcat-config');
 const serialcatConfig = document.getElementById('serialcat-config');
+const rigctldnetConfig = document.getElementById('rigctldnet-config');
+const setRigctldnetHost = document.getElementById('set-rigctldnet-host');
+const setRigctldnetPort = document.getElementById('set-rigctldnet-port');
 const setTcpcatHost = document.getElementById('set-tcpcat-host');
 const setTcpcatPort = document.getElementById('set-tcpcat-port');
 const setFlexSlice = document.getElementById('set-flex-slice');
@@ -195,12 +220,15 @@ const splitSplitterEl = document.getElementById('split-splitter');
 const viewTableBtn = document.getElementById('view-table-btn');
 const viewMapBtn = document.getElementById('view-map-btn');
 const popoutMapBtn = document.getElementById('popout-map-btn');
-const viewDxccBtn = document.getElementById('view-dxcc-btn');
+const dxccBoardBtn = document.getElementById('dxcc-board-btn');
 const dxccView = document.getElementById('dxcc-view');
 const dxccMatrixBody = document.getElementById('dxcc-matrix-body');
 const dxccCountEl = document.getElementById('dxcc-count');
 const dxccPlaceholder = document.getElementById('dxcc-placeholder');
-const dxccModeFilterEl = document.getElementById('dxcc-mode-filter');
+const dxccBandSelectEl = document.getElementById('dxcc-band-select');
+const dxccModeSelectEl = document.getElementById('dxcc-mode-select');
+const dxccAwardLabelEl = document.getElementById('dxcc-award-label');
+const dxccChallengeEl = document.getElementById('dxcc-challenge');
 const setEnableCluster = document.getElementById('set-enable-cluster');
 const setEnableRbn = document.getElementById('set-enable-rbn');
 const setEnableWsjtx = document.getElementById('set-enable-wsjtx');
@@ -273,9 +301,6 @@ const parksStatsToggleBtn = document.getElementById('parks-stats-toggle');
 const parksStatsCloseBtn = document.getElementById('parks-stats-close');
 let parksStatsOpen = false;
 const setEnableDxcc = document.getElementById('set-enable-dxcc');
-const setAdifPath = document.getElementById('set-adif-path');
-const adifBrowseBtn = document.getElementById('adif-browse-btn');
-const adifPicker = document.getElementById('adif-picker');
 const distHeader = document.getElementById('dist-header');
 const utcClockEl = document.getElementById('utc-clock');
 const sfiStatusEl = document.getElementById('sfi-status');
@@ -286,6 +311,7 @@ const setEnableSolar = document.getElementById('set-enable-solar');
 const setEnableBandActivity = document.getElementById('set-enable-band-activity');
 const setShowBearing = document.getElementById('set-show-bearing');
 const setEnableLogging = document.getElementById('set-enable-logging');
+const setN1mmRst = document.getElementById('set-n1mm-rst');
 const loggingConfig = document.getElementById('logging-config');
 const setAdifLogPath = document.getElementById('set-adif-log-path');
 const adifLogBrowseBtn = document.getElementById('adif-log-browse-btn');
@@ -312,25 +338,11 @@ const setQrzFullName = document.getElementById('set-qrz-full-name');
 const setSmartSdrSpots = document.getElementById('set-smartsdr-spots');
 const smartSdrConfig = document.getElementById('smartsdr-config');
 const setSmartSdrHost = document.getElementById('set-smartsdr-host');
-const setSmartSdrPota = document.getElementById('set-smartsdr-pota');
-const setSmartSdrSota = document.getElementById('set-smartsdr-sota');
-const setSmartSdrCluster = document.getElementById('set-smartsdr-cluster');
-const setSmartSdrRbn = document.getElementById('set-smartsdr-rbn');
-const setSmartSdrWwff = document.getElementById('set-smartsdr-wwff');
-const setSmartSdrLlota = document.getElementById('set-smartsdr-llota');
-const setSmartSdrPskr = document.getElementById('set-smartsdr-pskr');
 const setSmartSdrMaxAge = document.getElementById('set-smartsdr-max-age');
 const setTciSpots = document.getElementById('set-tci-spots');
 const tciConfig = document.getElementById('tci-config');
 const setTciHost = document.getElementById('set-tci-host');
 const setTciPort = document.getElementById('set-tci-port');
-const setTciPota = document.getElementById('set-tci-pota');
-const setTciSota = document.getElementById('set-tci-sota');
-const setTciCluster = document.getElementById('set-tci-cluster');
-const setTciRbn = document.getElementById('set-tci-rbn');
-const setTciWwff = document.getElementById('set-tci-wwff');
-const setTciLlota = document.getElementById('set-tci-llota');
-const setTciPskr = document.getElementById('set-tci-pskr');
 const setTciMaxAge = document.getElementById('set-tci-max-age');
 // CW Keyer
 const setEnableCwKeyer = document.getElementById('set-enable-cw-keyer');
@@ -357,18 +369,57 @@ const logMode = document.getElementById('log-mode');
 const logDate = document.getElementById('log-date');
 const logTime = document.getElementById('log-time');
 const logPower = document.getElementById('log-power');
-// RST split-digit helpers
-function setRstDigits(containerId, value) {
-  const digits = document.querySelectorAll(`#${containerId} .rst-digit`);
-  const chars = String(value).split('');
-  digits[0].value = chars[0] || '';
-  digits[1].value = chars[1] || '';
-  digits[2].value = chars[2] || '';
+// RST helpers — support both split-digit and N1MM single-field modes
+// Logical IDs map to DOM element IDs for each mode
+const RST_ID_MAP = {
+  'rst-sent-digits':    { split: 'rst-sent-split',           n1mm: 'rst-sent-n1mm' },
+  'rst-rcvd-digits':    { split: 'rst-rcvd-split',           n1mm: 'rst-rcvd-n1mm' },
+  'activator-rst-sent': { split: 'activator-rst-sent-digits', n1mm: 'activator-rst-sent' },
+  'activator-rst-rcvd': { split: 'activator-rst-rcvd-digits', n1mm: 'activator-rst-rcvd' },
+};
+
+function setRstDigits(id, value) {
+  const map = RST_ID_MAP[id];
+  if (!map) return;
+  const v = String(value);
+  // Set split-digit container
+  const splitEl = document.getElementById(map.split);
+  if (splitEl) {
+    const digits = splitEl.querySelectorAll('.rst-digit');
+    const chars = v.split('');
+    if (digits[0]) digits[0].value = chars[0] || '';
+    if (digits[1]) digits[1].value = chars[1] || '';
+    if (digits[2]) digits[2].value = chars[2] || '';
+  }
+  // Set N1MM single input
+  const n1mmEl = document.getElementById(map.n1mm);
+  if (n1mmEl) n1mmEl.value = v;
 }
-function getRstDigits(containerId, fallback) {
-  const digits = document.querySelectorAll(`#${containerId} .rst-digit`);
-  const val = Array.from(digits).map(d => d.value).join('');
-  return val || fallback;
+
+function getRstDigits(id, fallback) {
+  const map = RST_ID_MAP[id];
+  if (!map) return fallback;
+  if (n1mmRst) {
+    // N1MM mode uses split-digit boxes
+    const splitEl = document.getElementById(map.split);
+    if (splitEl) {
+      const digits = splitEl.querySelectorAll('.rst-digit');
+      const val = Array.from(digits).map(d => d.value).join('');
+      return val || fallback;
+    }
+  } else {
+    // Default uses single text field
+    const el = document.getElementById(map.n1mm);
+    return (el && el.value) || fallback;
+  }
+  return fallback;
+}
+
+function applyRstMode() {
+  // n1mmRst=true → show split-digit boxes, hide single fields
+  // n1mmRst=false (default) → show single fields, hide split-digit boxes
+  document.querySelectorAll('.rst-split-mode').forEach(el => el.classList.toggle('hidden', !n1mmRst));
+  document.querySelectorAll('.rst-n1mm-mode').forEach(el => el.classList.toggle('hidden', n1mmRst));
 }
 const logRefDisplay = document.getElementById('log-ref-display');
 const logComment = document.getElementById('log-comment');
@@ -392,14 +443,17 @@ const catPopoverWsjtxPort = document.getElementById('cat-popover-wsjtx-port');
 const catPopoverWsjtxPortInput = document.getElementById('cat-popover-wsjtx-port-input');
 let catPopoverOpen = false;
 
+let _catPopoverAnchor = catStatusEl; // which element the popover is anchored to
+
 function positionCatPopover() {
-  const rect = catStatusEl.getBoundingClientRect();
-  const headerRect = catStatusEl.closest('header').getBoundingClientRect();
-  catPopover.style.top = (rect.bottom - headerRect.top + 4) + 'px';
-  catPopover.style.left = (rect.left - headerRect.left) + 'px';
+  const anchor = _catPopoverAnchor || catStatusEl;
+  const rect = anchor.getBoundingClientRect();
+  catPopover.style.top = (rect.bottom + 4) + 'px';
+  catPopover.style.left = rect.left + 'px';
 }
 
-async function openCatPopover() {
+async function openCatPopover(anchor) {
+  if (anchor) _catPopoverAnchor = anchor;
   const settings = await window.api.getSettings();
   const rigs = settings.rigs || [];
   const activeId = settings.activeRigId || null;
@@ -490,7 +544,7 @@ catPopoverWsjtxPortInput.addEventListener('click', (e) => e.stopPropagation());
 
 // Close popover on outside click
 document.addEventListener('click', (e) => {
-  if (catPopoverOpen && !catPopover.contains(e.target) && e.target !== catStatusEl) {
+  if (catPopoverOpen && !catPopover.contains(e.target) && e.target !== catStatusEl && e.target !== document.getElementById('activator-cat-status')) {
     closeCatPopover();
   }
 });
@@ -515,8 +569,8 @@ function applyTheme(light) {
 async function loadPrefs() {
   const settings = await window.api.getSettings();
   if (settings.appVersion) {
-    const ttEl = document.querySelector('.titlebar-title');
-    if (ttEl) ttEl.textContent = `POTACAT - v${settings.appVersion}`;
+    window._appVersion = settings.appVersion;
+    updateTitleBar();
   }
   applyTheme(settings.lightMode === true);
   grid = settings.grid || '';
@@ -541,6 +595,8 @@ async function loadPrefs() {
   updateSolarVisibility();
   qrzFullName = settings.qrzFullName === true;
   enableLogging = settings.enableLogging === true;
+  n1mmRst = settings.n1mmRst === true;
+  applyRstMode();
   defaultPower = parseInt(settings.defaultPower, 10) || 100;
   updateLoggingVisibility();
   showBearing = settings.showBearing === true;
@@ -572,6 +628,47 @@ async function loadPrefs() {
   }
   updateRbnButton();
   updateDxccButton();
+  // Activator mode restore
+  if (settings.appMode === 'activator') {
+    appMode = 'activator';
+    // Restore activator parks — migrate from legacy single string to array
+    if (settings.activatorParkRefs && Array.isArray(settings.activatorParkRefs) && settings.activatorParkRefs.length) {
+      activatorParkRefs = settings.activatorParkRefs;
+      activatorParkRefInput.value = primaryParkRef();
+      activatorParkNameEl.textContent = primaryParkName();
+      updateParkExtraBadge();
+      // Resolve names and grid if missing
+      for (const p of activatorParkRefs) {
+        if (!p.name) {
+          window.api.getPark(p.ref).then(park => {
+            if (park) { p.name = park.name || ''; updateParkDisplay(); }
+          });
+        }
+      }
+      // Auto-populate grid from primary park
+      if (activatorParkRefs.length > 0) {
+        window.api.getPark(activatorParkRefs[0].ref).then(park => {
+          if (park && park.latitude && park.longitude) {
+            activatorParkGrid = latLonToGridLocal(parseFloat(park.latitude), parseFloat(park.longitude));
+            const gi = document.getElementById('activator-grid');
+            if (gi) gi.value = activatorParkGrid;
+          }
+        });
+      }
+    } else if (settings.activatorParkRef) {
+      activatorParkRefs = [{ ref: settings.activatorParkRef, name: '' }];
+      activatorParkRefInput.value = settings.activatorParkRef;
+      window.api.getPark(settings.activatorParkRef).then(park => {
+        if (park) {
+          activatorParkRefs[0].name = park.name || '';
+          activatorParkNameEl.textContent = park.name || '';
+        }
+      });
+      // Migrate to new format
+      window.api.saveSettings({ activatorParkRefs, activatorParkRef: undefined });
+    }
+    setAppMode('activator');
+  }
   // maxAgeMin: prefer localStorage (last-used filter) over settings.json
   try {
     const saved = JSON.parse(localStorage.getItem(FILTERS_KEY));
@@ -641,6 +738,7 @@ function updateRadioSubPanels() {
   tcpcatConfig.classList.toggle('hidden', type !== 'tcpcat');
   serialcatConfig.classList.toggle('hidden', type !== 'serialcat');
   hamlibConfig.classList.toggle('hidden', type !== 'hamlib');
+  rigctldnetConfig.classList.toggle('hidden', type !== 'rigctldnet');
   if (type === 'serialcat' && !serialcatPortsLoaded) {
     loadSerialcatPorts();
   }
@@ -674,6 +772,10 @@ async function populateRadioSection(currentTarget) {
     setRadioType('hamlib');
     hamlibFieldsLoaded = true;
     await populateHamlibFields(currentTarget);
+  } else if (currentTarget.type === 'rigctldnet') {
+    setRadioType('rigctldnet');
+    setRigctldnetHost.value = currentTarget.host || '127.0.0.1';
+    setRigctldnetPort.value = currentTarget.port || 4532;
   } else {
     setRadioType('flex');
   }
@@ -788,6 +890,9 @@ function describeRigTarget(target) {
     const rPort = target.rigctldPort && target.rigctldPort !== 4532 ? ` (port ${target.rigctldPort})` : '';
     return `Hamlib on ${comPort}${rPort}`;
   }
+  if (target.type === 'rigctldnet') {
+    return `rigctld on ${target.host || '127.0.0.1'}:${target.port || 4532}`;
+  }
   return 'Unknown';
 }
 
@@ -892,6 +997,12 @@ function buildCatTargetFromForm() {
       baudRate: parseInt(setRigBaud.value, 10),
       dtrOff: setRigDtrOff.checked,
       rigctldPort: parseInt(setRigctldPort.value, 10) || 4532,
+    };
+  } else if (radioType === 'rigctldnet') {
+    return {
+      type: 'rigctldnet',
+      host: setRigctldnetHost.value.trim() || '127.0.0.1',
+      port: parseInt(setRigctldnetPort.value, 10) || 4532,
     };
   }
   return null;
@@ -1041,68 +1152,45 @@ initMultiDropdown(rbnBandFilterEl, 'Band', rerenderRbn);
 rbnMaxAgeInput.addEventListener('change', rerenderRbn);
 rbnAgeUnitSelect.addEventListener('change', rerenderRbn);
 
-// DXCC mode filter — re-render matrix on change instead of spot table
-function initDxccModeFilter() {
-  const btn = dxccModeFilterEl.querySelector('.multi-dropdown-btn');
-  const menu = dxccModeFilterEl.querySelector('.multi-dropdown-menu');
-  const textEl = dxccModeFilterEl.querySelector('.multi-dropdown-text');
-  const allCb = menu.querySelector('input[value="all"]');
-  const itemCbs = [...menu.querySelectorAll('input:not([value="all"])')];
+// DXCC filter constants
+const DXCC_MODE_GROUPS = {
+  phone:   new Set(['SSB', 'AM', 'FM', 'USB', 'LSB']),
+  cw:      new Set(['CW']),
+  digital: new Set(['FT8', 'FT4', 'RTTY', 'PSK31', 'JT65', 'JT9', 'DATA', 'OLIVIA', 'MFSK'])
+};
+const DXCC_CHALLENGE_BANDS = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m']; // excludes 60m per ARRL rules
 
-  function updateText() {
-    const checked = itemCbs.filter((cb) => cb.checked);
-    if (allCb.checked || checked.length === 0) {
-      textEl.textContent = 'All';
-    } else if (checked.length <= 3) {
-      textEl.textContent = checked.map((cb) => cb.value).join(', ');
-    } else {
-      textEl.textContent = checked.length + ' selected';
+// DXCC band/mode filter — re-render matrix on change
+function initDxccFilters() {
+  // Restore saved filter state
+  try {
+    const saved = JSON.parse(localStorage.getItem('pota-cat-dxcc-filter'));
+    if (saved) {
+      if (saved.band) dxccBandSelectEl.value = saved.band;
+      if (saved.mode) dxccModeSelectEl.value = saved.mode;
     }
+  } catch (e) { /* ignore */ }
+
+  function onFilterChange() {
+    localStorage.setItem('pota-cat-dxcc-filter', JSON.stringify({
+      band: dxccBandSelectEl.value,
+      mode: dxccModeSelectEl.value
+    }));
+    if (currentView === 'dxcc') renderDxccMatrix();
   }
 
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    document.querySelectorAll('.multi-dropdown.open').forEach((d) => {
-      if (d !== dxccModeFilterEl) d.classList.remove('open');
-    });
-    dxccModeFilterEl.classList.toggle('open');
-  });
-
-  menu.addEventListener('click', (e) => e.stopPropagation());
-
-  menu.addEventListener('change', (e) => {
-    const cb = e.target;
-    if (cb.value === 'all') {
-      const nowChecked = cb.checked;
-      itemCbs.forEach((c) => { c.checked = nowChecked; });
-    } else {
-      allCb.checked = false;
-      if (itemCbs.every((c) => !c.checked)) allCb.checked = true;
-      if (itemCbs.every((c) => c.checked)) {
-        allCb.checked = true;
-        itemCbs.forEach((c) => { c.checked = false; });
-      }
-    }
-    updateText();
-    if (currentView === 'dxcc') renderDxccMatrix();
-  });
-
-  updateText();
+  dxccBandSelectEl.addEventListener('change', onFilterChange);
+  dxccModeSelectEl.addEventListener('change', onFilterChange);
 }
-initDxccModeFilter();
+initDxccFilters();
 
 function getDxccModeFilter() {
-  return getDropdownValues(dxccModeFilterEl);
+  const val = dxccModeSelectEl.value;
+  return val === 'all' ? null : DXCC_MODE_GROUPS[val] || null;
 }
 
 function updateDxccButton() {
-  if (enableDxcc) {
-    viewDxccBtn.classList.remove('hidden');
-  } else {
-    viewDxccBtn.classList.add('hidden');
-    // Fall back to table if currently on DXCC view
-    if (currentView === 'dxcc') setView('table');
-  }
+  if (!enableDxcc && currentView === 'dxcc') setView('table');
 }
 
 function updateWsjtxStatusVisibility() {
@@ -1133,6 +1221,8 @@ function updateRbnButton() {
     viewRbnBtn.classList.add('hidden');
     if (currentView === 'rbn') setView('table');
   }
+  // Also update the activator toolbar RBN button (safe even before DOM ref is set)
+  if (typeof updateActivatorRbnButton === 'function') updateActivatorRbnButton();
 }
 
 function updateLoggingVisibility() {
@@ -1418,11 +1508,6 @@ setEnableCwKeyer.addEventListener('change', () => {
   }
 });
 
-// DXCC checkbox toggles ADIF picker visibility
-setEnableDxcc.addEventListener('change', () => {
-  adifPicker.classList.toggle('hidden', !setEnableDxcc.checked);
-});
-
 // Logging checkbox toggles logging config visibility
 setEnableLogging.addEventListener('change', () => {
   loggingConfig.classList.toggle('hidden', !setEnableLogging.checked);
@@ -1437,8 +1522,8 @@ setSendToLogbook.addEventListener('change', () => {
 // Logbook type dropdown — show port config and contextual help
 const LOGBOOK_DEFAULTS = {
   log4om: {
-    fileWatch: true,
-    instructions: 'In Log4OM 2: Settings > Program Configuration > Software Integration > ADIF Functions. In the ADIF Monitor tab, check "Enable ADIF monitor". Click the folder icon next to "ADIF file" and select the same ADIF log file used in POTACAT. Press the green + button to add it to the list, then press "Save and apply". Log4OM will automatically import new QSOs as they are saved.',
+    port: 2237,
+    help: 'In Log4OM 2: Settings > Program Configuration > Software Integration > UDP Inbound tab. Click the green "+" button to add a new entry. Set Type to "ADIF-MESSAGE" and Port to "2237". Click "Save and apply". Leave Host at 127.0.0.1 in POTACAT. Log4OM must be running to receive QSOs. Only live-logged QSOs are forwarded — importing logs into POTACAT will not create duplicates.',
   },
   dxkeeper: { port: 52001, help: 'In DXKeeper: Configuration > Defaults tab > Network Service panel. The default base port is 52000 (DXKeeper listens on base + 1 = 52001). DXKeeper must be running to receive QSOs. QSOs will be logged with missing fields auto-deduced from callbook/entity databases.' },
   n3fjp: { port: 1100, help: 'In N3FJP: Settings > Application Program Interface > check "TCP API Enabled". Set the port to 1100 (default). N3FJP must be running to receive QSOs.' },
@@ -1458,8 +1543,7 @@ function updateLogbookPortConfig() {
     logbookInstructions.classList.add('hidden');
     logbookPortConfig.classList.remove('hidden');
     const currentPort = parseInt(setLogbookPort.value, 10);
-    const isDefaultPort = !currentPort || Object.values(LOGBOOK_DEFAULTS).some(d => d.port === currentPort);
-    if (isDefaultPort) setLogbookPort.value = defaults.port;
+    if (!currentPort || currentPort === defaults.port) setLogbookPort.value = defaults.port;
     logbookHelp.textContent = defaults.help;
   } else {
     logbookInstructions.classList.add('hidden');
@@ -1497,14 +1581,6 @@ adifImportBtn.addEventListener('click', async () => {
   } catch (err) {
     adifImportResult.textContent = 'Import failed';
     adifImportResult.style.color = '#e94560';
-  }
-});
-
-// ADIF file browser
-adifBrowseBtn.addEventListener('click', async () => {
-  const filePath = await window.api.chooseAdifFile();
-  if (filePath) {
-    setAdifPath.value = filePath;
   }
 });
 
@@ -1608,9 +1684,11 @@ serialcatTestBtn.addEventListener('click', async () => {
   }
 });
 
+
 // Close dropdowns when clicking outside
 document.addEventListener('click', () => {
   document.querySelectorAll('.multi-dropdown.open').forEach((d) => d.classList.remove('open'));
+  closeActivatorSettingsPanel();
 });
 
 // --- Filtering ---
@@ -1638,8 +1716,15 @@ function isWorkedSpot(spot) {
     String(now.getUTCDate()).padStart(2, '0');
   const todayQsos = entries.filter(e => e.date === todayUtc);
   if (todayQsos.length === 0) return false;
-  const spotRef = (spot.reference || '').toUpperCase();
-  if (spotRef) return todayQsos.some(e => e.ref === spotRef);
+  // Match on band + mode — only hide if worked on same band AND mode today
+  const spotBand = (spot.band || '').toUpperCase();
+  const spotMode = (spot.mode || '').toUpperCase();
+  if (spotBand || spotMode) {
+    return todayQsos.some(e =>
+      (!spotBand || e.band === spotBand) &&
+      (!spotMode || e.mode === spotMode)
+    );
+  }
   return true;
 }
 
@@ -1685,8 +1770,14 @@ function sortSpots(spots) {
     const bExp = expeditionCallsigns.has(b.callsign.toUpperCase()) ? 1 : 0;
     if (aExp !== bExp) return bExp - aExp;
 
-    let va = a[sortCol];
-    let vb = b[sortCol];
+    let va, vb;
+    if (sortCol === 'grid') {
+      va = (a.lat != null && a.lon != null) ? latLonToGridLocal(a.lat, a.lon).slice(0, 4) : null;
+      vb = (b.lat != null && b.lon != null) ? latLonToGridLocal(b.lat, b.lon).slice(0, 4) : null;
+    } else {
+      va = a[sortCol];
+      vb = b[sortCol];
+    }
     if (va == null && vb == null) return 0;
     if (va == null) return 1;
     if (vb == null) return -1;
@@ -1715,6 +1806,7 @@ const HIDEABLE_COLUMNS = [
   { key: 'reference', label: 'Ref' },
   { key: 'parkName', label: 'Name' },
   { key: 'locationDesc', label: 'State' },
+  { key: 'grid', label: 'Grid' },
   { key: 'distance', label: 'Distance' },
   { key: 'spotTime', label: 'Age' },
   { key: 'comments', label: 'Comments' },
@@ -1728,8 +1820,8 @@ function loadHiddenColumns() {
     const saved = JSON.parse(localStorage.getItem(HIDDEN_COLS_KEY));
     if (Array.isArray(saved)) return new Set(saved);
   } catch { /* ignore */ }
-  // Default: hide comments column on fresh install
-  return new Set(['comments']);
+  // Default: hide comments and grid columns on fresh install
+  return new Set(['comments', 'grid']);
 }
 
 function saveHiddenColumns() {
@@ -1860,7 +1952,7 @@ mapResizeObserver.observe(mapPaneEl);
 const COL_ORDER_KEY = 'pota-cat-col-order-v1';
 const DEFAULT_COL_ORDER = [
   'log','callsign','operator','frequency','mode','source','reference',
-  'parkName','locationDesc','distance','bearing','spotTime','comments','skip'
+  'parkName','locationDesc','grid','distance','bearing','spotTime','comments','skip'
 ];
 
 function loadColOrder() {
@@ -1909,7 +2001,7 @@ const COL_WIDTHS_KEY = 'pota-cat-col-pct-v10';
 const COL_WIDTHS_KEY_V9 = 'pota-cat-col-pct-v9';
 const DEFAULT_COL_PCT_OBJ = {
   log: 4, callsign: 8, operator: 7, frequency: 6, mode: 5, source: 5, reference: 6,
-  parkName: 15, locationDesc: 7, distance: 6, bearing: 5, spotTime: 5, comments: 10, skip: 4
+  parkName: 14, locationDesc: 7, grid: 5, distance: 6, bearing: 5, spotTime: 5, comments: 10, skip: 4
 };
 
 function loadColWidths() {
@@ -2442,6 +2534,25 @@ function gridToLatLonLocal(grid) {
   return { lat, lon };
 }
 
+// Lightweight lat/lon → Maidenhead grid for the renderer (no require of Node module)
+function latLonToGridLocal(lat, lon) {
+  let lng = lon + 180;
+  let la = lat + 90;
+  const A = 'A'.charCodeAt(0);
+  const a = 'a'.charCodeAt(0);
+  const field1 = String.fromCharCode(A + Math.floor(lng / 20));
+  const field2 = String.fromCharCode(A + Math.floor(la / 10));
+  lng %= 20;
+  la %= 10;
+  const sq1 = Math.floor(lng / 2);
+  const sq2 = Math.floor(la / 1);
+  lng -= sq1 * 2;
+  la -= sq2 * 1;
+  const sub1 = String.fromCharCode(a + Math.floor(lng / (2 / 24)));
+  const sub2 = String.fromCharCode(a + Math.floor(la / (1 / 24)));
+  return `${field1}${field2}${sq1}${sq2}${sub1}${sub2}`;
+}
+
 // --- License privilege check (duplicated from lib/privileges.js — no require in renderer) ---
 const PRIVILEGE_RANGES = {
   us_extra: [
@@ -2587,7 +2698,7 @@ function updateMapMarkers(filtered) {
       ? { icon: expeditionIcon, zIndexOffset: 500 }
       : oop
         ? { icon: oopIcon, opacity: 0.4 }
-        : { icon: sourceIcon, ...(worked ? { opacity: 0.5 } : {}) };
+        : { icon: sourceIcon, ...(worked && isWorkedSpot(s) ? { opacity: 0.5 } : {}) };
 
     // Plot marker at canonical position and one world-copy in each direction
     for (const offset of [-360, 0, 360]) {
@@ -2612,7 +2723,7 @@ function bindPopupClickHandlers(mapInstance) {
         if (!isNaN(lat) && !isNaN(lon)) showTuneArc(lat, lon, btn.dataset.freq, btn.dataset.source);
         // Find matching spot in allSpots for quick respot
         const match = allSpots.find(s => s.frequency === btn.dataset.freq && s.callsign && s.mode === btn.dataset.mode);
-        if (match) lastTunedSpot = match;
+        if (match) { lastTunedSpot = match; prefillDxCommand(match); }
       });
     });
     container.querySelectorAll('.popup-qrz').forEach((link) => {
@@ -2701,6 +2812,7 @@ function scanStep() {
 
   const spot = list[scanIndex];
   lastTunedSpot = spot;
+  prefillDxCommand(spot);
   window.api.tune(spot.frequency, spot.mode, spot.bearing);
   if (spot.lat != null && spot.lon != null) showTuneArc(spot.lat, spot.lon, spot.frequency, spot.source);
   render();
@@ -2728,6 +2840,23 @@ document.addEventListener('keydown', (e) => {
     window.api.qsoPopoutOpen(); // opens or focuses existing pop-out
     return;
   }
+  // F4 — Test cat celebration animation (Shift+F4 for mega)
+  if (e.key === 'F4' && !e.target.matches('input, select, textarea')) {
+    e.preventDefault();
+    if (e.shiftKey) {
+      showMegaCelebration('500 QSOs today! You are UNSTOPPABLE!');
+    } else {
+      showCatCelebration('10 QSOs today! Keep going!');
+    }
+    return;
+  }
+  // F5 — Check for updates
+  if (e.key === 'F5' && !e.target.matches('input, select, textarea')) {
+    e.preventDefault();
+    window.api.checkForUpdates();
+    showLogToast('Checking for updates...', { duration: 2000 });
+    return;
+  }
   // F11 — Welcome screen
   if (e.key === 'F11' && !e.target.matches('input, select, textarea')) {
     e.preventDefault();
@@ -2739,12 +2868,61 @@ document.addEventListener('keydown', (e) => {
     if (scanning) { stopScan(); } else { startScan(); }
     return;
   }
+  // Arrow Up/Down — navigate spots in table view
+  if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.target.matches('input, select, textarea') && showTable && !scanning) {
+    e.preventDefault();
+    const filtered = sortSpots(getFiltered());
+    if (filtered.length === 0) return;
+    // Find current index
+    let idx = -1;
+    if (lastTunedSpot) {
+      idx = filtered.findIndex(s => s.callsign === lastTunedSpot.callsign && s.frequency === lastTunedSpot.frequency);
+    }
+    // Move
+    if (e.key === 'ArrowDown') {
+      idx = idx < filtered.length - 1 ? idx + 1 : 0;
+    } else {
+      idx = idx > 0 ? idx - 1 : filtered.length - 1;
+    }
+    const spot = filtered[idx];
+    lastTunedSpot = spot;
+    prefillDxCommand(spot);
+    window.api.tune(spot.frequency, spot.mode, spot.bearing);
+    if (spot.lat != null && spot.lon != null) showTuneArc(spot.lat, spot.lon, spot.frequency, spot.source);
+    render();
+    // Scroll the tuned row into view
+    const onFreqRow = tbody.querySelector('.on-freq');
+    if (onFreqRow) onFreqRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return;
+  }
   // S — Toggle split mode
   if (e.key === 's' && !e.target.matches('input, select, textarea')) {
     e.preventDefault();
     enableSplit = !enableSplit;
     window.api.saveSettings({ enableSplit });
     showLogToast(enableSplit ? 'Split mode ON' : 'Split mode OFF', { duration: 1500 });
+    return;
+  }
+  // Ctrl+A — Prevent select-all
+  if (e.key === 'a' && (e.ctrlKey || e.metaKey) && !e.target.matches('input, select, textarea')) {
+    e.preventDefault();
+    return;
+  }
+  // Ctrl+M — Multi-park dialog (activator mode)
+  if (e.key === 'm' && (e.ctrlKey || e.metaKey) && appMode === 'activator') {
+    e.preventDefault();
+    const context = document.activeElement === document.getElementById('activator-hunter-park') ? 'hunter' : 'my';
+    openMultiparkDialog(context);
+    return;
+  }
+  // Alt+R — Reload last entry (activator mode)
+  if (e.key === 'r' && e.altKey && appMode === 'activator' && activationActive && activatorContacts.length > 0) {
+    e.preventDefault();
+    const last = activatorContacts[activatorContacts.length - 1];
+    activatorCallsignInput.value = last.callsign;
+    setRstDigits('activator-rst-sent', last.rstSent);
+    setRstDigits('activator-rst-rcvd', last.rstRcvd);
+    activatorCallsignInput.select();
     return;
   }
   // Ctrl+R / Cmd+R — Quick re-spot
@@ -2914,8 +3092,19 @@ document.getElementById('respot-cancel').addEventListener('click', () => {
 
 // --- DX Command Bar ---
 const dxCommandNode = document.getElementById('dx-command-node');
+const dxSpotCall = document.getElementById('dx-spot-call');
+const dxSpotFreq = document.getElementById('dx-spot-freq');
+const dxSpotNote = document.getElementById('dx-spot-note');
 let showDxBar = false;
 let dxCommandPreferredNode = '';
+let dxSpotComment = localStorage.getItem('dx-spot-comment') || 'great signal';
+
+function prefillDxCommand(spot) {
+  if (!spot || spot.source !== 'dxc' || !showDxBar || !enableCluster) return;
+  dxSpotCall.value = spot.callsign || '';
+  dxSpotFreq.value = parseFloat(spot.frequency).toFixed(1);
+  dxSpotNote.value = dxSpotComment;
+}
 
 function updateDxCommandBar() {
   const bar = document.getElementById('dx-command-bar');
@@ -2949,9 +3138,20 @@ dxCommandNode.addEventListener('change', () => {
 
 async function sendDxCommand() {
   const btn = document.getElementById('dx-command-send');
-  const input = document.getElementById('dx-command-input');
-  const text = input.value.trim();
-  if (!text) return;
+  const call = dxSpotCall.value.trim();
+  const freq = dxSpotFreq.value.trim();
+  if (!call || !freq) {
+    showLogToast('Callsign and frequency are required', { warn: true, duration: 3000 });
+    if (!call) dxSpotCall.focus();
+    else dxSpotFreq.focus();
+    return;
+  }
+  const note = dxSpotNote.value.trim();
+  if (note) {
+    dxSpotComment = note;
+    localStorage.setItem('dx-spot-comment', dxSpotComment);
+  }
+  const text = 'DX ' + freq + ' ' + call + (note ? ' ' + note : '');
   const nodeId = dxCommandNode.value || undefined;
   btn.disabled = true;
   try {
@@ -2959,9 +3159,11 @@ async function sendDxCommand() {
     if (result.error) {
       showLogToast(result.error, { warn: true, duration: 5000 });
     } else {
-      input.value = '';
+      dxSpotCall.value = '';
+      dxSpotFreq.value = '';
+      dxSpotNote.value = '';
       const nodeName = nodeId ? dxCommandNode.options[dxCommandNode.selectedIndex].textContent : result.sent + ' node' + (result.sent > 1 ? 's' : '');
-      showLogToast('Sent to ' + nodeName);
+      showLogToast('Spotted ' + call + ' on ' + freq + ' kHz \u2192 ' + nodeName, { duration: 3000 });
     }
   } catch (err) {
     showLogToast('DX command failed: ' + err.message, { warn: true, duration: 5000 });
@@ -2971,8 +3173,10 @@ async function sendDxCommand() {
 }
 
 document.getElementById('dx-command-send').addEventListener('click', sendDxCommand);
-document.getElementById('dx-command-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); sendDxCommand(); }
+[dxSpotCall, dxSpotFreq, dxSpotNote].forEach(el => {
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendDxCommand(); }
+  });
 });
 
 // --- Quick Log (Ctrl+L) ---
@@ -3031,6 +3235,31 @@ window.api.onQsoPopoutStatus((open) => {
   qsoPopoutOpen = open;
 });
 
+// --- Spots Pop-out ---
+window.api.onSpotsPopoutStatus((open) => {
+  spotsPopoutOpen = open;
+  // In activator mode, close inline spots when pop-out opens, restore when it closes
+  if (appMode === 'activator') {
+    if (open && activatorSpotsVisible) {
+      toggleActivatorSpots(); // hide inline
+    } else if (!open && !activatorSpotsVisible) {
+      toggleActivatorSpots(); // restore inline
+    }
+  }
+});
+
+// --- Activation Map Pop-out ---
+window.api.onActmapPopoutStatus((open) => {
+  actmapPopoutOpen = open;
+  if (open) {
+    // Push full state when pop-out becomes ready
+    window.api.actmapPopoutData({
+      parkRefs: activatorParkRefs.map(p => p.ref),
+      contacts: activatorContacts,
+    });
+  }
+});
+
 // --- View Toggle ---
 // Table and Map are toggleable (both can be active = split view).
 // RBN and DXCC are exclusive views that hide the split container.
@@ -3061,13 +3290,11 @@ function updateViewLayout() {
   // Deactivate all view buttons
   viewTableBtn.classList.remove('active');
   viewMapBtn.classList.remove('active');
-  viewDxccBtn.classList.remove('active');
   viewRbnBtn.classList.remove('active');
 
   if (currentView === 'dxcc') {
     splitContainerEl.classList.add('hidden');
     dxccView.classList.remove('hidden');
-    viewDxccBtn.classList.add('active');
     renderDxccMatrix();
     updateParksStatsOverlay();
     saveViewState();
@@ -3196,7 +3423,17 @@ viewMapBtn.addEventListener('click', () => {
 });
 
 viewRbnBtn.addEventListener('click', () => setView('rbn'));
-viewDxccBtn.addEventListener('click', () => setView('dxcc'));
+dxccBoardBtn.addEventListener('click', () => {
+  if (!enableDxcc) {
+    enableDxcc = true;
+    spotsDxcc.checked = true;
+    setEnableDxcc.checked = true;
+    window.api.saveSettings({ enableDxcc: true });
+  }
+  // Close the spots dropdown
+  document.getElementById('spots-dropdown').classList.remove('open');
+  setView('dxcc');
+});
 
 // --- Pop-out map ---
 popoutMapBtn.addEventListener('click', () => {
@@ -3246,6 +3483,7 @@ function enrichSpotsForPopout(filtered) {
   return filtered.map(s => ({
     ...s,
     isWorked: workedQsos.has(s.callsign.toUpperCase()),
+    isWorkedToday: workedQsos.has(s.callsign.toUpperCase()) && isWorkedSpot(s),
     isExpedition: expeditionCallsigns.has(s.callsign.toUpperCase()),
     isNewPark: workedParksSet.size > 0 && (s.source === 'pota' || s.source === 'wwff') && s.reference && !workedParksSet.has(s.reference),
     isOop: isOutOfPrivilege(parseFloat(s.frequency), s.mode, licenseClass),
@@ -3307,43 +3545,75 @@ splitSplitterEl.addEventListener('mousedown', (e) => {
 // --- DXCC Matrix Rendering ---
 const DXCC_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'];
 
+function isEntityConfirmedOnBand(ent, band, modeFilter) {
+  const modes = ent.confirmed[band];
+  if (!modes || modes.length === 0) return false;
+  if (!modeFilter) return true;
+  return modes.some((m) => modeFilter.has(m));
+}
+
 function renderDxccMatrix() {
   if (!dxccData || !dxccData.entities) {
     dxccMatrixBody.innerHTML = '';
     dxccPlaceholder.classList.remove('hidden');
-    dxccCountEl.textContent = '0 / 0';
+    dxccCountEl.textContent = '0 / 100';
+    dxccAwardLabelEl.textContent = '';
+    dxccChallengeEl.classList.add('hidden');
     return;
   }
 
   dxccPlaceholder.classList.add('hidden');
   const modeFilter = getDxccModeFilter(); // null = all modes
+  const bandFilter = dxccBandSelectEl.value; // 'all' or specific band
+  const isAllBands = bandFilter === 'all';
+
+  // Show/hide band columns in thead
+  const theadThs = document.querySelectorAll('.dxcc-matrix thead th.dxcc-band-col');
+  theadThs.forEach((th) => {
+    if (isAllBands) {
+      th.style.display = '';
+    } else {
+      th.style.display = 'none';
+    }
+  });
 
   let confirmedCount = 0;
+  let challengeCount = 0;
   const rows = [];
 
   for (const ent of dxccData.entities) {
     let hasAny = false;
     const bandCells = [];
 
-    for (const band of DXCC_BANDS) {
-      const modes = ent.confirmed[band];
-      let confirmed = false;
-      if (modes && modes.length > 0) {
-        if (!modeFilter) {
-          confirmed = true;
-        } else {
-          confirmed = modes.some((m) => modeFilter.has(m));
-        }
+    if (isAllBands) {
+      // All Bands: full matrix
+      for (const band of DXCC_BANDS) {
+        const confirmed = isEntityConfirmedOnBand(ent, band, modeFilter);
+        if (confirmed) hasAny = true;
+        bandCells.push(confirmed);
+        // DXCC Challenge: count band-entities on challenge bands only
+        if (confirmed && DXCC_CHALLENGE_BANDS.includes(band)) challengeCount++;
       }
-      if (confirmed) hasAny = true;
-      bandCells.push(confirmed);
+    } else {
+      // Specific band selected
+      hasAny = isEntityConfirmedOnBand(ent, bandFilter, modeFilter);
     }
 
     if (hasAny) confirmedCount++;
     rows.push({ ent, bandCells, hasAny });
   }
 
-  dxccCountEl.textContent = `${confirmedCount} / ${dxccData.entities.length}`;
+  // Update progress counter
+  dxccCountEl.textContent = `${confirmedCount} / 100`;
+  dxccAwardLabelEl.textContent = confirmedCount >= 100 ? 'DXCC!' : '';
+
+  // DXCC Challenge counter (All Bands view only)
+  if (isAllBands) {
+    dxccChallengeEl.textContent = `Challenge: ${challengeCount}`;
+    dxccChallengeEl.classList.remove('hidden');
+  } else {
+    dxccChallengeEl.classList.add('hidden');
+  }
 
   // Build table rows
   const fragment = document.createDocumentFragment();
@@ -3353,7 +3623,11 @@ function renderDxccMatrix() {
 
     // Entity name
     const nameTd = document.createElement('td');
-    nameTd.textContent = ent.name;
+    if (!isAllBands && hasAny) {
+      nameTd.textContent = '\u2713 ' + ent.name;
+    } else {
+      nameTd.textContent = ent.name;
+    }
     nameTd.title = ent.prefix;
     tr.appendChild(nameTd);
 
@@ -3362,14 +3636,16 @@ function renderDxccMatrix() {
     contTd.textContent = ent.continent;
     tr.appendChild(contTd);
 
-    // Band cells
-    for (const confirmed of bandCells) {
-      const td = document.createElement('td');
-      if (confirmed) {
-        td.textContent = '\u2713';
-        td.classList.add('dxcc-confirmed');
+    // Band cells (only in All Bands view)
+    if (isAllBands) {
+      for (const confirmed of bandCells) {
+        const td = document.createElement('td');
+        if (confirmed) {
+          td.textContent = '\u2713';
+          td.classList.add('dxcc-confirmed');
+        }
+        tr.appendChild(td);
       }
-      tr.appendChild(td);
     }
 
     fragment.appendChild(tr);
@@ -3402,7 +3678,8 @@ function render() {
     for (const s of filtered) {
       const tr = document.createElement('tr');
       const isWorked = workedQsos.has(s.callsign.toUpperCase());
-      const isSkipped = scanSkipped.has(s.frequency) || isWorked;
+      const isWorkedToday = isWorked && isWorkedSpot(s);
+      const isSkipped = scanSkipped.has(s.frequency) || isWorkedToday;
 
       // Source color-coding
       if (s.source === 'pota') tr.classList.add('spot-pota');
@@ -3420,9 +3697,10 @@ function render() {
         tr.classList.add('out-of-privilege');
       }
 
-      // Already-worked check
+      // Already-worked check — checkmark for any prior QSO, dim only if worked today
       if (isWorked) {
         tr.classList.add('already-worked');
+        if (isWorkedToday) tr.classList.add('worked-today');
       }
 
       // New park indicator (POTA/WWFF spot with a reference not in worked parks)
@@ -3454,6 +3732,7 @@ function render() {
       tr.addEventListener('click', () => {
         if (scanning) stopScan(); // clicking a row stops scan
         lastTunedSpot = s;
+        prefillDxCommand(s);
         window.api.tune(s.frequency, s.mode, s.bearing);
         if (s.lat != null && s.lon != null) showTuneArc(s.lat, s.lon, s.frequency, s.source);
         render(); // highlight the clicked row immediately
@@ -3571,6 +3850,7 @@ function render() {
         { val: refDisplay, wwff: !!s.wwffReference, newPark: isNewPark, col: 'reference' },
         { val: parkDisplay, col: 'parkName' },
         { val: s.locationDesc, col: 'locationDesc' },
+        { val: (s.lat != null && s.lon != null) ? latLonToGridLocal(s.lat, s.lon).slice(0, 4) : '', col: 'grid' },
         { val: formatDistance(s.distance), col: 'distance' },
         { val: formatBearing(s.bearing), cls: 'bearing-col', col: 'bearing' },
         { val: formatAge(s.spotTime), col: 'spotTime' },
@@ -3715,10 +3995,15 @@ function openLogPopup(spot) {
   logPower.value = radioPower > 0 ? radioPower : (defaultPower || 100);
 
   // Pre-fill RST based on mode
-  const defaultRst = CW_DIGI_MODES_SET.has(mode) ? '599' : '59';
+  const isCwDigi = CW_DIGI_MODES_SET.has(mode);
+  const defaultRst = isCwDigi ? '599' : '59';
+  const rstMaxLen = isCwDigi ? '3' : '2';
   setRstDigits('rst-sent-digits', defaultRst);
   setRstDigits('rst-rcvd-digits', defaultRst);
-  updateRstButtons();
+  const n1mmSentEl = document.getElementById('rst-sent-n1mm');
+  const n1mmRcvdEl = document.getElementById('rst-rcvd-n1mm');
+  if (n1mmSentEl) n1mmSentEl.maxLength = rstMaxLen;
+  if (n1mmRcvdEl) n1mmRcvdEl.maxLength = rstMaxLen;
 
   // Show park/summit reference if applicable
   if (spot.reference) {
@@ -3765,6 +4050,14 @@ function openLogPopup(spot) {
   }
 
   logDialog.showModal();
+  // Focus RST Sent so user can immediately type signal report
+  if (n1mmRst) {
+    const firstDigit = document.querySelector('#rst-sent-split .rst-digit');
+    if (firstDigit) firstDigit.focus();
+  } else {
+    const n1mmSent = document.getElementById('rst-sent-n1mm');
+    if (n1mmSent) { n1mmSent.focus(); n1mmSent.select(); }
+  }
   // Start live UTC clock — ticks every second until dialog closes or user edits time
   logTimeUserEdited = false;
   startLogClock();
@@ -3792,33 +4085,13 @@ logTime.addEventListener('input', () => { logTimeUserEdited = true; });
 
 logDialog.addEventListener('close', () => { stopLogClock(); });
 
-function updateRstButtons() {
-  const mode = logMode.value.toUpperCase();
-  const isDigiCw = CW_DIGI_MODES_SET.has(mode);
-  document.querySelectorAll('#log-dialog .rst-quick-btn').forEach((btn) => {
-    const val = btn.dataset.value;
-    btn.classList.toggle('active', (isDigiCw && val === '599') || (!isDigiCw && val === '59'));
-  });
-}
-
-// RST quick-fill buttons
-document.querySelectorAll('#log-dialog .rst-quick-btn').forEach((btn) => {
-  btn.addEventListener('click', (e) => {
-    e.preventDefault();
-    setRstDigits(btn.dataset.target, btn.dataset.value);
-  });
-});
-
-// RST digit auto-advance and backspace navigation
+// --- Split-digit RST navigation (default mode) ---
 document.querySelectorAll('.rst-digits').forEach((container) => {
   const inputs = container.querySelectorAll('.rst-digit');
   inputs.forEach((inp, i) => {
-    // Select content on focus so typing immediately overwrites
     inp.addEventListener('focus', () => inp.select());
     inp.addEventListener('input', () => {
-      // Keep only the last typed digit (handles overwrite)
       if (inp.value.length > 1) inp.value = inp.value.slice(-1);
-      // Auto-advance to next digit
       if (inp.value && i < inputs.length - 1) inputs[i + 1].focus();
     });
     inp.addEventListener('keydown', (e) => {
@@ -3829,13 +4102,38 @@ document.querySelectorAll('.rst-digits').forEach((container) => {
   });
 });
 
+// --- N1MM RST auto-advance ---
+function setupRstAutoAdvance(sentId, rcvdId, getExpectedLen) {
+  const sent = document.getElementById(sentId);
+  const rcvd = document.getElementById(rcvdId);
+  if (!sent || !rcvd) return;
+  [sent, rcvd].forEach(el => el.addEventListener('focus', () => el.select()));
+  sent.addEventListener('input', () => {
+    const expected = getExpectedLen();
+    if (sent.value.length >= expected) {
+      rcvd.focus();
+    }
+  });
+}
+
+// Log dialog N1MM auto-advance
+setupRstAutoAdvance('rst-sent-n1mm', 'rst-rcvd-n1mm', () => {
+  const mode = logMode.value.toUpperCase();
+  return CW_DIGI_MODES_SET.has(mode) ? 3 : 2;
+});
+
 // Mode change updates RST defaults
 logMode.addEventListener('change', () => {
   const mode = logMode.value.toUpperCase();
-  const defaultRst = CW_DIGI_MODES_SET.has(mode) ? '599' : '59';
+  const isCwDigi = CW_DIGI_MODES_SET.has(mode);
+  const defaultRst = isCwDigi ? '599' : '59';
+  const maxLen = isCwDigi ? '3' : '2';
   setRstDigits('rst-sent-digits', defaultRst);
   setRstDigits('rst-rcvd-digits', defaultRst);
-  updateRstButtons();
+  const n1mmSent = document.getElementById('rst-sent-n1mm');
+  const n1mmRcvd = document.getElementById('rst-rcvd-n1mm');
+  if (n1mmSent) n1mmSent.maxLength = maxLen;
+  if (n1mmRcvd) n1mmRcvd.maxLength = maxLen;
 });
 
 // Log dialog close/cancel
@@ -3852,16 +4150,21 @@ logDialog.addEventListener('keydown', (e) => {
 
 // Save QSO
 logSaveBtn.addEventListener('click', async () => {
-  const callsign = logCallsign.value.trim().toUpperCase();
+  const rawCallsign = logCallsign.value.trim().toUpperCase();
   const frequency = logFrequency.value.trim();
   const mode = logMode.value;
   const date = logDate.value;
   const time = logTime.value;
 
-  if (!callsign || !frequency || !mode || !date || !time) {
+  if (!rawCallsign || !frequency || !mode || !date || !time) {
     logCallsign.focus();
     return;
   }
+
+  // Support comma-separated callsigns (multiple activators at same park)
+  const callsigns = rawCallsign.split(',').map(c => c.trim()).filter(Boolean);
+  if (!callsigns.length) { logCallsign.focus(); return; }
+  const callsign = callsigns[0]; // primary callsign for legacy references below
 
   const qsoDate = date.replace(/-/g, ''); // YYYYMMDD
   const timeOn = time.replace(':', '');     // HHMM
@@ -3912,67 +4215,73 @@ logSaveBtn.addEventListener('click', async () => {
   const respotWwffRef = currentLogSpot ? (currentLogSpot.wwffReference || (currentLogSpot.source === 'wwff' ? currentLogSpot.reference : '')) : '';
   const commentText = respotComment.value.trim().replace(/\{rst\}/gi, getRstDigits('rst-sent-digits', '59')).replace(/\{QTH\}/gi, grid).replace(/\{mycallsign\}/gi, myCallsign);
 
-  // Pull QRZ data for ADIF fields (name, state, county, grid)
-  const logQrzInfo = qrzData.get(callsign.split('/')[0]);
-
-  const qsoData = {
-    callsign,
-    frequency,
-    mode,
-    qsoDate,
-    timeOn,
-    rstSent: getRstDigits('rst-sent-digits', '59'),
-    rstRcvd: getRstDigits('rst-rcvd-digits', '59'),
-    txPower: logPower.value.trim(),
-    band,
-    sig,
-    sigInfo,
-    potaRef,
-    sotaRef,
-    wwffRef,
-    name: logQrzInfo ? [cleanQrzName(logQrzInfo.nickname) || cleanQrzName(logQrzInfo.fname), cleanQrzName(logQrzInfo.name)].filter(Boolean).join(' ') : '',
-    state: logQrzInfo ? logQrzInfo.state : '',
-    county: logQrzInfo && logQrzInfo.state && logQrzInfo.county ? `${logQrzInfo.state},${logQrzInfo.county}` : '',
-    gridsquare: logQrzInfo ? logQrzInfo.grid : '',
-    country: logQrzInfo ? logQrzInfo.country : '',
-    comment: [logComment.value.trim(), sigInfo && !logComment.value.includes(sigInfo) ? `[${sig} ${sigInfo}]` : ''].filter(Boolean).join(' '),
-    respot: wantsRespot,
-    wwffRespot: wantsWwffRespot,
-    wwffReference: wantsWwffRespot ? respotWwffRef : '',
-    llotaRespot: wantsLlotaRespot,
-    llotaReference: wantsLlotaRespot && currentLogSpot && currentLogSpot.source === 'llota' ? currentLogSpot.reference : '',
-    dxcRespot: wantsDxcRespot,
-    respotComment: (wantsRespot || wantsWwffRespot || wantsLlotaRespot || wantsDxcRespot) ? commentText : '',
-  };
+  const rstSent = getRstDigits('rst-sent-digits', '59');
+  const rstRcvd = getRstDigits('rst-rcvd-digits', '59');
+  const txPower = logPower.value.trim();
+  const commentBase = [logComment.value.trim(), sigInfo && !logComment.value.includes(sigInfo) ? `[${sig} ${sigInfo}]` : ''].filter(Boolean).join(' ');
 
   logSaveBtn.disabled = true;
   const origText = logSaveBtn.textContent;
   logSaveBtn.textContent = 'Saving\u2026';
   try {
-    const result = await window.api.saveQso(qsoData);
-    if (result.success) {
+    let lastResult = null;
+    for (let ci = 0; ci < callsigns.length; ci++) {
+      const cs = callsigns[ci];
+      const logQrzInfo = qrzData.get(cs.split('/')[0]);
+
+      const qsoData = {
+        callsign: cs,
+        frequency,
+        mode,
+        qsoDate,
+        timeOn,
+        rstSent,
+        rstRcvd,
+        txPower,
+        band,
+        sig,
+        sigInfo,
+        potaRef,
+        sotaRef,
+        wwffRef,
+        name: logQrzInfo ? [cleanQrzName(logQrzInfo.nickname) || cleanQrzName(logQrzInfo.fname), cleanQrzName(logQrzInfo.name)].filter(Boolean).join(' ') : '',
+        state: logQrzInfo ? logQrzInfo.state : '',
+        county: logQrzInfo && logQrzInfo.state && logQrzInfo.county ? `${logQrzInfo.state},${logQrzInfo.county}` : '',
+        gridsquare: logQrzInfo ? logQrzInfo.grid : '',
+        country: logQrzInfo ? logQrzInfo.country : '',
+        comment: commentBase,
+        // Only respot on the first callsign
+        respot: ci === 0 && wantsRespot,
+        wwffRespot: ci === 0 && wantsWwffRespot,
+        wwffReference: ci === 0 && wantsWwffRespot ? respotWwffRef : '',
+        llotaRespot: ci === 0 && wantsLlotaRespot,
+        llotaReference: ci === 0 && wantsLlotaRespot && currentLogSpot && currentLogSpot.source === 'llota' ? currentLogSpot.reference : '',
+        dxcRespot: ci === 0 && wantsDxcRespot,
+        respotComment: ci === 0 && (wantsRespot || wantsWwffRespot || wantsLlotaRespot || wantsDxcRespot) ? commentText : '',
+      };
+
+      lastResult = await window.api.saveQso(qsoData);
+      if (!lastResult.success) break;
+    }
+
+    const displayCalls = callsigns.join(', ');
+    if (lastResult && lastResult.success) {
       logDialog.close();
-      if (result.logbookError) {
-        const friendly = result.logbookError.includes('ECONNREFUSED')
+      if (lastResult.logbookError) {
+        const friendly = lastResult.logbookError.includes('ECONNREFUSED')
           ? 'Could not reach logbook — is it running and configured correctly?'
-          : result.logbookError;
-        showLogToast(`Logged ${callsign} to ADIF, but logbook forwarding failed: ${friendly}`, { warn: true, duration: 8000 });
-      } else if (result.respotError) {
-        showLogToast(`Logged ${callsign} to ADIF, but POTA re-spot failed: ${result.respotError}`, { warn: true, duration: 8000 });
-      } else if (result.wwffRespotError) {
-        showLogToast(`Logged ${callsign} to ADIF, but WWFF re-spot failed: ${result.wwffRespotError}`, { warn: true, duration: 8000 });
-      } else if (result.llotaRespotError) {
-        showLogToast(`Logged ${callsign} to ADIF, but LLOTA re-spot failed: ${result.llotaRespotError}`, { warn: true, duration: 8000 });
-      } else if (result.dxcRespotError) {
-        showLogToast(`Logged ${callsign} to ADIF, but DX Cluster spot failed: ${result.dxcRespotError}`, { warn: true, duration: 8000 });
-      } else if (result.resposted) {
+          : lastResult.logbookError;
+        showLogToast(`Logged ${displayCalls} to ADIF, but logbook forwarding failed: ${friendly}`, { warn: true, duration: 8000 });
+      } else if (lastResult.respotError) {
+        showLogToast(`Logged ${displayCalls} to ADIF, but POTA re-spot failed: ${lastResult.respotError}`, { warn: true, duration: 8000 });
+      } else if (lastResult.resposted) {
         const sources = logTargets.filter(t => respotCheckbox.checked).map(t => RESPOT_NAMES[t]).join(' & ');
-        showLogToast(`Logged ${callsign} — re-spotted on ${sources || 'POTA'}`);
+        showLogToast(`Logged ${displayCalls} — re-spotted on ${sources || 'POTA'}`);
       } else {
-        showLogToast(`Logged ${callsign}`);
+        showLogToast(`Logged ${displayCalls}`);
       }
-    } else {
-      showLogToast(`Error: ${result.error}`, { warn: true, duration: 5000 });
+    } else if (lastResult) {
+      showLogToast(`Error: ${lastResult.error}`, { warn: true, duration: 5000 });
     }
   } catch (err) {
     showLogToast(`Error: ${err.message}`, { warn: true, duration: 5000 });
@@ -4002,6 +4311,74 @@ function showLogToast(message, opts) {
   }
 }
 
+// --- Cat Celebration ---
+const QSO_MILESTONES = [10, 25, 50, 100, 150, 200, 250, 500];
+const celebratedMilestones = new Set();
+let lastKnownDailyQsoCount = 0;
+
+function showCatCelebration(message) {
+  const existing = document.querySelector('.cat-celebration');
+  if (existing) existing.remove();
+  const container = document.createElement('div');
+  container.className = 'cat-celebration';
+  container.innerHTML = `<div class="cat-speech">${message}</div><div class="cat-emoji">\ud83d\udc08\u200d\u2b1b</div>`;
+  document.body.appendChild(container);
+  container.addEventListener('animationend', () => container.remove());
+}
+
+function showMegaCelebration(message) {
+  const existing = document.querySelector('.mega-celebration');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'mega-celebration';
+  overlay.innerHTML = `
+    <div class="mega-cats">
+      <span class="mega-cat mc-1">\ud83d\udc08\u200d\u2b1b</span>
+      <span class="mega-cat mc-2">\ud83d\udc08</span>
+      <span class="mega-cat mc-3">\ud83d\udc08\u200d\u2b1b</span>
+      <span class="mega-cat mc-4">\ud83d\udc08</span>
+      <span class="mega-cat mc-5">\ud83d\udc08\u200d\u2b1b</span>
+    </div>
+    <div class="mega-banner">${message}</div>
+    <div class="mega-sparkles">\u2728\ud83c\udf89\ud83c\udf8a\u2728\ud83c\udf89\ud83c\udf8a\u2728</div>
+  `;
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+  setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 8000);
+}
+
+function getTodayUtcQsoCount() {
+  const now = new Date();
+  const todayUtc = now.getUTCFullYear().toString() +
+    String(now.getUTCMonth() + 1).padStart(2, '0') +
+    String(now.getUTCDate()).padStart(2, '0');
+  let count = 0;
+  for (const entries of workedQsos.values()) {
+    for (const e of entries) {
+      if (e.date === todayUtc) count++;
+    }
+  }
+  return count;
+}
+
+function checkQsoMilestone() {
+  const count = getTodayUtcQsoCount();
+  // Reset celebrated milestones if day rolled over (count dropped)
+  if (count < lastKnownDailyQsoCount) celebratedMilestones.clear();
+  lastKnownDailyQsoCount = count;
+  for (const m of QSO_MILESTONES) {
+    if (count >= m && !celebratedMilestones.has(m)) {
+      celebratedMilestones.add(m);
+      if (m === 500) {
+        showMegaCelebration(`500 QSOs today! You are UNSTOPPABLE!`);
+      } else {
+        showCatCelebration(`${m} QSOs today! Keep going!`);
+      }
+      break; // one celebration at a time
+    }
+  }
+}
+
 // --- Events ---
 // Band/mode dropdowns already wired via initMultiDropdown()
 // --- Spots dropdown panel ---
@@ -4026,6 +4403,7 @@ function syncSpotsPanel() {
   spotsHideWorked.checked = hideWorked;
   spotsHideParks.checked = hideWorkedParks;
   spotsHideOob.checked = hideOutOfBand;
+  spotsDxcc.checked = enableDxcc;
   spotsHideParksLabel.classList.toggle('hidden', workedParksSet.size === 0);
 }
 
@@ -4054,6 +4432,7 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
   hideWorked = spotsHideWorked.checked;
   hideWorkedParks = spotsHideParks.checked;
   hideOutOfBand = spotsHideOob.checked;
+  enableDxcc = spotsDxcc.checked;
 
   // Sync Settings dialog checkboxes
   setEnablePota.checked = enablePota;
@@ -4066,8 +4445,10 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
   setHideWorked.checked = hideWorked;
   setHideWorkedParks.checked = hideWorkedParks;
   setHideOutOfBand.checked = hideOutOfBand;
+  setEnableDxcc.checked = enableDxcc;
 
   updateRbnButton();
+  updateDxccButton();
   updateDxCommandBar();
 
   // Save and let main process handle connect/disconnect
@@ -4075,6 +4456,7 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
     enablePota, enableSota, enableWwff, enableLlota,
     enableCluster, enableRbn, enablePskr,
     hideWorked, hideWorkedParks, hideOutOfBand,
+    enableDxcc,
   });
 
   render();
@@ -4098,8 +4480,53 @@ document.querySelectorAll('thead th[data-sort]').forEach((th) => {
 // Logbook button
 logbookBtn.addEventListener('click', () => window.api.qsoPopoutOpen());
 
+// --- Settings quick-access dropdown ---
+const settingsDropdown = document.getElementById('settings-dropdown');
+const quickLightMode = document.getElementById('quick-light-mode');
+const quickActivatorMode = document.getElementById('quick-activator-mode');
+const openSettingsBtn = document.getElementById('open-settings-btn');
+
+settingsBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.querySelectorAll('.multi-dropdown.open').forEach((d) => {
+    if (d !== settingsDropdown) d.classList.remove('open');
+  });
+  const opening = !settingsDropdown.classList.contains('open');
+  settingsDropdown.classList.toggle('open');
+  if (opening) {
+    // Sync switches to current state
+    quickLightMode.checked = document.documentElement.getAttribute('data-theme') === 'light';
+    quickActivatorMode.checked = appMode === 'activator';
+  }
+});
+
+quickLightMode.addEventListener('change', async () => {
+  const light = quickLightMode.checked;
+  applyTheme(light);
+  setLightMode.checked = light;
+  if (popoutOpen) window.api.sendPopoutTheme(light ? 'light' : 'dark');
+  if (qsoPopoutOpen) window.api.sendQsoPopoutTheme(light ? 'light' : 'dark');
+  if (actmapPopoutOpen) window.api.actmapPopoutTheme(light ? 'light' : 'dark');
+  if (spotsPopoutOpen) window.api.sendSpotsPopoutTheme(light ? 'light' : 'dark');
+  await window.api.saveSettings({ lightMode: light });
+});
+
+quickActivatorMode.addEventListener('change', async () => {
+  const mode = quickActivatorMode.checked ? 'activator' : 'hunter';
+  setAppMode(mode);
+  settingsDropdown.classList.remove('open');
+  closeActivatorSettingsPanel();
+  await window.api.saveSettings({ appMode: mode });
+});
+
+openSettingsBtn.addEventListener('click', () => {
+  settingsDropdown.classList.remove('open');
+  closeActivatorSettingsPanel();
+  openSettingsDialog();
+});
+
 // Settings dialog
-settingsBtn.addEventListener('click', async () => {
+async function openSettingsDialog() {
   const s = await window.api.getSettings();
   setGrid.value = s.grid || '';
   setDistUnit.value = s.distUnit || 'mi';
@@ -4124,6 +4551,7 @@ settingsBtn.addEventListener('click', async () => {
   rotorConfig.classList.toggle('hidden', !s.enableRotor);
   setEnableSplit.checked = s.enableSplit === true;
   setVerboseLog.checked = s.verboseLog === true;
+  setLightIcon.checked = s.lightIcon === true;
   setEnablePota.checked = s.enablePota !== false;
   setEnableSota.checked = s.enableSota === true;
   setEnableWwff.checked = s.enableWwff === true;
@@ -4161,6 +4589,7 @@ settingsBtn.addEventListener('click', async () => {
   setEnablePskr.checked = s.enablePskr === true;
   pskrConfig.classList.toggle('hidden', !s.enablePskr);
   setEnableLogging.checked = s.enableLogging === true;
+  setN1mmRst.checked = s.n1mmRst === true;
   if (s.adifLogPath) {
     setAdifLogPath.value = s.adifLogPath;
   } else {
@@ -4182,32 +4611,16 @@ settingsBtn.addEventListener('click', async () => {
   splitOrientationConfig.classList.toggle('hidden', !setEnableSplitView.checked);
   document.getElementById('set-split-orientation').value = s.splitOrientation || 'horizontal';
   setEnableDxcc.checked = s.enableDxcc === true;
-  setAdifPath.value = s.adifPath || '';
-  adifPicker.classList.toggle('hidden', !s.enableDxcc);
   setPotaParksPath.value = s.potaParksPath || '';
   potaParksClearBtn.style.display = s.potaParksPath ? '' : 'none';
   setHideWorkedParks.checked = s.hideWorkedParks === true;
   setSmartSdrSpots.checked = s.smartSdrSpots === true;
   setSmartSdrHost.value = s.smartSdrHost || '127.0.0.1';
-  setSmartSdrPota.checked = s.smartSdrPota !== false;
-  setSmartSdrSota.checked = s.smartSdrSota !== false;
-  setSmartSdrCluster.checked = s.smartSdrCluster !== false;
-  setSmartSdrRbn.checked = s.smartSdrRbn === true;
-  setSmartSdrWwff.checked = s.smartSdrWwff !== false;
-  setSmartSdrLlota.checked = s.smartSdrLlota !== false;
-  setSmartSdrPskr.checked = s.smartSdrPskr !== false;
   setSmartSdrMaxAge.value = s.smartSdrMaxAge != null ? s.smartSdrMaxAge : 15;
   smartSdrConfig.classList.toggle('hidden', !s.smartSdrSpots);
   setTciSpots.checked = s.tciSpots === true;
   setTciHost.value = s.tciHost || '127.0.0.1';
   setTciPort.value = s.tciPort || 50001;
-  setTciPota.checked = s.tciPota !== false;
-  setTciSota.checked = s.tciSota !== false;
-  setTciCluster.checked = s.tciCluster !== false;
-  setTciRbn.checked = s.tciRbn === true;
-  setTciWwff.checked = s.tciWwff !== false;
-  setTciLlota.checked = s.tciLlota !== false;
-  setTciPskr.checked = s.tciPskr !== false;
   setTciMaxAge.value = s.tciMaxAge != null ? s.tciMaxAge : 15;
   tciConfig.classList.toggle('hidden', !s.tciSpots);
   // CW Keyer
@@ -4239,8 +4652,11 @@ settingsBtn.addEventListener('click', async () => {
   updateSettingsConnBar();
   // Populate events list
   populateSettingsEvents();
+  // App mode radio
+  const modeRadio = document.querySelector(`input[name="set-app-mode"][value="${appMode}"]`);
+  if (modeRadio) modeRadio.checked = true;
   settingsDialog.showModal();
-});
+}
 
 settingsCancel.addEventListener('click', async () => {
   // Revert theme to saved state on cancel
@@ -4310,29 +4726,16 @@ settingsSave.addEventListener('click', async () => {
   const rotorPortVal = parseInt(setRotorPort.value, 10) || 12040;
   const enableSplitEnabled = setEnableSplit.checked;
   const verboseLogEnabled = setVerboseLog.checked;
+  const lightIconEnabled = setLightIcon.checked;
   const disableAutoUpdate = setDisableAutoUpdate.checked;
   const telemetryEnabled = setEnableTelemetry.checked;
   const lightModeEnabled = setLightMode.checked;
   const smartSdrSpotsEnabled = setSmartSdrSpots.checked;
   const smartSdrHostVal = setSmartSdrHost.value.trim() || '127.0.0.1';
-  const smartSdrPotaEnabled = setSmartSdrPota.checked;
-  const smartSdrSotaEnabled = setSmartSdrSota.checked;
-  const smartSdrClusterEnabled = setSmartSdrCluster.checked;
-  const smartSdrRbnEnabled = setSmartSdrRbn.checked;
-  const smartSdrWwffEnabled = setSmartSdrWwff.checked;
-  const smartSdrLlotaEnabled = setSmartSdrLlota.checked;
-  const smartSdrPskrEnabled = setSmartSdrPskr.checked;
   const smartSdrMaxAgeVal = parseInt(setSmartSdrMaxAge.value, 10) || 0;
   const tciSpotsEnabled = setTciSpots.checked;
   const tciHostVal = setTciHost.value.trim() || '127.0.0.1';
   const tciPortVal = parseInt(setTciPort.value, 10) || 50001;
-  const tciPotaEnabled = setTciPota.checked;
-  const tciSotaEnabled = setTciSota.checked;
-  const tciClusterEnabled = setTciCluster.checked;
-  const tciRbnEnabled = setTciRbn.checked;
-  const tciWwffEnabled = setTciWwff.checked;
-  const tciLlotaEnabled = setTciLlota.checked;
-  const tciPskrEnabled = setTciPskr.checked;
   const tciMaxAgeVal = parseInt(setTciMaxAge.value, 10) || 0;
   // CW Keyer
   const cwKeyerEnabled = setEnableCwKeyer.checked;
@@ -4345,10 +4748,10 @@ settingsSave.addEventListener('click', async () => {
   const cwSidetoneVal = setCwSidetone.checked;
   const cwSidetonePitchVal = parseInt(setCwSidetonePitch.value, 10) || 600;
   const cwSidetoneVolumeVal = parseInt(setCwSidetoneVolume.value, 10);
-  const adifPath = setAdifPath.value.trim() || '';
   const potaParksPath = setPotaParksPath.value.trim() || '';
   const hideWorkedParksEnabled = setHideWorkedParks.checked;
   const loggingEnabled = setEnableLogging.checked;
+  const n1mmRstEnabled = setN1mmRst.checked;
   const adifLogPath = setAdifLogPath.value.trim() || '';
   const defaultPowerVal = parseInt(setDefaultPower.value, 10) || 100;
   const sendToLogbook = setSendToLogbook.checked;
@@ -4414,10 +4817,11 @@ settingsSave.addEventListener('click', async () => {
     rotorPort: rotorPortVal,
     enableSplit: enableSplitEnabled,
     verboseLog: verboseLogEnabled,
-    adifPath: adifPath,
+    lightIcon: lightIconEnabled,
     potaParksPath: potaParksPath,
     hideWorkedParks: hideWorkedParksEnabled,
     enableLogging: loggingEnabled,
+    n1mmRst: n1mmRstEnabled,
     adifLogPath: adifLogPath,
     defaultPower: defaultPowerVal,
     sendToLogbook: sendToLogbook,
@@ -4429,24 +4833,10 @@ settingsSave.addEventListener('click', async () => {
     lightMode: lightModeEnabled,
     smartSdrSpots: smartSdrSpotsEnabled,
     smartSdrHost: smartSdrHostVal,
-    smartSdrPota: smartSdrPotaEnabled,
-    smartSdrSota: smartSdrSotaEnabled,
-    smartSdrCluster: smartSdrClusterEnabled,
-    smartSdrRbn: smartSdrRbnEnabled,
-    smartSdrWwff: smartSdrWwffEnabled,
-    smartSdrLlota: smartSdrLlotaEnabled,
-    smartSdrPskr: smartSdrPskrEnabled,
     smartSdrMaxAge: smartSdrMaxAgeVal,
     tciSpots: tciSpotsEnabled,
     tciHost: tciHostVal,
     tciPort: tciPortVal,
-    tciPota: tciPotaEnabled,
-    tciSota: tciSotaEnabled,
-    tciCluster: tciClusterEnabled,
-    tciRbn: tciRbnEnabled,
-    tciWwff: tciWwffEnabled,
-    tciLlota: tciLlotaEnabled,
-    tciPskr: tciPskrEnabled,
     tciMaxAge: tciMaxAgeVal,
     enableCwKeyer: cwKeyerEnabled,
     cwKeyerMode: cwKeyerModeVal,
@@ -4458,6 +4848,7 @@ settingsSave.addEventListener('click', async () => {
     cwSidetone: cwSidetoneVal,
     cwSidetonePitch: cwSidetonePitchVal,
     cwSidetoneVolume: cwSidetoneVolumeVal,
+    appMode: document.querySelector('input[name="set-app-mode"]:checked')?.value || 'hunter',
   });
   grid = setGrid.value.trim();
   distUnit = setDistUnit.value;
@@ -4491,11 +4882,15 @@ settingsSave.addEventListener('click', async () => {
   if (showTable || showMap) updateViewLayout();
   qrzFullName = qrzFullNameEnabled;
   enableLogging = loggingEnabled;
+  n1mmRst = n1mmRstEnabled;
+  applyRstMode();
   defaultPower = defaultPowerVal;
   updateLoggingVisibility();
   applyTheme(lightModeEnabled);
   if (popoutOpen) window.api.sendPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (qsoPopoutOpen) window.api.sendQsoPopoutTheme(lightModeEnabled ? 'light' : 'dark');
+  if (actmapPopoutOpen) window.api.actmapPopoutTheme(lightModeEnabled ? 'light' : 'dark');
+  if (spotsPopoutOpen) window.api.sendSpotsPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   enableDxcc = dxccEnabled;
   licenseClass = licenseClassVal;
   hideOutOfBand = hideOob;
@@ -4514,6 +4909,11 @@ settingsSave.addEventListener('click', async () => {
   updateHeaders();
   saveFilters();
   syncSpotsPanel();
+  // App mode switch
+  const newAppMode = document.querySelector('input[name="set-app-mode"]:checked')?.value || 'hunter';
+  if (newAppMode !== appMode) {
+    setAppMode(newAppMode);
+  }
   settingsDialog.close();
   render();
   // Update home marker if map is initialized
@@ -4540,6 +4940,19 @@ window.api.onSpotsError((msg) => {
 let catConnected = false; // track CAT state for WSJT-X tune decisions
 let catDisconnectTimer = null; // grace period before showing red pill
 
+/** Sync activator toolbar CAT pill with main CAT status */
+function syncActivatorCatPill(className, title) {
+  const el = document.getElementById('activator-cat-status');
+  if (el) {
+    el.className = className;
+    el.style.cursor = 'pointer';
+    el.style.fontSize = '11px';
+    el.style.marginLeft = '4px';
+    el.textContent = 'CAT';
+    el.title = title;
+  }
+}
+
 window.api.onCatStatus(({ connected, error, wsjtxMode }) => {
   catConnected = connected;
   if (wsjtxMode) {
@@ -4547,6 +4960,7 @@ window.api.onCatStatus(({ connected, error, wsjtxMode }) => {
     catStatusEl.textContent = 'CAT';
     catStatusEl.className = 'status connected';
     catStatusEl.title = 'Radio controlled by WSJT-X';
+    syncActivatorCatPill('status connected', 'Radio controlled by WSJT-X');
     return;
   }
   if (connected) {
@@ -4554,7 +4968,9 @@ window.api.onCatStatus(({ connected, error, wsjtxMode }) => {
     if (catDisconnectTimer) { clearTimeout(catDisconnectTimer); catDisconnectTimer = null; }
     catStatusEl.textContent = 'CAT';
     catStatusEl.className = 'status connected';
-    catStatusEl.title = activeRigName ? `Connected to ${activeRigName}` : 'Connected';
+    const connTitle = activeRigName ? `Connected to ${activeRigName}` : 'Connected';
+    catStatusEl.title = connTitle;
+    syncActivatorCatPill('status connected', connTitle);
   } else {
     // Grace period: delay showing red so transient reconnects don't flash
     if (!catDisconnectTimer) {
@@ -4562,7 +4978,9 @@ window.api.onCatStatus(({ connected, error, wsjtxMode }) => {
         catDisconnectTimer = null;
         catStatusEl.textContent = 'CAT';
         catStatusEl.className = 'status disconnected';
-        catStatusEl.title = error || 'Disconnected';
+        const discTitle = error || 'Disconnected';
+        catStatusEl.title = discTitle;
+        syncActivatorCatPill('status disconnected', discTitle);
         if (error) {
           showLogToast(`CAT: ${error}`, { warn: true, sticky: true });
         }
@@ -4622,6 +5040,10 @@ window.api.onUpdateAvailable((data) => {
   banner.classList.remove('hidden');
 });
 
+window.api.onUpdateUpToDate(() => {
+  showLogToast('You\'re up to date!', { duration: 3000 });
+});
+
 window.api.onDownloadProgress(({ percent }) => {
   const actionBtn = document.getElementById('update-action-btn');
   actionBtn.textContent = `Downloading... ${percent}%`;
@@ -4644,8 +5066,19 @@ window.api.onUpdateDownloaded(() => {
 });
 
 // --- Worked QSOs listener ---
+let workedQsosInitialized = false;
 window.api.onWorkedQsos((entries) => {
   workedQsos = new Map(entries);
+  if (!workedQsosInitialized) {
+    // Seed count and pre-mark passed milestones on first load
+    workedQsosInitialized = true;
+    lastKnownDailyQsoCount = getTodayUtcQsoCount();
+    for (const m of QSO_MILESTONES) {
+      if (lastKnownDailyQsoCount >= m) celebratedMilestones.add(m);
+    }
+  } else {
+    checkQsoMilestone();
+  }
   render();
 });
 
@@ -4696,6 +5129,8 @@ function getEventForCallsign(callsign) {
   return null;
 }
 
+let eventBannerSessionDismissed = false; // dismissal persists across mode switches within session
+
 function updateEventBanner() {
   const banner = document.getElementById('event-banner');
   const message = document.getElementById('event-message');
@@ -4703,6 +5138,11 @@ function updateEventBanner() {
   const optinBtn = document.getElementById('event-optin-btn');
   const progressBtn = document.getElementById('event-progress-btn');
   const badge = document.getElementById('event-badge');
+
+  if (eventBannerSessionDismissed) {
+    banner.classList.add('hidden');
+    return;
+  }
 
   // Find first event with an active or upcoming schedule entry
   let activeEvent = null;
@@ -4751,7 +5191,29 @@ function updateEventBanner() {
   const startStr = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
   const callPattern = (activeEvent.callsignPatterns || [])[0] || '';
-  const callText = callPattern ? ` \u2014 ${callPattern.replace('/*', '/')}*` : '';
+  let callText = '';
+  if (callPattern) {
+    // For W1AW/* pattern, resolve to W1AW/<district> using the active region's call district
+    if (callPattern === 'W1AW/*' && activeEntry.region) {
+      const stateToDistrict = {
+        CT: 1, ME: 1, MA: 1, NH: 1, RI: 1, VT: 1,
+        NJ: 2, NY: 2,
+        DE: 3, DC: 3, MD: 3, PA: 3,
+        AL: 4, FL: 4, GA: 4, KY: 4, NC: 4, SC: 4, TN: 4, VA: 4,
+        AR: 5, LA: 5, MS: 5, NM: 5, OK: 5, TX: 5,
+        CA: 6, HI: 6,
+        AZ: 7, ID: 7, MT: 7, NV: 7, OR: 7, UT: 7, WA: 7, WY: 7,
+        CO: 8, IA: 8, KS: 8, MN: 8, MO: 8, NE: 8, ND: 8, SD: 8,
+        IL: 9, IN: 9, WI: 9,
+        MI: 0, OH: 0, WV: 0,
+        AK: 'KL7', GU: 'KH2', PR: 'KP4', VI: 'KP2',
+      };
+      const d = stateToDistrict[activeEntry.region];
+      callText = d !== undefined ? ` \u2014 W1AW/${d}` : ` \u2014 W1AW/*`;
+    } else {
+      callText = ` \u2014 ${callPattern.replace('/*', '/')}*`;
+    }
+  }
   const trackingLabel = (activeEvent.tracking && activeEvent.tracking.label) || 'items';
   const board = activeEvent.board || (activeEvent.tracking && activeEvent.tracking.type) || 'regions';
   const isRegions = board === 'regions';
@@ -4984,8 +5446,6 @@ function toggleEventOverlay(forceOpen) {
 }
 
 function updateSpotsEventsSection() {
-  const divider = document.getElementById('spots-events-divider');
-  const sectionLabel = document.getElementById('spots-events-label');
   const container = document.getElementById('spots-events-container');
   container.innerHTML = '';
 
@@ -4998,10 +5458,6 @@ function updateSpotsEventsSection() {
       return start > now && (start - now) < 7 * 86400000;
     });
   });
-
-  const show = relevantEvents.length ? '' : 'none';
-  divider.style.display = show;
-  sectionLabel.style.display = show;
 
   for (const ev of relevantEvents) {
     const row = document.createElement('div');
@@ -5058,6 +5514,7 @@ document.getElementById('event-optin-btn').addEventListener('click', async () =>
 document.getElementById('event-dismiss').addEventListener('click', async () => {
   const ev = findBannerEvent();
   if (ev) {
+    eventBannerSessionDismissed = true;
     if (ev.optedIn) {
       document.getElementById('event-banner').classList.add('hidden');
     } else {
@@ -5547,7 +6004,7 @@ function getFilteredRbnSpots() {
 }
 
 function rerenderRbn() {
-  if (currentView === 'rbn') {
+  if (currentView === 'rbn' || activatorRbnVisible) {
     renderRbnMarkers();
     renderRbnTable();
   }
@@ -6140,6 +6597,7 @@ function updateWelcomeRadioSubPanels() {
   document.getElementById('welcome-tcpcat-config').classList.toggle('hidden', type !== 'tcpcat');
   document.getElementById('welcome-serialcat-config').classList.toggle('hidden', type !== 'serialcat');
   document.getElementById('welcome-hamlib-config').classList.toggle('hidden', type !== 'hamlib');
+  document.getElementById('welcome-rigctldnet-config').classList.toggle('hidden', type !== 'rigctldnet');
   if (type === 'serialcat' && !welcomeSerialcatLoaded) {
     welcomeSerialcatLoaded = true;
     loadWelcomeSerialcatPorts();
@@ -6207,6 +6665,12 @@ function buildWelcomeCatTarget() {
       serialPort: manual || document.getElementById('welcome-rig-port').value,
       baudRate: parseInt(document.getElementById('welcome-rig-baud').value, 10),
       dtrOff: document.getElementById('welcome-rig-dtr-off').checked,
+    };
+  } else if (type === 'rigctldnet') {
+    return {
+      type: 'rigctldnet',
+      host: document.getElementById('welcome-rigctldnet-host').value.trim() || '127.0.0.1',
+      port: parseInt(document.getElementById('welcome-rigctldnet-port').value, 10) || 4532,
     };
   }
   return null;
@@ -6364,6 +6828,7 @@ document.getElementById('welcome-start').addEventListener('click', async () => {
     enableWwff: enableWwffVal,
     enableLlota: enableLlotaVal,
     lightMode: lightModeEnabled,
+    appMode: document.querySelector('input[name="welcome-app-mode"]:checked')?.value || 'hunter',
   };
   delete saveData.appVersion; // runtime-only, don't persist
 
@@ -6383,7 +6848,8 @@ document.getElementById('welcome-start').addEventListener('click', async () => {
 async function checkFirstRun(force = false) {
   const s = await window.api.getSettings();
   const isNewVersion = s.appVersion && s.lastVersion !== s.appVersion;
-  if (force || s.firstRun || isNewVersion) {
+
+  if (force || s.firstRun) {
     // Reset welcome rig state
     welcomeRig = null;
     const welcomeRigDisplay = document.getElementById('welcome-rig-display');
@@ -6391,8 +6857,8 @@ async function checkFirstRun(force = false) {
     welcomeRigDisplay.classList.add('hidden');
     document.getElementById('welcome-rig-add-btn').classList.remove('hidden');
     document.getElementById('welcome-rig-editor').classList.add('hidden');
-    // Pre-fill with existing settings on upgrade (not fresh install)
-    if (force || !s.firstRun) {
+    // Pre-fill with existing settings when forced (not fresh install)
+    if (force) {
       welcomeCallsignInput.value = s.myCallsign || '';
       welcomeGridInput.value = s.grid || '';
       if (s.distUnit) document.getElementById('welcome-dist-unit').value = s.distUnit;
@@ -6402,6 +6868,8 @@ async function checkFirstRun(force = false) {
       document.getElementById('welcome-enable-sota').checked = s.enableSota === true;
       if (document.getElementById('welcome-enable-wwff')) document.getElementById('welcome-enable-wwff').checked = s.enableWwff === true;
       if (document.getElementById('welcome-enable-llota')) document.getElementById('welcome-enable-llota').checked = s.enableLlota === true;
+      const welcomeModeRadio = document.querySelector(`input[name="welcome-app-mode"][value="${s.appMode || 'hunter'}"]`);
+      if (welcomeModeRadio) welcomeModeRadio.checked = true;
       welcomeLightMode.checked = s.lightMode === true;
       // Show existing active rig if any
       const rigs = s.rigs || [];
@@ -6412,7 +6880,1742 @@ async function checkFirstRun(force = false) {
       }
     }
     welcomeDialog.showModal();
+  } else if (isNewVersion) {
+    // Version changed — show "What's New" release notes, not the welcome screen
+    await window.api.saveSettings({ lastVersion: s.appVersion });
+    showWhatsNew(s.appVersion);
   }
+}
+
+async function showWhatsNew(version) {
+  const dialog = document.getElementById('whats-new-dialog');
+  const title = document.getElementById('whats-new-title');
+  const body = document.getElementById('whats-new-body');
+  const closeBtn = document.getElementById('whats-new-close');
+
+  title.textContent = `What's New in v${version}`;
+  body.innerHTML = '<em>Loading release notes...</em>';
+  dialog.showModal();
+
+  closeBtn.onclick = () => dialog.close();
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) dialog.close();
+  }, { once: true });
+
+  const data = await window.api.getReleaseNotes(version);
+  if (data && data.body) {
+    // Convert markdown-ish release notes to simple HTML
+    body.innerHTML = formatReleaseNotes(data.body);
+    // Open links externally
+    body.querySelectorAll('a').forEach(a => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (a.href) window.api.openExternal(a.href);
+      });
+    });
+  } else {
+    body.innerHTML = '<p>No release notes available for this version.</p>';
+  }
+}
+
+function formatReleaseNotes(md) {
+  // Strip everything from "## Install" or "## Checksums" onward
+  md = md.replace(/\n## (Install|Checksums)[\s\S]*/i, '').trim();
+
+  // Simple markdown → HTML for release notes
+  return md
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^## (.+)$/gm, '<h4 style="margin:12px 0 6px;color:var(--text-primary);">$1</h4>')
+    .replace(/^### (.+)$/gm, '<h5 style="margin:10px 0 4px;color:var(--text-primary);">$1</h5>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, (m) => '<ul style="margin:4px 0;padding-left:20px;">' + m + '</ul>')
+    .replace(/```[\s\S]*?```/g, (m) => '<pre style="background:var(--bg-primary);padding:8px;border-radius:4px;font-size:11px;overflow-x:auto;">' + m.replace(/```\w*\n?/g, '').trim() + '</pre>')
+    .replace(/\n\n/g, '<br>')
+    .replace(/\n/g, '\n');
+}
+
+// =============================================================================
+// ACTIVATOR MODE
+// =============================================================================
+
+const activatorView = document.getElementById('activator-view');
+const activatorParkRefInput = document.getElementById('activator-park-ref');
+const activatorParkDropdown = document.getElementById('activator-park-dropdown');
+const activatorParkNameEl = document.getElementById('activator-park-name');
+const activatorFreqInput = document.getElementById('activator-freq');
+const activatorBandLabel = document.getElementById('activator-band-label');
+const activatorModeSelect = document.getElementById('activator-mode');
+const activatorCounterEl = document.getElementById('activator-counter');
+const activatorUtcEl = document.getElementById('activator-utc');
+const activatorTimerEl = document.getElementById('activator-timer');
+const activatorCallsignInput = document.getElementById('activator-callsign');
+const activatorOpNameEl = document.getElementById('activator-op-name');
+const activatorLogBtn = document.getElementById('activator-log-btn');
+const activatorLogBody = document.getElementById('activator-log-body');
+const activatorExportBtn = document.getElementById('activator-export');
+const activatorMapBtn = document.getElementById('activator-map-btn');
+const activatorBackBtn = document.getElementById('activator-back');
+const activatorStartBtn = document.getElementById('activator-start-btn');
+const activatorContinueBtn = document.getElementById('activator-continue-btn');
+const activatorStopBtn = document.getElementById('activator-stop-btn');
+const activatorHistoryBtn = document.getElementById('activator-history-btn');
+const activatorQuickLog = document.getElementById('activator-quick-log');
+const activatorIdleMsg = document.getElementById('activator-idle-msg');
+const activatorHistoryPanel = document.getElementById('activator-history-panel');
+const activatorHistoryList = document.getElementById('activator-history-list');
+const activatorHistoryClose = document.getElementById('activator-history-close');
+const headerEl = document.querySelector('header');
+const mainEl = document.querySelector('main');
+const eventBannerEl = document.getElementById('event-banner');
+const dxCommandBarEl = document.querySelector('.dx-command-bar');
+const activatorSpotsBtn = document.getElementById('activator-spots-btn');
+const activatorSpotsSplitter = document.getElementById('activator-spots-splitter');
+
+/** Update the title bar text based on current mode */
+function updateTitleBar() {
+  const v = window._appVersion || '';
+  const ttEl = document.querySelector('.titlebar-title');
+  if (!ttEl) return;
+  if (appMode === 'activator') {
+    ttEl.textContent = `POTACAT - Activator Mode${v ? ` - v${v}` : ''}`;
+  } else {
+    ttEl.textContent = `POTACAT - Hunter Mode${v ? ` - v${v}` : ''}`;
+  }
+}
+
+/**
+ * Toggle between Hunter and Activator mode.
+ */
+function setAppMode(mode) {
+  appMode = mode;
+  updateTitleBar();
+  if (mode === 'activator') {
+    // Hide hunter UI — unless activator spots are visible
+    if (!activatorSpotsVisible) {
+      if (headerEl) headerEl.classList.add('hidden');
+      if (mainEl) mainEl.classList.add('hidden');
+    }
+    if (eventBannerEl) eventBannerEl.classList.add('hidden');
+    if (dxCommandBarEl) dxCommandBarEl.classList.add('hidden');
+    // Show activator
+    activatorView.classList.remove('hidden');
+    // Apply activator-spots or activator-rbn layout if toggled on
+    applyActivatorSpotsLayout();
+    applyActivatorRbnLayout();
+    updateActivatorRbnButton();
+    // Focus park ref if empty, otherwise callsign
+    if (!primaryParkRef()) {
+      activatorParkRefInput.focus();
+    } else if (activationActive) {
+      activatorCallsignInput.focus();
+    } else {
+      activatorParkRefInput.focus();
+    }
+    // Seed freq/mode from current CAT state
+    if (radioFreqKhz) {
+      activatorFreqKhz = radioFreqKhz;
+      activatorFreqInput.value = (radioFreqKhz / 1000).toFixed(3);
+      updateActivatorBandLabel(radioFreqKhz);
+    }
+    if (radioMode) updateActivatorModeFromCat(radioMode);
+    // Init activator RST defaults
+    resetActivatorRst();
+    // Start activator UTC clock
+    updateActivatorUtc();
+    // Update activation UI state
+    updateActivationUi();
+    // Trigger parks DB load
+    window.api.fetchParksDb('auto');
+  } else {
+    // Show hunter UI
+    if (headerEl) headerEl.classList.remove('hidden');
+    if (mainEl) mainEl.classList.remove('hidden');
+    if (dxCommandBarEl) dxCommandBarEl.classList.remove('hidden');
+    // Hide activator
+    activatorView.classList.add('hidden');
+    // Clean up activator-spots and activator-rbn layout
+    document.body.classList.remove('activator-spots-on');
+    document.body.classList.remove('activator-rbn-on');
+    activatorSpotsSplitter.classList.add('hidden');
+    activatorSpotsBtn.classList.remove('active');
+    activatorRbnVisible = false;
+    if (activatorRbnBtn) activatorRbnBtn.classList.remove('active');
+    // Restore event banner visibility via its own logic
+    updateEventBanner();
+    render();
+  }
+}
+
+// --- Activator Spots Toggle ---
+
+const ACTIVATOR_SPOTS_KEY = 'pota-cat-activator-spots';
+const ACTIVATOR_SPLIT_KEY = 'pota-cat-activator-split-height';
+
+// Restore persisted state
+activatorSpotsVisible = localStorage.getItem(ACTIVATOR_SPOTS_KEY) === '1';
+
+/** Apply or remove the activator-spots split layout */
+function applyActivatorSpotsLayout() {
+  if (activatorSpotsVisible && appMode === 'activator') {
+    document.body.classList.add('activator-spots-on');
+    activatorSpotsSplitter.classList.remove('hidden');
+    activatorSpotsBtn.classList.add('active');
+    if (headerEl) headerEl.classList.remove('hidden');
+    if (mainEl) mainEl.classList.remove('hidden');
+    // Restore saved height or use default
+    const savedHeight = localStorage.getItem(ACTIVATOR_SPLIT_KEY);
+    activatorView.style.height = savedHeight || '40%';
+    render();
+  } else {
+    document.body.classList.remove('activator-spots-on');
+    activatorSpotsSplitter.classList.add('hidden');
+    activatorSpotsBtn.classList.remove('active');
+    activatorView.style.height = '';
+  }
+}
+
+/** Toggle hunter spots visibility in activator mode */
+function toggleActivatorSpots() {
+  activatorSpotsVisible = !activatorSpotsVisible;
+  localStorage.setItem(ACTIVATOR_SPOTS_KEY, activatorSpotsVisible ? '1' : '0');
+  // Close RBN if opening spots (mutually exclusive)
+  if (activatorSpotsVisible && activatorRbnVisible) {
+    activatorRbnVisible = false;
+    applyActivatorRbnLayout();
+  }
+  if (!activatorSpotsVisible && !activatorRbnVisible) {
+    if (headerEl) headerEl.classList.add('hidden');
+    if (mainEl) mainEl.classList.add('hidden');
+  }
+  applyActivatorSpotsLayout();
+}
+
+activatorSpotsBtn.addEventListener('click', toggleActivatorSpots);
+
+document.getElementById('activator-spots-popout-btn').addEventListener('click', () => {
+  // Close inline spots immediately when popping out
+  if (activatorSpotsVisible) toggleActivatorSpots();
+  window.api.spotsPopoutOpen();
+});
+
+// --- Activator RBN Toggle ---
+const activatorRbnBtn = document.getElementById('activator-rbn-btn');
+let activatorRbnVisible = false;
+
+function updateActivatorRbnButton() {
+  if (enableRbn) {
+    activatorRbnBtn.classList.remove('hidden');
+  } else {
+    activatorRbnBtn.classList.add('hidden');
+    if (activatorRbnVisible) toggleActivatorRbn();
+  }
+}
+
+function applyActivatorRbnLayout() {
+  if (activatorRbnVisible && appMode === 'activator') {
+    document.body.classList.add('activator-rbn-on');
+    activatorRbnBtn.classList.add('active');
+    if (mainEl) mainEl.classList.remove('hidden');
+    // Init RBN map if needed and refresh
+    if (!rbnMap) initRbnMap();
+    setTimeout(() => { if (rbnMap) rbnMap.invalidateSize(); }, 0);
+    renderRbnMarkers();
+    renderRbnTable();
+  } else {
+    document.body.classList.remove('activator-rbn-on');
+    activatorRbnBtn.classList.remove('active');
+  }
+}
+
+function toggleActivatorRbn() {
+  activatorRbnVisible = !activatorRbnVisible;
+  // RBN and spots are mutually exclusive
+  if (activatorRbnVisible && activatorSpotsVisible) {
+    activatorSpotsVisible = false;
+    localStorage.setItem(ACTIVATOR_SPOTS_KEY, '0');
+    applyActivatorSpotsLayout();
+  }
+  if (!activatorRbnVisible && !activatorSpotsVisible) {
+    if (headerEl) headerEl.classList.add('hidden');
+    if (mainEl) mainEl.classList.add('hidden');
+  }
+  applyActivatorRbnLayout();
+}
+
+activatorRbnBtn.addEventListener('click', toggleActivatorRbn);
+
+// --- Activator toolbar: Logbook, Settings, CAT ---
+const activatorCatStatusEl = document.getElementById('activator-cat-status');
+
+document.getElementById('activator-logbook-btn').addEventListener('click', () => {
+  window.api.qsoPopoutOpen();
+});
+
+const activatorSettingsPanel = settingsDropdown.querySelector('.settings-dropdown-panel');
+let activatorSettingsPanelOpen = false;
+
+function closeActivatorSettingsPanel() {
+  if (!activatorSettingsPanelOpen) return;
+  activatorSettingsPanelOpen = false;
+  // Move panel back into its original parent and reset styles
+  settingsDropdown.appendChild(activatorSettingsPanel);
+  activatorSettingsPanel.style.display = '';
+  activatorSettingsPanel.style.position = '';
+  activatorSettingsPanel.style.top = '';
+  activatorSettingsPanel.style.right = '';
+}
+
+document.getElementById('activator-settings-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  // Close other open dropdowns
+  document.querySelectorAll('.multi-dropdown.open').forEach((d) => d.classList.remove('open'));
+
+  if (activatorSettingsPanelOpen) {
+    closeActivatorSettingsPanel();
+    return;
+  }
+
+  // Sync switches to current state
+  quickLightMode.checked = document.documentElement.getAttribute('data-theme') === 'light';
+  quickActivatorMode.checked = appMode === 'activator';
+
+  // Move panel to body so it's not blocked by hidden header ancestor
+  document.body.appendChild(activatorSettingsPanel);
+  const btnRect = e.currentTarget.getBoundingClientRect();
+  activatorSettingsPanel.style.display = 'block';
+  activatorSettingsPanel.style.position = 'fixed';
+  activatorSettingsPanel.style.top = (btnRect.bottom + 4) + 'px';
+  activatorSettingsPanel.style.right = (window.innerWidth - btnRect.right) + 'px';
+  activatorSettingsPanelOpen = true;
+});
+
+// Prevent clicks inside the settings panel from closing it via document click handler
+activatorSettingsPanel.addEventListener('click', (e) => {
+  if (activatorSettingsPanelOpen) e.stopPropagation();
+});
+
+activatorCatStatusEl.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (catPopoverOpen) {
+    closeCatPopover();
+  } else {
+    openCatPopover(activatorCatStatusEl);
+  }
+});
+
+// --- Activator-spots splitter drag ---
+activatorSpotsSplitter.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startHeight = activatorView.offsetHeight;
+  const bodyHeight = document.body.offsetHeight;
+
+  const onMove = (ev) => {
+    const delta = ev.clientY - startY;
+    const minActivator = 150;
+    const minSpots = 150;
+    const maxHeight = bodyHeight - minSpots;
+    const newHeight = Math.max(minActivator, Math.min(maxHeight, startHeight + delta));
+    activatorView.style.height = newHeight + 'px';
+  };
+
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.body.style.cursor = '';
+    // Persist height
+    localStorage.setItem(ACTIVATOR_SPLIT_KEY, activatorView.style.height);
+  };
+
+  document.body.style.cursor = 'row-resize';
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
+
+/** Start a brand-new activation for the current park */
+function startActivation() {
+  if (!primaryParkRef()) {
+    activatorParkRefInput.focus();
+    return;
+  }
+  // New activation — clears in-memory contacts
+  activatorContacts = [];
+  beginActivation();
+}
+
+/** Continue the current stopped activation (keep existing contacts) */
+function continueActivation() {
+  if (!primaryParkRef() || activatorContacts.length === 0) return;
+  beginActivation();
+}
+
+/** Resume a past activation from the log */
+function resumeActivation(activation) {
+  activatorParkRefs = [{ ref: activation.parkRef, name: '' }];
+  hunterParkRefs = [];
+  activatorParkRefInput.value = activation.parkRef;
+  activatorParkNameEl.textContent = '';
+  updateParkExtraBadge();
+  // Look up park name and grid
+  const gridInput = document.getElementById('activator-grid');
+  window.api.getPark(activation.parkRef).then(park => {
+    if (park) {
+      activatorParkRefs[0].name = park.name || '';
+      activatorParkNameEl.textContent = park.name || '';
+      if (park.latitude && park.longitude) {
+        activatorParkGrid = latLonToGridLocal(parseFloat(park.latitude), parseFloat(park.longitude));
+        if (gridInput) gridInput.value = activatorParkGrid;
+      }
+    }
+  });
+  window.api.saveSettings({ activatorParkRefs });
+  // Restore contacts from log data
+  activatorContacts = activation.contacts.map(c => {
+    const timeOn = c.timeOn || '';
+    const hh = timeOn.substring(0, 2);
+    const mm = timeOn.substring(2, 4);
+    const freqMhz = c.freq ? parseFloat(c.freq).toFixed(3) : '';
+    return {
+      callsign: c.callsign,
+      timeUtc: (hh && mm) ? `${hh}:${mm}` : '',
+      freqDisplay: freqMhz,
+      mode: c.mode || '',
+      band: c.band || '',
+      rstSent: c.rstSent || '',
+      rstRcvd: c.rstRcvd || '',
+      name: c.name || '',
+      myParks: [activation.parkRef],
+      theirParks: c.sigInfo ? [c.sigInfo] : [],
+      qsoData: {
+        callsign: c.callsign,
+        frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
+        mode: c.mode || '',
+        band: c.band || '',
+        qsoDate: activation.date,
+        timeOn: c.timeOn || '',
+        rstSent: c.rstSent || '',
+        rstRcvd: c.rstRcvd || '',
+        mySig: 'POTA',
+        mySigInfo: activation.parkRef,
+        stationCallsign: myCallsign || '',
+        operator: myCallsign || '',
+      },
+      qsoDataList: [{
+        callsign: c.callsign,
+        frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
+        mode: c.mode || '',
+        band: c.band || '',
+        qsoDate: activation.date,
+        timeOn: c.timeOn || '',
+        rstSent: c.rstSent || '',
+        rstRcvd: c.rstRcvd || '',
+        mySig: 'POTA',
+        mySigInfo: activation.parkRef,
+        stationCallsign: myCallsign || '',
+        operator: myCallsign || '',
+      }],
+    };
+  });
+  // Hide history panel
+  activatorHistoryPanel.classList.add('hidden');
+  beginActivation();
+}
+
+/** Common activation start logic (used by start, continue, and resume) */
+function beginActivation() {
+  activationActive = true;
+  activationStartTime = Date.now();
+  updateActivationUi();
+  updateActivatorCounter();
+  renderActivatorLog();
+  activatorCallsignInput.focus();
+  // Start the timer
+  if (activationTimerInterval) clearInterval(activationTimerInterval);
+  activationTimerInterval = setInterval(updateActivationTimer, 1000);
+  updateActivationTimer();
+}
+
+/** Stop the current activation */
+function stopActivation() {
+  activationActive = false;
+  if (activationTimerInterval) {
+    clearInterval(activationTimerInterval);
+    activationTimerInterval = null;
+  }
+  updateActivationUi();
+}
+
+/** Update which UI elements are visible based on activation state */
+function updateActivationUi() {
+  const hasContacts = activatorContacts.length > 0;
+  if (activationActive) {
+    // Running: show Stop, hide Start/Continue
+    activatorStartBtn.classList.add('hidden');
+    activatorContinueBtn.classList.add('hidden');
+    activatorStopBtn.classList.remove('hidden');
+    activatorQuickLog.classList.remove('hidden');
+    activatorIdleMsg.classList.add('hidden');
+    activatorHistoryPanel.classList.add('hidden');
+    activatorTimerEl.classList.add('active');
+    // Lock park ref input while active
+    activatorParkRefInput.disabled = true;
+  } else {
+    // Stopped
+    activatorStopBtn.classList.add('hidden');
+    activatorQuickLog.classList.add('hidden');
+    activatorTimerEl.classList.remove('active');
+    activatorTimerEl.textContent = '--:--';
+    // Unlock park ref
+    activatorParkRefInput.disabled = false;
+
+    if (hasContacts) {
+      // Stopped with contacts — show Continue + New
+      activatorContinueBtn.classList.remove('hidden');
+      activatorStartBtn.classList.remove('hidden');
+      activatorStartBtn.textContent = 'New Activation';
+      activatorStartBtn.disabled = !primaryParkRef();
+      activatorIdleMsg.classList.add('hidden');
+    } else {
+      // No contacts — show Start, hide Continue
+      activatorContinueBtn.classList.add('hidden');
+      activatorStartBtn.classList.remove('hidden');
+      activatorStartBtn.textContent = 'Start Activation';
+      activatorStartBtn.disabled = !primaryParkRef();
+      // Show idle message only when history panel is not open
+      if (activatorHistoryPanel.classList.contains('hidden')) {
+        activatorIdleMsg.classList.remove('hidden');
+      }
+    }
+  }
+}
+
+/** Format and display the running activation timer */
+function updateActivationTimer() {
+  if (!activationActive || !activationStartTime) return;
+  const elapsed = Math.floor((Date.now() - activationStartTime) / 1000);
+  const h = Math.floor(elapsed / 3600);
+  const m = Math.floor((elapsed % 3600) / 60);
+  const s = elapsed % 60;
+  if (h > 0) {
+    activatorTimerEl.textContent = `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  } else {
+    activatorTimerEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+  }
+}
+
+function resetActivatorRst() {
+  const mode = activatorModeSelect.value;
+  const isPhone = (mode === 'SSB' || mode === 'FM');
+  const def = isPhone ? '59' : '599';
+  const maxLen = isPhone ? '2' : '3';
+  setRstDigits('activator-rst-sent', def);
+  setRstDigits('activator-rst-rcvd', def);
+  const n1mmSent = document.getElementById('activator-rst-sent');
+  const n1mmRcvd = document.getElementById('activator-rst-rcvd');
+  if (n1mmSent) n1mmSent.maxLength = maxLen;
+  if (n1mmRcvd) n1mmRcvd.maxLength = maxLen;
+}
+
+function updateActivatorUtc() {
+  if (appMode !== 'activator') return;
+  const now = new Date();
+  const hh = String(now.getUTCHours()).padStart(2, '0');
+  const mm = String(now.getUTCMinutes()).padStart(2, '0');
+  const ss = String(now.getUTCSeconds()).padStart(2, '0');
+  activatorUtcEl.textContent = `${hh}:${mm}:${ss}Z`;
+  setTimeout(updateActivatorUtc, 1000);
+}
+
+function updateActivatorCounter() {
+  const count = activatorContacts.length;
+  const totalRecords = activatorContacts.reduce((sum, c) => sum + (c.qsoDataList ? c.qsoDataList.length : 1), 0);
+  activatorCounterEl.textContent = count;
+  activatorCounterEl.classList.toggle('valid', count >= 10);
+  const recordNote = totalRecords > count ? ` (${totalRecords} ADIF records)` : '';
+  activatorCounterEl.title = `${count} contact${count !== 1 ? 's' : ''} logged${recordNote}${count >= 10 ? ' — valid activation!' : ` (need ${10 - count} more)`}`;
+}
+
+function renderActivatorLog() {
+  activatorLogBody.innerHTML = '';
+  // Newest on top
+  for (let i = activatorContacts.length - 1; i >= 0; i--) {
+    const c = activatorContacts[i];
+    const tr = document.createElement('tr');
+    tr.dataset.idx = i;
+    // Check if this callsign has been worked before (from main logbook)
+    const workedBefore = workedQsos.has(c.callsign.toUpperCase());
+    const dupeFlag = workedBefore ? '<span class="act-log-dupe" title="Worked before">PREV</span>' : '';
+    const p2pBadge = (c.theirParks && c.theirParks.length > 0) ? `<span class="act-log-p2p" title="P2P: ${c.theirParks.join(', ')}">P2P</span>` : '';
+    tr.innerHTML = `
+      <td class="act-log-num">${i + 1}</td>
+      <td class="act-log-time act-log-editable" data-field="timeUtc">${c.timeUtc || ''}</td>
+      <td class="act-log-call act-log-editable" data-field="callsign">${c.callsign || ''}${dupeFlag}${p2pBadge}</td>
+      <td class="act-log-name">${c.name || ''}</td>
+      <td class="act-log-freq act-log-editable" data-field="freqDisplay">${c.freqDisplay || ''}</td>
+      <td class="act-log-mode act-log-editable" data-field="mode">${c.mode || ''}</td>
+      <td class="act-log-rst act-log-editable" data-field="rstSent">${c.rstSent || ''}</td>
+      <td class="act-log-rst act-log-editable" data-field="rstRcvd">${c.rstRcvd || ''}</td>
+      <td class="act-log-band">${c.band || ''}</td>
+      <td class="act-log-del"><button class="act-log-del-btn" data-idx="${i}" title="Delete this contact">&times;</button></td>
+    `;
+    activatorLogBody.appendChild(tr);
+  }
+
+  // Bind delete buttons
+  activatorLogBody.querySelectorAll('.act-log-del-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx, 10);
+      deleteActivatorContact(idx);
+    });
+  });
+}
+
+// --- Activator log inline edit (double-click) ---
+activatorLogBody.addEventListener('dblclick', (e) => {
+  const td = e.target.closest('td.act-log-editable');
+  if (!td || td.querySelector('input, select')) return;
+  const tr = td.closest('tr');
+  const idx = parseInt(tr.dataset.idx, 10);
+  const field = td.dataset.field;
+  const c = activatorContacts[idx];
+  if (!c) return;
+
+  // Get the raw value (not innerHTML which may contain badges)
+  const rawValue = c[field] || '';
+
+  if (field === 'mode') {
+    // Use a dropdown for mode
+    const select = document.createElement('select');
+    select.className = 'act-log-edit-select';
+    const modes = ['SSB', 'CW', 'FT8', 'FT4', 'FM', 'RTTY', 'PSK31', 'USB', 'LSB', 'AM'];
+    for (const m of modes) {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === rawValue) opt.selected = true;
+      select.appendChild(opt);
+    }
+    td.textContent = '';
+    td.appendChild(select);
+    select.focus();
+
+    function finish() {
+      const newVal = select.value;
+      select.removeEventListener('change', finish);
+      select.removeEventListener('blur', finish);
+      if (newVal !== rawValue) {
+        saveActivatorEdit(idx, field, newVal);
+      } else {
+        renderActivatorLog();
+      }
+    }
+    select.addEventListener('change', finish);
+    select.addEventListener('blur', finish);
+  } else {
+    // Text input for other fields
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'act-log-edit-input';
+    input.value = rawValue;
+    if (field === 'callsign') input.style.textTransform = 'uppercase';
+    td.textContent = '';
+    td.appendChild(input);
+    input.focus();
+    input.select();
+
+    let committed = false;
+    function cancel() {
+      if (committed) return;
+      committed = true;
+      renderActivatorLog();
+    }
+    function save() {
+      if (committed) return;
+      committed = true;
+      const newVal = input.value.trim();
+      if (newVal && newVal !== rawValue) {
+        saveActivatorEdit(idx, field, field === 'callsign' ? newVal.toUpperCase() : newVal);
+      } else {
+        renderActivatorLog();
+      }
+    }
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+      if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+    });
+    input.addEventListener('blur', save);
+  }
+});
+
+/** Save an inline edit to an activator contact and update the ADIF log */
+async function saveActivatorEdit(idx, field, newVal) {
+  const c = activatorContacts[idx];
+  if (!c) return;
+
+  // Build match criteria from the original contact's QSO data
+  const qso = c.qsoData || {};
+  const match = {
+    callsign: c.callsign,
+    qsoDate: qso.qsoDate || '',
+    timeOn: qso.timeOn || '',
+    frequency: qso.frequency || '',
+  };
+
+  // Map the in-memory field to ADIF field updates
+  const adifUpdates = {};
+  switch (field) {
+    case 'callsign':
+      c.callsign = newVal;
+      adifUpdates.CALL = newVal;
+      break;
+    case 'freqDisplay': {
+      c.freqDisplay = newVal;
+      const freqKhz = Math.round(parseFloat(newVal) * 1000);
+      c.band = freqToBandActivator(freqKhz) || c.band;
+      adifUpdates.FREQ = (freqKhz / 1000).toFixed(6);
+      adifUpdates.BAND = c.band;
+      // Update qsoData frequency for future match reference
+      if (c.qsoData) c.qsoData.frequency = String(freqKhz);
+      if (c.qsoDataList) c.qsoDataList.forEach(q => { q.frequency = String(freqKhz); });
+      break;
+    }
+    case 'mode':
+      c.mode = newVal;
+      adifUpdates.MODE = newVal;
+      break;
+    case 'rstSent':
+      c.rstSent = newVal;
+      adifUpdates.RST_SENT = newVal;
+      break;
+    case 'rstRcvd':
+      c.rstRcvd = newVal;
+      adifUpdates.RST_RCVD = newVal;
+      break;
+    case 'timeUtc': {
+      c.timeUtc = newVal;
+      // Convert HH:MM display to HHMMSS for ADIF
+      const cleaned = newVal.replace(/:/g, '');
+      const timeOn = cleaned.length === 4 ? cleaned + '00' : cleaned;
+      adifUpdates.TIME_ON = timeOn;
+      if (c.qsoData) c.qsoData.timeOn = timeOn;
+      if (c.qsoDataList) c.qsoDataList.forEach(q => { q.timeOn = timeOn; });
+      break;
+    }
+  }
+
+  // Update ADIF log file
+  try {
+    const result = await window.api.updateQsosByMatch({ match, updates: adifUpdates });
+    if (!result.success) {
+      console.error('[Activator] Failed to update QSO in log:', result.error);
+    }
+  } catch (err) {
+    console.error('[Activator] Update QSO error:', err);
+  }
+
+  // Also update qsoData/qsoDataList references for callsign changes (affects future match/delete)
+  if (field === 'callsign') {
+    if (c.qsoData) c.qsoData.callsign = newVal;
+    if (c.qsoDataList) c.qsoDataList.forEach(q => { q.callsign = newVal; });
+    // Re-fetch operator name from QRZ for the new callsign
+    c.name = '';
+    window.api.qrzLookup(newVal).then(info => {
+      if (info) {
+        c.name = qrzDisplayName(info);
+        renderActivatorLog();
+      }
+    }).catch(() => {});
+  }
+
+  renderActivatorLog();
+}
+
+/** Delete an activator contact by index — removes from memory and ADIF log */
+async function deleteActivatorContact(idx) {
+  if (idx < 0 || idx >= activatorContacts.length) return;
+  const c = activatorContacts[idx];
+
+  // Build match criteria from the first QSO record
+  const qso = c.qsoData || {};
+  const match = {
+    callsign: c.callsign,
+    qsoDate: qso.qsoDate || '',
+    timeOn: qso.timeOn || '',
+    frequency: qso.frequency || '',
+  };
+
+  // Remove from ADIF log
+  try {
+    const result = await window.api.deleteQsosByMatch(match);
+    if (!result.success) {
+      console.error('[Activator] Failed to delete QSO from log:', result.error);
+    }
+  } catch (err) {
+    console.error('[Activator] Delete QSO error:', err);
+  }
+
+  // Remove from in-memory list
+  activatorContacts.splice(idx, 1);
+  updateActivatorCounter();
+  renderActivatorLog();
+}
+
+// --- Start / Stop / Continue / History buttons ---
+if (activatorStartBtn) {
+  activatorStartBtn.addEventListener('click', startActivation);
+}
+if (activatorContinueBtn) {
+  activatorContinueBtn.addEventListener('click', continueActivation);
+}
+if (activatorStopBtn) {
+  activatorStopBtn.addEventListener('click', stopActivation);
+}
+if (activatorHistoryBtn) {
+  activatorHistoryBtn.addEventListener('click', () => {
+    if (activatorHistoryPanel.classList.contains('hidden')) {
+      showPastActivations();
+      activatorHistoryBtn.classList.add('active');
+    } else {
+      activatorHistoryPanel.classList.add('hidden');
+      activatorHistoryBtn.classList.remove('active');
+      if (!activationActive && activatorContacts.length === 0) {
+        activatorIdleMsg.classList.remove('hidden');
+      }
+    }
+  });
+}
+if (activatorHistoryClose) {
+  activatorHistoryClose.addEventListener('click', () => {
+    activatorHistoryPanel.classList.add('hidden');
+    activatorHistoryBtn.classList.remove('active');
+    // Restore idle message if appropriate
+    if (!activationActive && activatorContacts.length === 0) {
+      activatorIdleMsg.classList.remove('hidden');
+    }
+  });
+}
+// Activation map close button
+const activationMapClose = document.getElementById('activation-map-close');
+if (activationMapClose) {
+  activationMapClose.addEventListener('click', () => {
+    document.getElementById('activation-map-panel').classList.add('hidden');
+    if (activationMap) { activationMap.remove(); activationMap = null; }
+  });
+}
+
+async function showPastActivations() {
+  activatorIdleMsg.classList.add('hidden');
+  activatorHistoryPanel.classList.remove('hidden');
+  activatorHistoryList.innerHTML = '<div style="padding:12px;color:var(--text-tertiary);">Loading...</div>';
+  try {
+    const activations = await window.api.getPastActivations();
+    activatorHistoryList.innerHTML = '';
+    if (!activations || activations.length === 0) {
+      activatorHistoryList.innerHTML = '<div style="padding:12px;color:var(--text-tertiary);">No past POTA activations found in your logbook.</div>';
+      return;
+    }
+    for (const act of activations) {
+      const count = act.contacts.length;
+      const dateStr = act.date ? `${act.date.substring(0, 4)}-${act.date.substring(4, 6)}-${act.date.substring(6, 8)}` : '?';
+      const validClass = count >= 10 ? 'valid' : '';
+      const wrapper = document.createElement('div');
+      wrapper.className = 'activator-history-wrapper';
+      // Header row (clickable to expand)
+      const item = document.createElement('div');
+      item.className = 'activator-history-item';
+      item.innerHTML = `
+        <span class="activator-history-item-expand">&#x25B6;</span>
+        <span class="activator-history-item-ref">${act.parkRef}</span>
+        <span class="activator-history-item-date">${dateStr}</span>
+        <span class="activator-history-item-count"><span class="${validClass}">${count} QSO${count !== 1 ? 's' : ''}</span></span>
+        <button class="activator-history-item-resume">Resume</button>
+      `;
+      item.querySelector('.activator-history-item-resume').addEventListener('click', (e) => {
+        e.stopPropagation();
+        resumeActivation(act);
+      });
+      // Expandable detail section
+      const detail = document.createElement('div');
+      detail.className = 'activator-history-detail hidden';
+      detail.innerHTML = `
+        <div class="activator-history-actions">
+          <button class="act-hist-export-btn" title="Export this activation as ADIF">Export ADIF</button>
+          <button class="act-hist-map-btn" title="Show contacts on map">Map</button>
+          <button class="act-hist-delete-btn" title="Delete this activation">Delete</button>
+        </div>
+        <table class="act-hist-table">
+          <thead><tr><th>#</th><th>Time</th><th>Call</th><th>Name</th><th>Freq</th><th>Mode</th><th>RST S</th><th>RST R</th></tr></thead>
+          <tbody>${act.contacts.map((c, i) => {
+            const hh = (c.timeOn || '').substring(0, 2);
+            const mm = (c.timeOn || '').substring(2, 4);
+            const t = (hh && mm) ? `${hh}:${mm}` : '';
+            const fMhz = c.freq ? parseFloat(c.freq).toFixed(3) : '';
+            return `<tr><td>${i + 1}</td><td>${t}</td><td>${c.callsign}</td><td>${c.name || ''}</td><td>${fMhz}</td><td>${c.mode || ''}</td><td>${c.rstSent || ''}</td><td>${c.rstRcvd || ''}</td></tr>`;
+          }).join('')}</tbody>
+        </table>
+      `;
+      // Toggle expand on header click
+      item.addEventListener('click', () => {
+        const wasHidden = detail.classList.contains('hidden');
+        detail.classList.toggle('hidden');
+        item.querySelector('.activator-history-item-expand').innerHTML = wasHidden ? '&#x25BC;' : '&#x25B6;';
+      });
+      // Export button
+      detail.querySelector('.act-hist-export-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        exportPastActivation(act);
+      });
+      // Map button
+      detail.querySelector('.act-hist-map-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        showActivationMap(act);
+      });
+      // Delete button (two-click confirmation)
+      const deleteBtn = detail.querySelector('.act-hist-delete-btn');
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (deleteBtn.dataset.confirm === 'yes') {
+          deletePastActivation(act, wrapper);
+        } else {
+          deleteBtn.dataset.confirm = 'yes';
+          deleteBtn.textContent = 'Confirm Delete?';
+          deleteBtn.classList.add('confirm');
+          setTimeout(() => {
+            deleteBtn.dataset.confirm = '';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.classList.remove('confirm');
+          }, 3000);
+        }
+      });
+      wrapper.appendChild(item);
+      wrapper.appendChild(detail);
+      activatorHistoryList.appendChild(wrapper);
+    }
+  } catch (err) {
+    activatorHistoryList.innerHTML = `<div style="padding:12px;color:var(--accent-red);">Error loading activations: ${err.message}</div>`;
+  }
+}
+
+/** Export a past activation's QSOs as ADIF */
+async function exportPastActivation(act) {
+  const qsos = act.contacts.map(c => ({
+    callsign: c.callsign,
+    frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
+    mode: c.mode || '',
+    band: c.band || '',
+    qsoDate: act.date,
+    timeOn: c.timeOn || '',
+    rstSent: c.rstSent || '',
+    rstRcvd: c.rstRcvd || '',
+    mySig: 'POTA',
+    mySigInfo: act.parkRef,
+    stationCallsign: myCallsign || '',
+    operator: myCallsign || '',
+    name: c.name || '',
+    sig: c.sig || '',
+    sigInfo: c.sigInfo || '',
+    myGridsquare: c.myGridsquare || '',
+  }));
+  try {
+    const result = await window.api.exportActivationAdif({ qsos, parkRef: act.parkRef, myCallsign: myCallsign || '' });
+    if (result && result.success) {
+      showLogToast(`Exported ${qsos.length} QSOs to ${result.path.split(/[\\/]/).pop()}`);
+    }
+  } catch (err) {
+    console.error('[Activator] Export failed:', err);
+  }
+}
+
+/** Delete a past activation and its QSOs from the log */
+async function deletePastActivation(act, wrapperEl) {
+  try {
+    const result = await window.api.deleteActivation(act.parkRef, act.date);
+    if (result && result.success) {
+      wrapperEl.remove();
+      showLogToast(`Deleted ${result.removed} QSO${result.removed !== 1 ? 's' : ''} from ${act.parkRef} (${act.date})`);
+      // If no items left, show empty message
+      if (activatorHistoryList.children.length === 0) {
+        activatorHistoryList.innerHTML = '<div style="padding:12px;color:var(--text-tertiary);">No past POTA activations found in your logbook.</div>';
+      }
+    } else {
+      showLogToast('Delete failed: ' + (result?.error || 'unknown error'));
+    }
+  } catch (err) {
+    showLogToast('Delete failed: ' + err.message);
+  }
+}
+
+/** Show activation contacts on a Leaflet map centered on the park */
+let activationMap = null;
+let activationMapMarkers = [];
+
+async function showActivationMap(act) {
+  const mapPanel = document.getElementById('activation-map-panel');
+  const mapTitle = document.getElementById('activation-map-title');
+  mapPanel.classList.remove('hidden');
+  mapTitle.textContent = `${act.parkRef} — ${act.contacts.length} QSO${act.contacts.length !== 1 ? 's' : ''}`;
+
+  // Get park location
+  let parkLat = null, parkLon = null;
+  try {
+    const park = await window.api.getPark(act.parkRef);
+    if (park && park.latitude && park.longitude) {
+      parkLat = parseFloat(park.latitude);
+      parkLon = parseFloat(park.longitude);
+    }
+  } catch {}
+
+  // Resolve contact callsign locations via cty.dat
+  const callsigns = [...new Set(act.contacts.map(c => c.callsign).filter(Boolean))];
+  let locations = {};
+  try {
+    locations = await window.api.resolveCallsignLocations(callsigns);
+  } catch {}
+
+  // Initialize or reuse map
+  if (activationMap) {
+    activationMap.remove();
+    activationMap = null;
+  }
+  activationMapMarkers = [];
+
+  const centerLat = parkLat ?? 39.8;
+  const centerLon = parkLon ?? -98.5;
+  activationMap = L.map('activation-map', { zoomControl: true, worldCopyJump: true }).setView([centerLat, centerLon], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors',
+  }).addTo(activationMap);
+
+  // Park marker (green, prominent)
+  if (parkLat != null && parkLon != null) {
+    const parkIcon = L.divIcon({ className: 'activation-map-park-icon', html: '<div class="act-map-park-pin"></div>', iconSize: [20, 20], iconAnchor: [10, 10] });
+    L.marker([parkLat, parkLon], { icon: parkIcon, zIndexOffset: 1000 })
+      .bindPopup(`<b>${act.parkRef}</b><br>${act.contacts.length} contacts`)
+      .addTo(activationMap);
+  }
+
+  // Contact markers — one per QSO, positioned via QRZ grid (precise)
+  // or cty.dat (country/call-area fallback), jittered to avoid stacking
+  const bounds = [];
+  if (parkLat != null && parkLon != null) bounds.push([parkLat, parkLon]);
+  const usedPositions = []; // track placed positions for jitter
+  for (let i = 0; i < act.contacts.length; i++) {
+    const c = act.contacts[i];
+    // Prefer QRZ grid for precise positioning
+    const gridPos = c.grid ? gridToLatLonLocal(c.grid) : null;
+    const loc = gridPos || locations[c.callsign];
+    if (!loc) continue;
+    let cLat = loc.lat, cLon = loc.lon;
+    const overlap = usedPositions.filter(p => Math.abs(p[0] - cLat) < 0.01 && Math.abs(p[1] - cLon) < 0.01).length;
+    if (overlap > 0) {
+      // Spread in a small circle around the base point using golden angle
+      const angle = (overlap * 137.5) * Math.PI / 180;
+      const r = 0.8 + overlap * 0.3; // degrees offset
+      cLat += r * Math.cos(angle);
+      cLon += r * Math.sin(angle);
+    }
+    usedPositions.push([cLat, cLon]);
+
+    const hh = (c.timeOn || '').substring(0, 2);
+    const mm = (c.timeOn || '').substring(2, 4);
+    const t = (hh && mm) ? `${hh}:${mm}` : '';
+    const fMhz = c.freq ? parseFloat(c.freq).toFixed(3) : '';
+    const locName = loc.name || (locations[c.callsign] && locations[c.callsign].name) || '';
+    const gridLabel = c.grid ? ` (${c.grid})` : '';
+    const popupHtml = `<b>${c.callsign}</b>${c.name ? ' — ' + c.name : ''}<br>${t} UTC  ${fMhz} ${c.mode || ''}<br><span style="color:#aaa">${locName}${gridLabel}</span>`;
+    const marker = L.circleMarker([cLat, cLon], {
+      radius: 6, fillColor: '#4fc3f7', color: '#fff', weight: 1, fillOpacity: 0.85,
+    }).bindPopup(popupHtml).addTo(activationMap);
+    activationMapMarkers.push(marker);
+    bounds.push([cLat, cLon]);
+
+    // Draw great circle arc from park to contact
+    if (parkLat != null && parkLon != null) {
+      const arcPoints = greatCircleArc(parkLat, parkLon, cLat, cLon, 50);
+      L.polyline(arcPoints, {
+        color: '#4fc3f7', weight: 1.5, opacity: 0.5, dashArray: '6,4',
+      }).addTo(activationMap);
+    }
+  }
+
+  // Fit bounds if we have points
+  if (bounds.length > 1) {
+    activationMap.fitBounds(bounds, { padding: [30, 30] });
+  }
+
+  // Force a resize after the panel becomes visible
+  setTimeout(() => { if (activationMap) activationMap.invalidateSize(); }, 100);
+}
+
+// --- Park autocomplete ---
+let parkSearchTimeout = null;
+
+if (activatorParkRefInput) {
+  activatorParkRefInput.addEventListener('input', () => {
+    clearTimeout(parkSearchTimeout);
+    const query = activatorParkRefInput.value.trim();
+    if (query.length < 2) {
+      activatorParkDropdown.classList.add('hidden');
+      // Disable start if park cleared
+      activatorStartBtn.disabled = true;
+      activatorParkNameEl.textContent = '';
+      activatorParkRefs = [];
+      updateParkExtraBadge();
+      return;
+    }
+    parkSearchTimeout = setTimeout(async () => {
+      const results = await window.api.searchParks(query);
+      if (!results || !results.length) {
+        activatorParkDropdown.classList.add('hidden');
+        return;
+      }
+      activatorParkDropdown.innerHTML = '';
+      for (const park of results) {
+        const item = document.createElement('div');
+        item.className = 'activator-dropdown-item';
+        item.innerHTML = `<span class="activator-dropdown-ref">${park.reference}</span><span class="activator-dropdown-name">${park.name || ''}</span><span class="activator-dropdown-loc">${park.locationDesc || ''}</span>`;
+        item.addEventListener('mousedown', (e) => { e.preventDefault(); selectPark(park); });
+        activatorParkDropdown.appendChild(item);
+      }
+      activatorParkDropdown.classList.remove('hidden');
+    }, 150);
+  });
+
+  // Close dropdown on blur
+  activatorParkRefInput.addEventListener('blur', () => {
+    setTimeout(() => activatorParkDropdown.classList.add('hidden'), 150);
+  });
+
+  // Allow Enter to select first dropdown item
+  activatorParkRefInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const first = activatorParkDropdown.querySelector('.activator-dropdown-item');
+      if (first && !activatorParkDropdown.classList.contains('hidden')) {
+        first.click();
+        e.preventDefault();
+      }
+    }
+  });
+
+  // Grid input: manual override
+  const gridInput = document.getElementById('activator-grid');
+  if (gridInput) {
+    gridInput.addEventListener('input', () => {
+      activatorParkGrid = gridInput.value.trim().toUpperCase();
+    });
+  }
+}
+
+function selectPark(park) {
+  activatorParkRefs = [{ ref: park.reference, name: park.name || '' }];
+  activatorParkRefInput.value = park.reference;
+  activatorParkNameEl.textContent = park.name || '';
+  activatorParkDropdown.classList.add('hidden');
+  updateParkExtraBadge();
+  // Auto-populate grid from park lat/lon
+  const gridInput = document.getElementById('activator-grid');
+  if (park.latitude && park.longitude) {
+    activatorParkGrid = latLonToGridLocal(parseFloat(park.latitude), parseFloat(park.longitude));
+    if (gridInput) gridInput.value = activatorParkGrid;
+  } else {
+    activatorParkGrid = '';
+    if (gridInput) gridInput.value = '';
+  }
+  // Enable start button
+  activatorStartBtn.disabled = false;
+  // Persist to settings
+  window.api.saveSettings({ activatorParkRefs });
+}
+
+/** Update the park display: input value, name, and extra badge */
+function updateParkDisplay() {
+  activatorParkRefInput.value = primaryParkRef();
+  activatorParkNameEl.textContent = primaryParkName();
+  updateParkExtraBadge();
+}
+
+/** Show/hide the +N badge for additional MY_SIG_INFO parks */
+function updateParkExtraBadge() {
+  const badge = document.getElementById('activator-park-extra');
+  if (!badge) return;
+  const extra = activatorParkRefs.length - 1;
+  if (extra > 0) {
+    badge.textContent = `+${extra}`;
+    badge.classList.remove('hidden');
+    badge.title = activatorParkRefs.slice(1).map(p => p.ref).join(', ');
+  } else {
+    badge.textContent = '';
+    badge.classList.add('hidden');
+  }
+}
+
+/** Update hunter park input display and extra badge */
+function updateHunterParkDisplay() {
+  const input = document.getElementById('activator-hunter-park');
+  const badge = document.getElementById('activator-hunter-park-extra');
+  if (input) {
+    input.value = hunterParkRefs[0]?.ref || '';
+  }
+  if (!badge) return;
+  const extra = hunterParkRefs.length - 1;
+  if (extra > 0) {
+    badge.textContent = `+${extra}`;
+    badge.classList.remove('hidden');
+    badge.title = hunterParkRefs.slice(1).map(p => p.ref).join(', ');
+  } else {
+    badge.textContent = '';
+    badge.classList.add('hidden');
+  }
+}
+
+// --- Quick Log ---
+async function activatorLogContact() {
+  if (!activationActive) return; // must have an active activation
+  const rawCallsign = activatorCallsignInput.value.trim().toUpperCase();
+  if (!rawCallsign) return;
+  if (!primaryParkRef()) {
+    activatorParkRefInput.focus();
+    return;
+  }
+
+  // Support comma-separated callsigns (multiple activators at same park)
+  const callsigns = rawCallsign.split(',').map(c => c.trim()).filter(Boolean);
+  if (!callsigns.length) return;
+
+  const mode = activatorModeSelect.value;
+  const rstSent = getRstDigits('activator-rst-sent', mode === 'SSB' || mode === 'FM' ? '59' : '599');
+  const rstRcvd = getRstDigits('activator-rst-rcvd', mode === 'SSB' || mode === 'FM' ? '59' : '599');
+
+  // Frequency: prefer the input field (may have been manually entered), fall back to CAT
+  const inputMhz = parseFloat(activatorFreqInput.value);
+  const freqKhz = inputMhz > 0 ? Math.round(inputMhz * 1000) : (activatorFreqKhz || radioFreqKhz || 0);
+  const freqMhz = freqKhz ? (freqKhz / 1000).toFixed(3) : '';
+  const band = freqToBandActivator(freqKhz) || '';
+
+  const now = new Date();
+  const qsoDate = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const hh = String(now.getUTCHours()).padStart(2, '0');
+  const mm = String(now.getUTCMinutes()).padStart(2, '0');
+  const ss = String(now.getUTCSeconds()).padStart(2, '0');
+  const timeOn = `${hh}${mm}${ss}`;
+  const timeUtc = `${hh}:${mm}`;
+
+  const myParks = activatorParkRefs;                              // always >= 1
+  const theirParks = hunterParkRefs.length > 0 ? hunterParkRefs : [null];
+
+  // Log each callsign as a separate QSO with identical fields
+  for (const callsign of callsigns) {
+    const baseFields = {
+      callsign,
+      frequency: freqKhz ? String(freqKhz) : '',
+      mode,
+      band,
+      qsoDate,
+      timeOn,
+      rstSent,
+      rstRcvd,
+      txPower: defaultPower ? String(defaultPower) : '',
+      stationCallsign: myCallsign || '',
+      operator: myCallsign || '',
+      myGridsquare: activatorParkGrid || '',
+    };
+
+    // Cross-product: one ADIF record per MY_SIG_INFO × SIG_INFO combination
+    const allQsoData = [];
+    for (const myPark of myParks) {
+      for (const theirPark of theirParks) {
+        const qsoData = { ...baseFields, mySig: 'POTA', mySigInfo: myPark.ref };
+        if (theirPark) { qsoData.sig = 'POTA'; qsoData.sigInfo = theirPark.ref; }
+        allQsoData.push(qsoData);
+      }
+    }
+
+    // Save all cross-product records via existing pipeline
+    // Only forward the first record to external logbook — ACLog etc. only
+    // need one QSO per physical contact, not one per park ref
+    try {
+      for (let qi = 0; qi < allQsoData.length; qi++) {
+        const qsoData = allQsoData[qi];
+        if (qi > 0) qsoData.skipLogbookForward = true;
+        await window.api.saveQso(qsoData);
+      }
+    } catch (err) {
+      console.error('[Activator] Failed to save QSO:', err);
+    }
+
+    // Add to in-memory list — one entry per physical QSO
+    const contact = {
+      callsign,
+      timeUtc,
+      freqDisplay: freqMhz,
+      mode,
+      band,
+      rstSent,
+      rstRcvd,
+      name: '',
+      myParks: myParks.map(p => p.ref),
+      theirParks: hunterParkRefs.map(p => p.ref),
+      qsoData: allQsoData[0], // backward compat
+      qsoDataList: allQsoData, // all cross-product records for export
+    };
+    activatorContacts.push(contact);
+
+    // Push to activation map pop-out
+    if (actmapPopoutOpen) {
+      window.api.actmapPopoutContact({
+        parkRefs: activatorParkRefs.map(p => p.ref),
+        contact,
+      });
+    }
+
+    // Fire-and-forget QRZ lookup for name + grid
+    window.api.qrzLookup(callsign).then(info => {
+      if (info) {
+        contact.name = qrzDisplayName(info);
+        if (info.grid) contact.grid = info.grid;
+        renderActivatorLog();
+        // Update pop-out map with precise grid location
+        if (actmapPopoutOpen && info.grid) {
+          window.api.actmapPopoutContact({
+            parkRefs: activatorParkRefs.map(p => p.ref),
+            contact,
+            update: true, // signal this is a location update, not a new contact
+          });
+        }
+      }
+    }).catch(() => {});
+  }
+
+  updateActivatorCounter();
+  renderActivatorLog();
+
+  // Clear and refocus
+  activatorCallsignInput.value = '';
+  activatorOpNameEl.textContent = '';
+  resetActivatorRst();
+  // Reset hunter parks for next QSO
+  hunterParkRefs = [];
+  updateHunterParkDisplay();
+  activatorCallsignInput.focus();
+}
+
+if (activatorLogBtn) {
+  activatorLogBtn.addEventListener('click', activatorLogContact);
+}
+
+// Enter key in callsign or RST fields triggers log
+if (activatorCallsignInput) {
+  activatorCallsignInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      activatorLogContact();
+    }
+    // Tab — trigger QRZ lookup immediately (let Tab proceed to next field)
+    if (e.key === 'Tab') {
+      const val = activatorCallsignInput.value.trim().toUpperCase();
+      if (val.length >= 3) {
+        clearTimeout(activatorQrzTimeout);
+        window.api.qrzLookup(val).then(info => {
+          if (info && activatorCallsignInput.value.trim().toUpperCase() === val) {
+            activatorOpNameEl.textContent = qrzDisplayName(info);
+          }
+        }).catch(() => {});
+      }
+    }
+  });
+}
+
+// Activator RST: N1MM auto-advance + Enter to log
+setupRstAutoAdvance('activator-rst-sent', 'activator-rst-rcvd', () => {
+  const mode = activatorModeSelect.value;
+  return (mode === 'SSB' || mode === 'FM') ? 2 : 3;
+});
+
+// Enter key in any activator RST field (both modes) triggers log
+document.querySelectorAll('#activator-rst-sent, #activator-rst-rcvd, #activator-rst-sent-digits .rst-digit, #activator-rst-rcvd-digits .rst-digit').forEach(el => {
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      activatorLogContact();
+    }
+  });
+});
+
+// Map button — open activation map pop-out
+if (activatorMapBtn) {
+  activatorMapBtn.addEventListener('click', () => {
+    window.api.actmapPopoutOpen();
+  });
+}
+
+// Export button
+if (activatorExportBtn) {
+  activatorExportBtn.addEventListener('click', async () => {
+    if (!activatorContacts.length) return;
+    // Flatten all cross-product records for export
+    const qsos = activatorContacts.flatMap(c => c.qsoDataList || [c.qsoData]);
+
+    // Multi-park: offer per-park or combined export
+    if (activatorParkRefs.length > 1) {
+      const dlg = document.getElementById('export-choice-dlg');
+      dlg.showModal();
+      const chosen = await new Promise(resolve => {
+        const onPerPark = () => { cleanup(); resolve('perpark'); };
+        const onCombined = () => { cleanup(); resolve('combined'); };
+        const onClose = () => { cleanup(); resolve(null); };
+        const cleanup = () => {
+          document.getElementById('export-choice-perpark').removeEventListener('click', onPerPark);
+          document.getElementById('export-choice-combined').removeEventListener('click', onCombined);
+          document.getElementById('export-choice-close').removeEventListener('click', onClose);
+          dlg.close();
+        };
+        document.getElementById('export-choice-perpark').addEventListener('click', onPerPark);
+        document.getElementById('export-choice-combined').addEventListener('click', onCombined);
+        document.getElementById('export-choice-close').addEventListener('click', onClose);
+      });
+      if (!chosen) return;
+      if (chosen === 'perpark') {
+        // Group QSOs by mySigInfo (park ref)
+        const qsosByPark = {};
+        for (const q of qsos) {
+          const ref = q.mySigInfo || 'UNKNOWN';
+          (qsosByPark[ref] ||= []).push(q);
+        }
+        const result = await window.api.exportActivationAdifPerPark({
+          qsosByPark,
+          myCallsign: myCallsign || '',
+        });
+        if (result && result.success) {
+          showLogToast(`Exported ${result.totalQsos} QSOs across ${result.fileCount} files`);
+        }
+        return;
+      }
+      // else 'combined' — fall through to existing single-file export
+    }
+
+    const result = await window.api.exportActivationAdif({
+      qsos,
+      parkRef: primaryParkRef(),
+      myCallsign: myCallsign || '',
+    });
+    if (result && result.success) {
+      showLogToast(`Exported ${qsos.length} QSOs to ${result.path.split(/[\\/]/).pop()}`);
+    }
+  });
+}
+
+// Back to Hunter button
+if (activatorBackBtn) {
+  activatorBackBtn.addEventListener('click', () => {
+    setAppMode('hunter');
+    window.api.saveSettings({ appMode: 'hunter' });
+  });
+}
+
+// CAT integration for activator mode — freq from VFO updates the input
+window.api.onCatFrequency((hz) => {
+  if (appMode !== 'activator') return;
+  const khz = Math.round(hz / 1000);
+  activatorFreqKhz = khz;
+  // Only update the input if it's not focused (don't fight the user while typing)
+  if (document.activeElement !== activatorFreqInput) {
+    activatorFreqInput.value = (khz / 1000).toFixed(3);
+  }
+  updateActivatorBandLabel(khz);
+});
+
+window.api.onCatMode((mode) => {
+  if (appMode !== 'activator') return;
+  updateActivatorModeFromCat(mode);
+});
+
+/** Update the band label from a frequency in kHz */
+function updateActivatorBandLabel(khz) {
+  const bandStr = freqToBandActivator(khz);
+  activatorBandLabel.textContent = bandStr || '--';
+}
+
+/** Map a CAT mode string to the activator mode selector */
+function updateActivatorModeFromCat(mode) {
+  const m = (mode || '').toUpperCase();
+  if (m === 'USB' || m === 'LSB') activatorModeSelect.value = 'SSB';
+  else if (m === 'CW' || m === 'CWR') activatorModeSelect.value = 'CW';
+  else if (m === 'FM') activatorModeSelect.value = 'FM';
+  else if (m === 'FT8') activatorModeSelect.value = 'FT8';
+  else if (m === 'FT4') activatorModeSelect.value = 'FT4';
+  else if (m === 'RTTY') activatorModeSelect.value = 'RTTY';
+}
+
+// Frequency input: Enter or blur → tune radio
+if (activatorFreqInput) {
+  activatorFreqInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      tuneActivatorFreq();
+      activatorCallsignInput.focus();
+    }
+  });
+  activatorFreqInput.addEventListener('blur', () => {
+    tuneActivatorFreq();
+  });
+}
+
+function tuneActivatorFreq() {
+  const mhz = parseFloat(activatorFreqInput.value);
+  if (!mhz || mhz <= 0) return;
+  const khz = Math.round(mhz * 1000);
+  if (khz === activatorFreqKhz) return; // already there
+  activatorFreqKhz = khz;
+  updateActivatorBandLabel(khz);
+  window.api.tune(khz, activatorModeSelect.value);
+}
+
+// Mode selector change → tune radio to same freq with new mode
+if (activatorModeSelect) {
+  activatorModeSelect.addEventListener('change', () => {
+    resetActivatorRst();
+    const khz = activatorFreqKhz || radioFreqKhz;
+    if (khz) {
+      window.api.tune(khz, activatorModeSelect.value);
+    }
+  });
+}
+
+// QRZ lookup on callsign input (debounced)
+let activatorQrzTimeout = null;
+if (activatorCallsignInput) {
+  activatorCallsignInput.addEventListener('input', () => {
+    clearTimeout(activatorQrzTimeout);
+    const val = activatorCallsignInput.value.trim().toUpperCase();
+    if (val.length < 3) {
+      activatorOpNameEl.textContent = '';
+      return;
+    }
+    activatorQrzTimeout = setTimeout(async () => {
+      const info = await window.api.qrzLookup(val);
+      if (info && activatorCallsignInput.value.trim().toUpperCase() === val) {
+        activatorOpNameEl.textContent = qrzDisplayName(info);
+      }
+    }, 400);
+  });
+}
+
+/** Simple freq → band for activator. Input in kHz. */
+function freqToBandActivator(khz) {
+  if (khz >= 1800 && khz <= 2000) return '160m';
+  if (khz >= 3500 && khz <= 4000) return '80m';
+  if (khz >= 5330 && khz <= 5410) return '60m';
+  if (khz >= 7000 && khz <= 7300) return '40m';
+  if (khz >= 10100 && khz <= 10150) return '30m';
+  if (khz >= 14000 && khz <= 14350) return '20m';
+  if (khz >= 18068 && khz <= 18168) return '17m';
+  if (khz >= 21000 && khz <= 21450) return '15m';
+  if (khz >= 24890 && khz <= 24990) return '12m';
+  if (khz >= 28000 && khz <= 29700) return '10m';
+  if (khz >= 50000 && khz <= 54000) return '6m';
+  if (khz >= 144000 && khz <= 148000) return '2m';
+  return '';
+}
+
+// --- Multi-Park Dialog ---
+let multiparkContext = null; // 'my' or 'hunter'
+const multiparkDialog = document.getElementById('multipark-dialog');
+const multiparkTitle = document.getElementById('multipark-title');
+const multiparkSlots = document.getElementById('multipark-slots');
+const multiparkAddBtn = document.getElementById('multipark-add');
+const multiparkOkBtn = document.getElementById('multipark-ok');
+const multiparkCancelBtn = document.getElementById('multipark-cancel');
+const multiparkCloseBtn = document.getElementById('multipark-close');
+
+function openMultiparkDialog(context) {
+  multiparkContext = context; // 'my' or 'hunter'
+  multiparkTitle.textContent = context === 'my' ? 'My Parks (MY_SIG_INFO)' : "Hunter's Parks (SIG_INFO)";
+  const refs = context === 'my' ? activatorParkRefs : hunterParkRefs;
+  multiparkSlots.innerHTML = '';
+  // Populate existing slots
+  if (refs.length === 0) {
+    addMultiparkSlot('', '');
+  } else {
+    for (const p of refs) {
+      addMultiparkSlot(p.ref, p.name);
+    }
+  }
+  updateMultiparkAddBtn();
+  multiparkDialog.showModal();
+  // Focus first input
+  const first = multiparkSlots.querySelector('.multipark-ref-input');
+  if (first) first.focus();
+}
+
+function addMultiparkSlot(ref, name) {
+  const slotCount = multiparkSlots.querySelectorAll('.multipark-slot').length;
+  if (slotCount >= 3) return;
+  const slot = document.createElement('div');
+  slot.className = 'multipark-slot';
+  slot.innerHTML = `
+    <div class="multipark-slot-row">
+      <input type="text" class="multipark-ref-input" placeholder="Park ref (e.g. K-1234)" maxlength="12" spellcheck="false" autocomplete="off" value="${ref || ''}">
+      <button type="button" class="multipark-remove-btn" title="Remove">&times;</button>
+    </div>
+    <span class="multipark-name">${name || ''}</span>
+    <div class="multipark-dropdown activator-dropdown hidden"></div>
+  `;
+  multiparkSlots.appendChild(slot);
+
+  const input = slot.querySelector('.multipark-ref-input');
+  const nameEl = slot.querySelector('.multipark-name');
+  const dropdown = slot.querySelector('.multipark-dropdown');
+  const removeBtn = slot.querySelector('.multipark-remove-btn');
+
+  // Autocomplete
+  let searchTimer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const query = input.value.trim();
+    if (query.length < 2) { dropdown.classList.add('hidden'); nameEl.textContent = ''; return; }
+    searchTimer = setTimeout(async () => {
+      const results = await window.api.searchParks(query);
+      if (!results || !results.length) { dropdown.classList.add('hidden'); return; }
+      dropdown.innerHTML = '';
+      for (const park of results) {
+        const item = document.createElement('div');
+        item.className = 'activator-dropdown-item';
+        item.innerHTML = `<span class="activator-dropdown-ref">${park.reference}</span><span class="activator-dropdown-name">${park.name || ''}</span><span class="activator-dropdown-loc">${park.locationDesc || ''}</span>`;
+        item.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          input.value = park.reference;
+          nameEl.textContent = park.name || '';
+          dropdown.classList.add('hidden');
+        });
+        dropdown.appendChild(item);
+      }
+      dropdown.classList.remove('hidden');
+    }, 150);
+  });
+  input.addEventListener('blur', () => {
+    setTimeout(() => dropdown.classList.add('hidden'), 150);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const first = dropdown.querySelector('.activator-dropdown-item');
+      if (first && !dropdown.classList.contains('hidden')) {
+        first.click();
+        e.preventDefault();
+      }
+    }
+  });
+
+  // Remove
+  removeBtn.addEventListener('click', () => {
+    slot.remove();
+    updateMultiparkAddBtn();
+    // Ensure at least one slot
+    if (multiparkSlots.querySelectorAll('.multipark-slot').length === 0) {
+      addMultiparkSlot('', '');
+    }
+  });
+
+  updateMultiparkAddBtn();
+}
+
+function updateMultiparkAddBtn() {
+  const slotCount = multiparkSlots.querySelectorAll('.multipark-slot').length;
+  multiparkAddBtn.style.display = slotCount >= 3 ? 'none' : '';
+}
+
+if (multiparkAddBtn) {
+  multiparkAddBtn.addEventListener('click', () => addMultiparkSlot('', ''));
+}
+
+if (multiparkOkBtn) {
+  multiparkOkBtn.addEventListener('click', () => {
+    const slots = multiparkSlots.querySelectorAll('.multipark-slot');
+    const refs = [];
+    for (const slot of slots) {
+      const ref = slot.querySelector('.multipark-ref-input').value.trim().toUpperCase();
+      const name = slot.querySelector('.multipark-name').textContent.trim();
+      if (ref) refs.push({ ref, name });
+    }
+    if (multiparkContext === 'my') {
+      if (refs.length === 0) { multiparkDialog.close(); return; }
+      activatorParkRefs = refs;
+      updateParkDisplay();
+      activatorStartBtn.disabled = !primaryParkRef();
+      window.api.saveSettings({ activatorParkRefs });
+    } else {
+      hunterParkRefs = refs;
+      updateHunterParkDisplay();
+    }
+    multiparkDialog.close();
+  });
+}
+
+if (multiparkCancelBtn) {
+  multiparkCancelBtn.addEventListener('click', () => multiparkDialog.close());
+}
+if (multiparkCloseBtn) {
+  multiparkCloseBtn.addEventListener('click', () => multiparkDialog.close());
+}
+
+// Click the +N badge to open multi-park dialog
+const activatorParkExtraBadge = document.getElementById('activator-park-extra');
+if (activatorParkExtraBadge) {
+  activatorParkExtraBadge.addEventListener('click', () => openMultiparkDialog('my'));
+}
+const hunterParkExtraBadge = document.getElementById('activator-hunter-park-extra');
+if (hunterParkExtraBadge) {
+  hunterParkExtraBadge.addEventListener('click', () => openMultiparkDialog('hunter'));
+}
+
+// --- Hunter Park Autocomplete ---
+const hunterParkInput = document.getElementById('activator-hunter-park');
+const hunterParkDropdown = document.getElementById('activator-hunter-dropdown');
+let hunterParkSearchTimeout = null;
+
+if (hunterParkInput) {
+  hunterParkInput.addEventListener('input', () => {
+    clearTimeout(hunterParkSearchTimeout);
+    const query = hunterParkInput.value.trim();
+    if (query.length < 2) { hunterParkDropdown.classList.add('hidden'); hunterParkRefs = []; return; }
+    hunterParkSearchTimeout = setTimeout(async () => {
+      const results = await window.api.searchParks(query);
+      if (!results || !results.length) { hunterParkDropdown.classList.add('hidden'); return; }
+      hunterParkDropdown.innerHTML = '';
+      for (const park of results) {
+        const item = document.createElement('div');
+        item.className = 'activator-dropdown-item';
+        item.innerHTML = `<span class="activator-dropdown-ref">${park.reference}</span><span class="activator-dropdown-name">${park.name || ''}</span><span class="activator-dropdown-loc">${park.locationDesc || ''}</span>`;
+        item.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          hunterParkRefs = [{ ref: park.reference, name: park.name || '' }];
+          hunterParkInput.value = park.reference;
+          hunterParkDropdown.classList.add('hidden');
+          updateHunterParkDisplay();
+        });
+        hunterParkDropdown.appendChild(item);
+      }
+      hunterParkDropdown.classList.remove('hidden');
+    }, 150);
+  });
+  hunterParkInput.addEventListener('blur', () => {
+    setTimeout(() => hunterParkDropdown.classList.add('hidden'), 150);
+  });
+  hunterParkInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const first = hunterParkDropdown.querySelector('.activator-dropdown-item');
+      if (first && !hunterParkDropdown.classList.contains('hidden')) {
+        first.click();
+        e.preventDefault();
+      } else {
+        // Enter in hunter park triggers log
+        e.preventDefault();
+        activatorLogContact();
+      }
+    }
+  });
 }
 
 // Restore saved zoom level

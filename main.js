@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, dialog, Notification, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, Notification, screen, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -12,7 +12,7 @@ const { CatClient, RigctldClient, listSerialPorts } = require('./lib/cat');
 const { gridToLatLon, haversineDistanceMiles, bearing } = require('./lib/grid');
 const { freqToBand } = require('./lib/bands');
 const { loadCtyDat, resolveCallsign, getAllEntities } = require('./lib/cty');
-const { parseAdifFile, parseWorkedQsos, parseAllQsos, parseAllRawQsos, parseSqliteFile, parseSqliteConfirmed, isSqliteFile } = require('./lib/adif');
+const { parseAdifFile, parseWorkedQsos, parseAllQsos, parseAllRawQsos, parseSqliteFile, parseSqliteConfirmed, isSqliteFile, parseRecord: parseAdifRecord } = require('./lib/adif');
 const { DxClusterClient } = require('./lib/dxcluster');
 const { RbnClient } = require('./lib/rbn');
 const { appendQso, buildAdifRecord, appendImportedQso, rewriteAdifFile, ADIF_HEADER, adifField } = require('./lib/adif-writer');
@@ -26,10 +26,17 @@ const { fetchSpots: fetchWwffSpots } = require('./lib/wwff');
 const { fetchSpots: fetchLlotaSpots } = require('./lib/llota');
 const { postWwffRespot } = require('./lib/wwff-respot');
 const { QrzClient } = require('./lib/qrz');
+const { callsignToProgram, fetchParksForProgram, loadParksCache, saveParksCache, isCacheStale, searchParks: searchParksDb, getPark: getParkDb, buildParksMap } = require('./lib/pota-parks-db');
 const { autoUpdater } = require('electron-updater');
 
 // --- QRZ.com callsign lookup ---
 let qrz = new QrzClient();
+
+// --- Parks DB (activator mode) ---
+let parksArray = [];
+let parksMap = new Map();
+let parksDbPrefix = '';
+let parksDbLoading = false;
 
 // --- cty.dat database (loaded once at startup) ---
 let ctyDb = null;
@@ -53,6 +60,8 @@ let settings = null;
 let win = null;
 let popoutWin = null; // pop-out map window
 let qsoPopoutWin = null; // pop-out QSO log window
+let actmapPopoutWin = null; // pop-out activation map window
+let spotsPopoutWin = null; // pop-out spots window (activator mode)
 let cat = null;
 let spotTimer = null;
 let solarTimer = null;
@@ -336,6 +345,19 @@ async function connectCat() {
     const rigctldPort = target.rigctldPort || 4532;
     sendCatLog(`Connecting to rigctld on 127.0.0.1:${rigctldPort}`);
     cat.connect({ type: 'rigctld', host: '127.0.0.1', port: rigctldPort });
+  } else if (target && target.type === 'rigctldnet') {
+    // Connect directly to remote rigctld server — no local spawn
+    cat = new RigctldClient();
+    cat.on('status', (s) => {
+      sendCatLog(`rigctld-net status: connected=${s.connected}${s.error ? ' error=' + s.error : ''}`);
+      sendCatStatus(s);
+    });
+    cat.on('frequency', sendCatFrequency);
+    cat.on('mode', sendCatMode);
+    const host = target.host || '127.0.0.1';
+    const port = target.port || 4532;
+    sendCatLog(`Connecting to remote rigctld on ${host}:${port}`);
+    cat.connect({ type: 'rigctldnet', host, port });
   } else {
     cat = new CatClient();
     cat._debug = true;
@@ -971,7 +993,7 @@ function connectWsjtx() {
     }
   });
 
-  wsjtx.on('logged-adif', ({ adif }) => {
+  wsjtx.on('logged-adif', async ({ adif }) => {
     if (!settings.wsjtxAutoLog) return;
     // Append the raw ADIF record to our log file
     const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
@@ -985,6 +1007,34 @@ function connectWsjtx() {
       loadWorkedQsos();
     } catch (err) {
       console.error('Failed to append WSJT-X ADIF:', err.message);
+    }
+
+    // Forward to external logbook (ACLog, Log4OM, etc.) if enabled
+    if (settings.sendToLogbook && settings.logbookType) {
+      try {
+        const f = parseAdifRecord(adif);
+        const freqMHz = parseFloat(f.FREQ || '0');
+        const qsoData = {
+          callsign: f.CALL || '',
+          frequency: String(Math.round(freqMHz * 1000)),
+          mode: f.MODE || '',
+          qsoDate: f.QSO_DATE || '',
+          timeOn: f.TIME_ON || '',
+          rstSent: f.RST_SENT || '',
+          rstRcvd: f.RST_RCVD || '',
+          txPower: f.TX_PWR || '',
+          band: f.BAND || '',
+          sig: f.SIG || '',
+          sigInfo: f.SIG_INFO || '',
+          name: f.NAME || '',
+          gridsquare: f.GRIDSQUARE || '',
+          comment: f.COMMENT || '',
+          operator: f.OPERATOR || settings.myCallsign || '',
+        };
+        await forwardToLogbook(qsoData);
+      } catch (fwdErr) {
+        console.error('WSJT-X logbook forwarding failed:', fwdErr.message);
+      }
     }
   });
 
@@ -1130,13 +1180,6 @@ function pushSpotsToSmartSdr(spots) {
   const maxAgeMs = (settings.smartSdrMaxAge != null ? settings.smartSdrMaxAge : 15) * 60000;
 
   for (const spot of spots) {
-    if (spot.source === 'pota' && settings.smartSdrPota === false) continue;
-    if (spot.source === 'sota' && settings.smartSdrSota === false) continue;
-    if (spot.source === 'dxc' && settings.smartSdrCluster === false) continue;
-    if (spot.source === 'rbn' && !settings.smartSdrRbn) continue;
-    if (spot.source === 'wwff' && settings.smartSdrWwff === false) continue;
-    if (spot.source === 'llota' && settings.smartSdrLlota === false) continue;
-    if (spot.source === 'pskr' && settings.smartSdrPskr === false) continue;
     // Age filter — skip spots older than the configured max age (0 = no limit)
     if (maxAgeMs > 0 && spot.spotTime) {
       const t = spot.spotTime.endsWith('Z') ? spot.spotTime : spot.spotTime + 'Z';
@@ -1183,13 +1226,6 @@ function pushSpotsToTci(spots) {
   const maxAgeMs = (settings.tciMaxAge != null ? settings.tciMaxAge : 15) * 60000;
 
   for (const spot of spots) {
-    if (spot.source === 'pota' && settings.tciPota === false) continue;
-    if (spot.source === 'sota' && settings.tciSota === false) continue;
-    if (spot.source === 'dxc' && settings.tciCluster === false) continue;
-    if (spot.source === 'rbn' && !settings.tciRbn) continue;
-    if (spot.source === 'wwff' && settings.tciWwff === false) continue;
-    if (spot.source === 'llota' && settings.tciLlota === false) continue;
-    if (spot.source === 'pskr' && settings.tciPskr === false) continue;
     // Age filter — skip spots older than the configured max age (0 = no limit)
     if (maxAgeMs > 0 && spot.spotTime) {
       const t = spot.spotTime.endsWith('Z') ? spot.spotTime : spot.spotTime + 'Z';
@@ -1335,6 +1371,7 @@ function processPotaSpots(raw) {
       spotTime: s.spotTime || '',
       continent,
       comments: s.comments || '',
+      count: typeof s.count === 'number' ? s.count : null,
     };
   });
   // Dedupe: keep latest spot per callsign+band (allows multi-band activations)
@@ -1535,6 +1572,10 @@ function sendMergedSpots() {
   win.webContents.send('spots', merged);
   pushSpotsToSmartSdr(merged);
   pushSpotsToTci(merged);
+  // Forward to spots pop-out if open
+  if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) {
+    spotsPopoutWin.webContents.send('spots-popout-data', merged);
+  }
   // Trigger QRZ lookups for new callsigns (async, non-blocking)
   if (qrz.configured && settings.enableQrz) {
     const callsigns = [...new Set(merged.map(s => s.callsign))];
@@ -1642,11 +1683,13 @@ async function refreshSpots() {
 
 // --- DXCC data builder ---
 async function buildDxccData() {
-  if (!ctyDb || !settings.adifPath) return null;
+  if (!ctyDb) return null;
+  const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+  if (!fs.existsSync(logPath)) return null;
   try {
-    const qsos = isSqliteFile(settings.adifPath)
-      ? await parseSqliteConfirmed(settings.adifPath)
-      : parseAdifFile(settings.adifPath);
+    const qsos = isSqliteFile(logPath)
+      ? await parseSqliteConfirmed(logPath)
+      : parseAdifFile(logPath, { confirmedOnly: false });
 
     // Build confirmation map: entityIndex → { band → Set<mode> }
     const confirmMap = new Map();
@@ -1749,11 +1792,10 @@ function forwardToLogbook(qsoData) {
   const port = parseInt(settings.logbookPort, 10);
 
   if (type === 'log4om') {
-    // Log4OM watches the ADIF file directly — no network forwarding needed
-    return Promise.resolve();
+    return sendUdpAdif(qsoData, host, port || 2237);
   }
   if (type === 'hrd') {
-    return sendHrdUdp(qsoData, host, port || 2333);
+    return sendUdpAdif(qsoData, host, port || 2333);
   }
   if (type === 'n3fjp') {
     return sendN3fjpTcp(qsoData, host, port || 1100);
@@ -1765,9 +1807,10 @@ function forwardToLogbook(qsoData) {
 }
 
 /**
- * Send a QSO to HRD Logbook via plain UDP ADIF on port 2333.
+ * Send a QSO via plain UDP ADIF packet.
+ * Used by Log4OM 2 (port 2237) and HRD Logbook (port 2333).
  */
-function sendHrdUdp(qsoData, host, port) {
+function sendUdpAdif(qsoData, host, port) {
   return new Promise((resolve, reject) => {
     const dgram = require('dgram');
     const record = buildAdifRecord(qsoData);
@@ -1793,20 +1836,26 @@ function sendN3fjpTcp(qsoData, host, port) {
     const record = buildAdifRecord(qsoData);
     const cmd = `<CMD><ADDADIFRECORD><VALUE>${record}</VALUE></CMD>\r\n`;
 
+    let settled = false;
     const sock = net.createConnection({ host, port }, () => {
       sock.write(cmd, 'utf-8', () => {
         sock.end();
-        resolve();
       });
+    });
+
+    // Wait for socket to fully close + brief delay — N3FJP needs time
+    // between connections before it can accept the next one
+    sock.on('close', () => {
+      if (!settled) { settled = true; setTimeout(resolve, 250); }
     });
 
     sock.setTimeout(5000);
     sock.on('timeout', () => {
       sock.destroy();
-      reject(new Error('N3FJP connection timed out'));
+      if (!settled) { settled = true; reject(new Error('N3FJP connection timed out')); }
     });
     sock.on('error', (err) => {
-      reject(new Error(`N3FJP: ${err.message}`));
+      if (!settled) { settled = true; reject(new Error(`N3FJP: ${err.message}`)); }
     });
   });
 }
@@ -1853,6 +1902,20 @@ function isOnScreen(saved) {
   });
 }
 
+function getIconPath() {
+  const variant = settings.lightIcon ? 'icon-light.png' : 'icon.png';
+  return path.join(__dirname, 'assets', variant);
+}
+
+function applyIconToAllWindows() {
+  const iconPath = getIconPath();
+  const img = nativeImage.createFromPath(iconPath);
+  const allWins = BrowserWindow.getAllWindows();
+  for (const w of allWins) {
+    if (!w.isDestroyed()) w.setIcon(img);
+  }
+}
+
 function createWindow() {
   // Create window at default size first, then restore bounds via setBounds()
   // so Electron resolves DPI scaling for the correct display
@@ -1862,7 +1925,7 @@ function createWindow() {
     height: 700,
     title: `POTACAT - v${require('./package.json').version}`,
     ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
-    icon: path.join(__dirname, 'assets', 'icon.png'),
+    icon: getIconPath(),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1905,9 +1968,11 @@ function createWindow() {
     // Remember whether pop-out windows were open
     settings.mapPopoutOpen = !!(popoutWin && !popoutWin.isDestroyed());
     settings.qsoPopoutOpen = !!(qsoPopoutWin && !qsoPopoutWin.isDestroyed());
+    settings.spotsPopoutOpen = !!(spotsPopoutWin && !spotsPopoutWin.isDestroyed());
     saveSettings(settings);
     if (popoutWin && !popoutWin.isDestroyed()) popoutWin.close();
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.close();
+    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.close();
   });
 
   // Once the renderer is actually ready to listen, send current state
@@ -1931,7 +1996,7 @@ function createWindow() {
     refreshSpots();
     fetchSolarData();
     // Auto-send DXCC data if enabled and ADIF path is set
-    if (settings.enableDxcc && settings.adifPath) {
+    if (settings.enableDxcc) {
       sendDxccData();
     }
     // Load worked callsigns from QSO log
@@ -1960,6 +2025,10 @@ function createWindow() {
     // Auto-reopen pop-out QSO log if it was open when the app last closed
     if (settings.qsoPopoutOpen) {
       ipcMain.emit('qso-popout-open');
+    }
+    // Auto-reopen pop-out spots if it was open when the app last closed
+    if (settings.spotsPopoutOpen) {
+      ipcMain.emit('spots-popout-open');
     }
   });
 }
@@ -2341,6 +2410,12 @@ autoUpdater.on('update-downloaded', () => {
   }
 });
 
+autoUpdater.on('update-not-available', () => {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update-up-to-date');
+  }
+});
+
 autoUpdater.on('error', (err) => {
   console.error('autoUpdater error:', err);
   if (win && !win.isDestroyed()) {
@@ -2374,6 +2449,8 @@ function checkForUpdatesManual() {
           if (win && !win.isDestroyed()) {
             win.webContents.send('update-available', { version: latestTag, url: releaseUrl, headline: data.name || '' });
           }
+        } else if (win && !win.isDestroyed()) {
+          win.webContents.send('update-up-to-date');
         }
       } catch { /* silently ignore parse errors */ }
     });
@@ -2409,6 +2486,32 @@ function checkForUpdates() {
     checkForUpdatesManual();
   }
 }
+
+// --- Fetch release notes for a specific version ---
+ipcMain.handle('get-release-notes', async (_event, version) => {
+  const https = require('https');
+  const tag = version.startsWith('v') ? version : `v${version}`;
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: `/repos/Waffleslop/POTACAT/releases/tags/${tag}`,
+      headers: { 'User-Agent': 'POTACAT/' + require('./package.json').version },
+      timeout: 10000,
+    };
+    const req = https.get(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          resolve({ name: data.name || '', body: data.body || '' });
+        } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+});
 
 // --- Anonymous telemetry (opt-in only) ---
 const TELEMETRY_URL = 'https://telemetry.potacat.com/ping';
@@ -2640,6 +2743,12 @@ app.whenReady().then(() => {
   if (settings.enableQrz && settings.qrzUsername && settings.qrzPassword) {
     qrz.configure(settings.qrzUsername, settings.qrzPassword);
   }
+  // Load QRZ disk cache
+  const qrzCachePath = path.join(app.getPath('userData'), 'qrz-cache.json');
+  qrz.loadCache(qrzCachePath);
+
+  // Load parks DB for activator mode
+  loadParksDbForCallsign(settings.myCallsign);
 
   // Window control IPC
   ipcMain.on('win-minimize', () => { if (win) win.minimize(); });
@@ -2664,7 +2773,7 @@ app.whenReady().then(() => {
       title: 'POTACAT Map',
       show: false,
       ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
-      icon: path.join(__dirname, 'assets', 'icon.png'),
+      icon: getIconPath(),
       webPreferences: {
         preload: path.join(__dirname, 'preload-popout.js'),
         contextIsolation: true,
@@ -2775,7 +2884,7 @@ app.whenReady().then(() => {
       title: 'POTACAT Logbook',
       show: false,
       ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
-      icon: path.join(__dirname, 'assets', 'icon.png'),
+      icon: getIconPath(),
       webPreferences: {
         preload: path.join(__dirname, 'preload-qso-popout.js'),
         contextIsolation: true,
@@ -2836,6 +2945,184 @@ app.whenReady().then(() => {
   ipcMain.on('qso-popout-theme', (_e, theme) => {
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
       qsoPopoutWin.webContents.send('qso-popout-theme', theme);
+    }
+  });
+
+  // --- Spots Pop-out Window ---
+  ipcMain.on('spots-popout-open', () => {
+    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) {
+      spotsPopoutWin.focus();
+      return;
+    }
+
+    const isMac = process.platform === 'darwin';
+    spotsPopoutWin = new BrowserWindow({
+      width: 900,
+      height: 500,
+      title: 'POTACAT Spots',
+      show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+      icon: getIconPath(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-spots-popout.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    // Restore saved bounds (DPI-aware)
+    const saved = settings.spotsPopoutBounds;
+    if (saved && saved.width > 200 && saved.height > 150 && isOnScreen(saved)) {
+      spotsPopoutWin.setBounds(saved);
+    }
+    spotsPopoutWin.show();
+
+    spotsPopoutWin.setMenuBarVisibility(false);
+    spotsPopoutWin.loadFile(path.join(__dirname, 'renderer', 'spots-popout.html'));
+
+    spotsPopoutWin.on('close', () => {
+      if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) {
+        if (!spotsPopoutWin.isMaximized() && !spotsPopoutWin.isMinimized()) {
+          settings.spotsPopoutBounds = spotsPopoutWin.getBounds();
+          saveSettings(settings);
+        }
+      }
+    });
+
+    spotsPopoutWin.on('closed', () => {
+      spotsPopoutWin = null;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('spots-popout-status', false);
+      }
+    });
+
+    spotsPopoutWin.webContents.on('did-finish-load', () => {
+      // Send current spots immediately
+      const merged = [...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
+      spotsPopoutWin.webContents.send('spots-popout-data', merged);
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('spots-popout-status', true);
+      }
+    });
+
+    // F12 opens DevTools in pop-out
+    spotsPopoutWin.webContents.on('before-input-event', (_e, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') {
+        spotsPopoutWin.webContents.toggleDevTools();
+      }
+    });
+  });
+
+  // Spots pop-out window controls
+  ipcMain.on('spots-popout-minimize', () => { if (spotsPopoutWin) spotsPopoutWin.minimize(); });
+  ipcMain.on('spots-popout-maximize', () => {
+    if (!spotsPopoutWin) return;
+    if (spotsPopoutWin.isMaximized()) spotsPopoutWin.unmaximize();
+    else spotsPopoutWin.maximize();
+  });
+  ipcMain.on('spots-popout-close', () => { if (spotsPopoutWin) spotsPopoutWin.close(); });
+
+  // Relay theme to spots pop-out
+  ipcMain.on('spots-popout-theme', (_e, theme) => {
+    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) {
+      spotsPopoutWin.webContents.send('spots-popout-theme', theme);
+    }
+  });
+
+  // Relay log dialog request from spots pop-out to main renderer
+  ipcMain.on('spots-popout-open-log', (_e, spot) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('popout-open-log', spot);
+      win.focus();
+    }
+  });
+
+  // --- Activation Map Pop-out ---
+  ipcMain.on('actmap-popout-open', () => {
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) {
+      actmapPopoutWin.focus();
+      return;
+    }
+
+    const isMac = process.platform === 'darwin';
+    actmapPopoutWin = new BrowserWindow({
+      width: 700,
+      height: 500,
+      title: 'Activation Map',
+      show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+      icon: getIconPath(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-actmap-popout.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    // Restore saved bounds (DPI-aware)
+    const saved = settings.actmapPopoutBounds;
+    if (saved && saved.width > 200 && saved.height > 150 && isOnScreen(saved)) {
+      actmapPopoutWin.setBounds(saved);
+    }
+    actmapPopoutWin.show();
+
+    actmapPopoutWin.setMenuBarVisibility(false);
+    actmapPopoutWin.loadFile(path.join(__dirname, 'renderer', 'actmap-popout.html'));
+
+    actmapPopoutWin.on('close', () => {
+      if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) {
+        if (!actmapPopoutWin.isMaximized() && !actmapPopoutWin.isMinimized()) {
+          settings.actmapPopoutBounds = actmapPopoutWin.getBounds();
+          saveSettings(settings);
+        }
+      }
+    });
+
+    actmapPopoutWin.on('closed', () => {
+      actmapPopoutWin = null;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('actmap-popout-status', false);
+      }
+    });
+
+    actmapPopoutWin.webContents.on('did-finish-load', () => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('actmap-popout-status', true);
+      }
+    });
+
+    actmapPopoutWin.webContents.on('before-input-event', (_e, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') {
+        actmapPopoutWin.webContents.toggleDevTools();
+      }
+    });
+  });
+
+  // Activation map pop-out window controls
+  ipcMain.on('actmap-popout-minimize', () => { if (actmapPopoutWin) actmapPopoutWin.minimize(); });
+  ipcMain.on('actmap-popout-maximize', () => {
+    if (!actmapPopoutWin) return;
+    if (actmapPopoutWin.isMaximized()) actmapPopoutWin.unmaximize();
+    else actmapPopoutWin.maximize();
+  });
+  ipcMain.on('actmap-popout-close', () => { if (actmapPopoutWin) actmapPopoutWin.close(); });
+
+  // Relay activation data to pop-out
+  ipcMain.on('actmap-popout-data', (_e, data) => {
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) {
+      actmapPopoutWin.webContents.send('actmap-data', data);
+    }
+  });
+
+  ipcMain.on('actmap-popout-contact', (_e, data) => {
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) {
+      actmapPopoutWin.webContents.send('actmap-contact-added', data);
+    }
+  });
+
+  ipcMain.on('actmap-popout-theme', (_e, theme) => {
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) {
+      actmapPopoutWin.webContents.send('actmap-theme', theme);
     }
   });
 
@@ -3051,6 +3338,7 @@ app.whenReady().then(() => {
       (has('wsjtxPort') && newSettings.wsjtxPort !== settings.wsjtxPort);
 
     const pskrChanged = has('enablePskr') && newSettings.enablePskr !== settings.enablePskr;
+    const iconChanged = has('lightIcon') && newSettings.lightIcon !== settings.lightIcon;
 
     const cwKeyerChanged = (has('enableCwKeyer') && newSettings.enableCwKeyer !== settings.enableCwKeyer) ||
       (has('cwKeyerMode') && newSettings.cwKeyerMode !== settings.cwKeyerMode) ||
@@ -3134,7 +3422,7 @@ app.whenReady().then(() => {
     }
 
     // Auto-parse ADIF and send DXCC data if enabled
-    if (settings.enableDxcc && settings.adifPath) {
+    if (settings.enableDxcc) {
       sendDxccData();
     }
 
@@ -3148,6 +3436,9 @@ app.whenReady().then(() => {
       loadWorkedParks();
     }
 
+    // Swap app icon on all windows if setting changed
+    if (iconChanged) applyIconToAllWindows();
+
     // Reconfigure QRZ client if credentials changed
     if (newSettings.enableQrz) {
       qrz.configure(newSettings.qrzUsername || '', newSettings.qrzPassword || '');
@@ -3156,19 +3447,7 @@ app.whenReady().then(() => {
     return settings;
   });
 
-  // --- DXCC Tracker IPC ---
-  ipcMain.handle('choose-adif-file', async () => {
-    const result = await dialog.showOpenDialog(win, {
-      title: 'Select Log File',
-      filters: [
-        { name: 'Log Files', extensions: ['adi', 'adif', 'sqlite', 'db'] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
-      properties: ['openFile'],
-    });
-    if (result.canceled || result.filePaths.length === 0) return null;
-    return result.filePaths[0];
-  });
+
 
   ipcMain.handle('choose-pota-parks-file', async () => {
     const result = await dialog.showOpenDialog(win, {
@@ -3460,7 +3739,7 @@ app.whenReady().then(() => {
       // Update worked QSOs map and notify renderer
       if (qsoData.callsign) {
         const call = qsoData.callsign.toUpperCase();
-        const entry = { date: qsoData.qsoDate || '', ref: (qsoData.sigInfo || '').toUpperCase() };
+        const entry = { date: qsoData.qsoDate || '', ref: (qsoData.sigInfo || '').toUpperCase(), band: (qsoData.band || '').toUpperCase(), mode: (qsoData.mode || '').toUpperCase() };
         if (!workedQsos.has(call)) workedQsos.set(call, []);
         workedQsos.get(call).push(entry);
         if (win && !win.isDestroyed()) {
@@ -3469,7 +3748,9 @@ app.whenReady().then(() => {
       }
 
       // Forward to external logbook if enabled
-      if (settings.sendToLogbook && settings.logbookType) {
+      // skipLogbookForward: multi-park activations send one ADIF record per park ref,
+      // but external logbooks only need one QSO per physical contact
+      if (settings.sendToLogbook && settings.logbookType && !qsoData.skipLogbookForward) {
         try {
           await forwardToLogbook(qsoData);
         } catch (fwdErr) {
@@ -3659,6 +3940,165 @@ app.whenReady().then(() => {
     }
   });
 
+  // --- Activator Mode: Parks DB IPC ---
+  ipcMain.handle('fetch-parks-db', async (_e, prefix) => {
+    if (!prefix) return { success: false, error: 'No program prefix' };
+    try {
+      await loadParksDbForCallsign(prefix === 'auto' ? (settings.myCallsign || '') : prefix);
+      return { success: true, count: parksArray.length, prefix: parksDbPrefix };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('search-parks', (_e, query) => {
+    return searchParksDb(parksArray, query);
+  });
+
+  ipcMain.handle('get-park', (_e, ref) => {
+    return getParkDb(parksMap, ref);
+  });
+
+  ipcMain.handle('parks-db-status', () => {
+    return { prefix: parksDbPrefix, count: parksArray.length, loading: parksDbLoading };
+  });
+
+  ipcMain.handle('export-activation-adif', async (event, data) => {
+    const { writeActivationAdifRaw } = require('./lib/adif-writer');
+    const { qsos, parkRef, myCallsign: activatorCall } = data;
+    if (!qsos || !qsos.length) return { success: false, error: 'No contacts to export' };
+    try {
+      const parentWin = BrowserWindow.fromWebContents(event.sender) || win;
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const defaultName = `${activatorCall || 'POTACAT'}@${parkRef || 'PARK'}-${dateStr}.adi`;
+      const result = await dialog.showSaveDialog(parentWin, {
+        title: 'Export Activation ADIF',
+        defaultPath: path.join(app.getPath('documents'), defaultName),
+        filters: [
+          { name: 'ADIF Files', extensions: ['adi', 'adif'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (result.canceled) return { success: false };
+      writeActivationAdifRaw(result.filePath, qsos);
+      return { success: true, path: result.filePath };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('export-activation-adif-perpark', async (event, data) => {
+    const { writeActivationAdifRaw } = require('./lib/adif-writer');
+    const { qsosByPark, myCallsign: activatorCall } = data;
+    if (!qsosByPark || !Object.keys(qsosByPark).length) return { success: false, error: 'No contacts to export' };
+    try {
+      const parentWin = BrowserWindow.fromWebContents(event.sender) || win;
+      const result = await dialog.showOpenDialog(parentWin, {
+        title: 'Choose folder for per-park ADIF files',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      if (result.canceled || !result.filePaths.length) return { success: false };
+      const folder = result.filePaths[0];
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+      let fileCount = 0;
+      let totalQsos = 0;
+      for (const [ref, qsos] of Object.entries(qsosByPark)) {
+        const safeRef = ref.replace(/[^A-Za-z0-9_-]/g, '_');
+        const fileName = `${activatorCall || 'POTACAT'}@${safeRef}-${dateStr}.adi`;
+        const filePath = path.join(folder, fileName);
+        writeActivationAdifRaw(filePath, qsos);
+        fileCount++;
+        totalQsos += qsos.length;
+      }
+      return { success: true, folder, fileCount, totalQsos };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // --- Past Activations (scan log for MY_SIG=POTA groups) ---
+  ipcMain.handle('get-past-activations', () => {
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    try {
+      if (!fs.existsSync(logPath)) return [];
+      const qsos = parseAllRawQsos(logPath);
+      // Group by MY_SIG_INFO (park ref) + QSO_DATE
+      const groups = new Map();
+      for (const q of qsos) {
+        if ((q.MY_SIG || '').toUpperCase() !== 'POTA' || !q.MY_SIG_INFO) continue;
+        const ref = q.MY_SIG_INFO.toUpperCase();
+        const date = q.QSO_DATE || '';
+        const key = `${ref}|${date}`;
+        if (!groups.has(key)) {
+          groups.set(key, { parkRef: ref, date, contacts: [] });
+        }
+        groups.get(key).contacts.push({
+          callsign: q.CALL || '',
+          timeOn: q.TIME_ON || '',
+          freq: q.FREQ || '',
+          mode: q.MODE || '',
+          band: q.BAND || '',
+          rstSent: q.RST_SENT || '',
+          rstRcvd: q.RST_RCVD || '',
+          name: q.NAME || '',
+          sig: q.SIG || '',
+          sigInfo: q.SIG_INFO || '',
+          myGridsquare: q.MY_GRIDSQUARE || '',
+        });
+      }
+      // Sort newest first
+      const result = [...groups.values()];
+      result.sort((a, b) => (b.date + (b.contacts[0]?.timeOn || '')).localeCompare(a.date + (a.contacts[0]?.timeOn || '')));
+      return result;
+    } catch {
+      return [];
+    }
+  });
+
+  // --- Delete activation (removes matching QSOs from ADIF log) ---
+  ipcMain.handle('delete-activation', async (_e, parkRef, date) => {
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    try {
+      if (!fs.existsSync(logPath)) return { success: false, error: 'Log file not found' };
+      const qsos = parseAllRawQsos(logPath);
+      const before = qsos.length;
+      const filtered = qsos.filter(q => {
+        if ((q.MY_SIG || '').toUpperCase() !== 'POTA') return true;
+        if ((q.MY_SIG_INFO || '').toUpperCase() !== parkRef.toUpperCase()) return true;
+        if ((q.QSO_DATE || '') !== date) return true;
+        return false; // matches — remove it
+      });
+      const removed = before - filtered.length;
+      if (removed === 0) return { success: true, removed: 0 };
+      rewriteAdifFile(logPath, filtered);
+      loadWorkedQsos();
+      return { success: true, removed };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // --- Resolve callsigns to lat/lon via cty.dat (for activation map) ---
+  ipcMain.handle('resolve-callsign-locations', (_e, callsigns) => {
+    if (!ctyDb || !Array.isArray(callsigns)) return {};
+    const result = {};
+    for (const cs of callsigns) {
+      const entity = resolveCallsign(cs, ctyDb);
+      if (entity && entity.lat != null && entity.lon != null) {
+        // Use call-area regional coords for large countries instead of country centroid
+        const area = getCallAreaCoords(cs, entity.name);
+        if (area) {
+          result[cs] = { lat: area.lat, lon: area.lon, name: entity.name || '', continent: entity.continent || '' };
+        } else {
+          result[cs] = { lat: entity.lat, lon: entity.lon, name: entity.name || '', continent: entity.continent || '' };
+        }
+      }
+    }
+    return result;
+  });
+
   // --- Recent QSOs IPC ---
   ipcMain.handle('get-recent-qsos', () => {
     const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
@@ -3732,6 +4172,85 @@ app.whenReady().then(() => {
     }
   });
 
+  // Update QSO(s) by matching fields (used by activator mode to edit a contact with multiple ADIF records)
+  ipcMain.handle('update-qsos-by-match', async (_event, { match, updates }) => {
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    try {
+      const qsos = parseAllRawQsos(logPath);
+      const callUpper = (match.callsign || '').toUpperCase();
+      const dateMatch = (match.qsoDate || '').replace(/-/g, '');
+      const timeMatch = (match.timeOn || '').replace(/:/g, '');
+      let updated = 0;
+      for (const q of qsos) {
+        const qCall = (q.CALL || '').toUpperCase();
+        const qDate = (q.QSO_DATE || '').replace(/-/g, '');
+        const qTime = (q.TIME_ON || '').replace(/:/g, '').substring(0, 4);
+        if (qCall !== callUpper) continue;
+        if (qDate !== dateMatch) continue;
+        if (qTime !== timeMatch.substring(0, 4)) continue;
+        if (match.frequency) {
+          const qFreq = parseFloat(q.FREQ || 0) * 1000;
+          const mFreq = parseFloat(match.frequency);
+          if (Math.abs(qFreq - mFreq) > 1) continue;
+        }
+        // Apply updates
+        Object.assign(q, updates);
+        updated++;
+      }
+      if (updated > 0) {
+        rewriteAdifFile(logPath, qsos);
+        loadWorkedQsos();
+        if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
+          const refreshed = parseAllRawQsos(logPath);
+          qsoPopoutWin.webContents.send('qso-popout-refreshed', refreshed);
+        }
+      }
+      return { success: true, updated };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Delete QSO(s) by matching fields (used by activator mode to remove a contact with multiple ADIF records)
+  ipcMain.handle('delete-qsos-by-match', async (_event, match) => {
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    try {
+      const qsos = parseAllRawQsos(logPath);
+      const before = qsos.length;
+      const callUpper = (match.callsign || '').toUpperCase();
+      const dateMatch = (match.qsoDate || '').replace(/-/g, '');
+      const timeMatch = (match.timeOn || '').replace(/:/g, '');
+      // Remove all QSOs that match callsign + date + time (+ freq if provided)
+      const filtered = qsos.filter(q => {
+        const qCall = (q.CALL || '').toUpperCase();
+        const qDate = (q.QSO_DATE || '').replace(/-/g, '');
+        const qTime = (q.TIME_ON || '').replace(/:/g, '').substring(0, 4);
+        if (qCall !== callUpper) return true;
+        if (qDate !== dateMatch) return true;
+        if (qTime !== timeMatch.substring(0, 4)) return true;
+        if (match.frequency) {
+          const qFreq = parseFloat(q.FREQ || 0) * 1000; // FREQ in MHz → kHz
+          const mFreq = parseFloat(match.frequency);
+          if (Math.abs(qFreq - mFreq) > 1) return true;
+        }
+        return false; // matched — remove
+      });
+      const removed = before - filtered.length;
+      if (removed > 0) {
+        rewriteAdifFile(logPath, filtered);
+        loadWorkedQsos();
+        // Notify QSO pop-out to refresh
+        if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
+          const refreshed = parseAllRawQsos(logPath);
+          qsoPopoutWin.webContents.send('qso-popout-refreshed', refreshed);
+        }
+      }
+      return { success: true, removed };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // --- RBN IPC ---
   ipcMain.on('rbn-clear', () => {
     rbnSpots = [];
@@ -3756,10 +4275,52 @@ app.whenReady().then(() => {
   });
 });
 
+// --- Parks DB loader ---
+async function loadParksDbForCallsign(callsign) {
+  const prefix = callsignToProgram(callsign);
+  if (!prefix || prefix === parksDbPrefix) return;
+  if (parksDbLoading) return;
+  parksDbLoading = true;
+  try {
+    const userDataPath = app.getPath('userData');
+    const cached = loadParksCache(userDataPath, prefix);
+    if (cached && !isCacheStale(cached.updatedAt)) {
+      parksArray = cached.parks || [];
+      parksMap = buildParksMap(parksArray);
+      parksDbPrefix = prefix;
+      parksDbLoading = false;
+      return;
+    }
+    // Fetch fresh from API
+    const parks = await fetchParksForProgram(prefix);
+    saveParksCache(userDataPath, prefix, parks);
+    parksArray = parks;
+    parksMap = buildParksMap(parksArray);
+    parksDbPrefix = prefix;
+  } catch (err) {
+    console.error('[ParksDB] Failed to load:', err.message);
+    // Fall back to stale cache if available
+    const userDataPath = app.getPath('userData');
+    const cached = loadParksCache(userDataPath, prefix);
+    if (cached) {
+      parksArray = cached.parks || [];
+      parksMap = buildParksMap(parksArray);
+      parksDbPrefix = prefix;
+    }
+  } finally {
+    parksDbLoading = false;
+  }
+}
+
 let cleanupDone = false;
 function gracefulCleanup() {
   if (cleanupDone) return;
   cleanupDone = true;
+  // Save QRZ cache to disk
+  try {
+    const qrzCachePath = path.join(app.getPath('userData'), 'qrz-cache.json');
+    qrz.saveCache(qrzCachePath);
+  } catch {}
   if (spotTimer) clearInterval(spotTimer);
   if (solarTimer) clearInterval(solarTimer);
   if (cat) try { cat.disconnect(); } catch {}

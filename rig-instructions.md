@@ -58,6 +58,19 @@ Tested radio configurations for POTACAT. If your rig isn't listed, try **Serial 
 
 ---
 
+## Xiegu X6100 (via flrig)
+
+- **Connection:** rigctld Network
+- **Host:** `127.0.0.1` (if flrig is on the same machine) or the IP of the machine running flrig
+- **Port:** `4532` (flrig's default rigctld port)
+- **Notes:**
+  - The X6100 uses Icom CI-V protocol — Serial CAT (Kenwood) will **not** work.
+  - Use **flrig** to manage the serial connection to the radio, then connect POTACAT to flrig's rigctld server.
+  - Tested on Raspberry Pi 5 with flrig controlling the X6100 over USB.
+  - Make sure flrig's rigctld server is enabled: **Config → Setup → Server**.
+
+---
+
 ## General Tips
 
 - **Test Connection** button is the fastest way to verify your settings. It queries the radio's frequency and reports success or failure.

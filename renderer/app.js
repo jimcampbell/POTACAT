@@ -8398,15 +8398,33 @@ async function renderShareImage(pastAct) {
   let locations = {};
   try { locations = await window.api.resolveCallsignLocations(callsigns); } catch {}
 
+  // Haversine distance in miles
+  const _hav = (lat1, lon1, lat2, lon2) => {
+    const R = 3959; // Earth radius in miles
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
   const bounds = [];
   if (parkLat != null) bounds.push([parkLat, parkLon]);
   const usedPositions = [];
+  let furthestCall = null, furthestDist = 0;
 
   for (const c of shareContacts) {
     const gridPos = c.grid ? gridToLatLonLocal(c.grid) : null;
     const loc = gridPos || locations[c.callsign];
     if (!loc) continue;
     let cLat = loc.lat, cLon = loc.lon;
+
+    // Track furthest QSO from park
+    if (parkLat != null) {
+      const d = _hav(parkLat, parkLon, cLat, cLon);
+      if (d > furthestDist) { furthestDist = d; furthestCall = c.callsign; }
+    }
     // Jitter overlapping positions
     const overlap = usedPositions.filter(p => Math.abs(p[0] - cLat) < 0.01 && Math.abs(p[1] - cLon) < 0.01).length;
     if (overlap > 0) {
@@ -8429,15 +8447,16 @@ async function renderShareImage(pastAct) {
     }
   }
 
-  // Fit bounds with generous padding for text overlay areas
-  // Top gradient covers ~25% of height, bottom ~18%, so pad accordingly
+  // Fit bounds: zoom as close as possible while keeping all markers visible.
+  // 20px edge padding (scaled to map container), plus extra for text overlays.
+  // Text overlays: top ~25% of image, bottom ~18% — convert to map container px.
+  const edgePx = Math.round(20 * (mapW / W));   // 20px at final 1080w
+  const textTop = Math.round(mapH * 0.25);      // top text overlay zone
+  const textBot = Math.round(mapH * 0.18);      // bottom branding zone
   if (bounds.length > 1) {
-    const padTop = Math.round(mapH * 0.28);    // clear top text overlay
-    const padBottom = Math.round(mapH * 0.22);  // clear bottom branding
-    const padLR = Math.round(mapW * 0.15);      // side margins
     shareMap.fitBounds(bounds, {
-      paddingTopLeft: [padLR, padTop],
-      paddingBottomRight: [padLR, padBottom],
+      paddingTopLeft: [edgePx, textTop + edgePx],
+      paddingBottomRight: [edgePx, textBot + edgePx],
     });
   } else if (parkLat != null) {
     shareMap.setView([parkLat, parkLon], 5);
@@ -8565,6 +8584,16 @@ async function renderShareImage(pastAct) {
   ctx.fillStyle = '#ffffff';
   ctx.font = '38px "Segoe UI", sans-serif';
   ctx.fillText(`${qsoCount} QSO${qsoCount !== 1 ? 's' : ''}${modeLine}`, safeX, textY);
+  textY += 52;
+
+  // Furthest QSO line
+  if (furthestCall && furthestDist > 0) {
+    const distVal = distUnit === 'km' ? Math.round(furthestDist * MI_TO_KM) : Math.round(furthestDist);
+    const distLabel = distUnit === 'km' ? 'km' : 'mi';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '32px "Segoe UI", sans-serif';
+    ctx.fillText(`Furthest QSO: ${furthestCall} \u2014 ${distVal.toLocaleString()} ${distLabel}`, safeX, textY);
+  }
 
   // --- Bottom branding (above IG/FB safe zone, ~270px from bottom) ---
   const brandY = H - 270;

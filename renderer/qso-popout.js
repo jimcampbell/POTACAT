@@ -556,6 +556,25 @@ tbody.addEventListener('click', async (e) => {
   }
 });
 
+// --- Import ADIF ---
+document.getElementById('qso-import').addEventListener('click', async () => {
+  try {
+    const result = await window.api.importAdif();
+    if (!result) return; // cancelled
+    if (result.success) {
+      allQsos = await window.api.getAllQsos();
+      await resolveAllCallsigns();
+      await resolveAllParkLocations();
+      render();
+      toast(`Imported ${result.imported} QSOs (${result.unique} calls)`);
+    } else {
+      toast('Import failed: ' + (result.error || 'unknown error'));
+    }
+  } catch (err) {
+    toast('Import failed: ' + err.message);
+  }
+});
+
 // --- Export ADIF ---
 document.getElementById('qso-export').addEventListener('click', async () => {
   if (!filtered.length) { toast('No QSOs to export'); return; }
@@ -619,6 +638,13 @@ window.api.onQsoUpdated(async ({ idx, fields }) => {
 
 window.api.onQsoDeleted(async () => {
   allQsos = await window.api.getAllQsos();
+  render();
+});
+
+window.api.onRefresh(async () => {
+  allQsos = await window.api.getAllQsos();
+  await resolveAllCallsigns();
+  await resolveAllParkLocations();
   render();
 });
 

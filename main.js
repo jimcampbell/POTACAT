@@ -15,7 +15,7 @@ const { loadCtyDat, resolveCallsign, getAllEntities } = require('./lib/cty');
 const { parseAdifFile, parseWorkedQsos, parseAllQsos, parseAllRawQsos, parseSqliteFile, parseSqliteConfirmed, isSqliteFile, parseRecord: parseAdifRecord } = require('./lib/adif');
 const { DxClusterClient } = require('./lib/dxcluster');
 const { RbnClient } = require('./lib/rbn');
-const { appendQso, buildAdifRecord, appendImportedQso, rewriteAdifFile, ADIF_HEADER, adifField } = require('./lib/adif-writer');
+const { appendQso, buildAdifRecord, appendImportedQso, appendRawQso, rewriteAdifFile, ADIF_HEADER, adifField } = require('./lib/adif-writer');
 const { SmartSdrClient } = require('./lib/smartsdr');
 const { TciClient } = require('./lib/tci');
 const { IambicKeyer } = require('./lib/keyer');
@@ -3126,6 +3126,70 @@ app.whenReady().then(() => {
     }
   });
 
+  // Capture activation map pop-out as PNG for social share image
+  ipcMain.handle('capture-actmap-popout', async () => {
+    if (!actmapPopoutWin || actmapPopoutWin.isDestroyed()) {
+      return { success: false, error: 'Activation map is not open' };
+    }
+    try {
+      // Hide UI overlays before capture
+      await actmapPopoutWin.webContents.executeJavaScript(`
+        document.querySelector('.titlebar').style.display = 'none';
+        document.getElementById('qso-counter').style.display = 'none';
+      `);
+      // Wait a frame for Leaflet to reflow into the freed space
+      await new Promise(r => setTimeout(r, 200));
+      const nativeImage = await actmapPopoutWin.webContents.capturePage();
+      // Restore UI overlays
+      await actmapPopoutWin.webContents.executeJavaScript(`
+        document.querySelector('.titlebar').style.display = '';
+        document.getElementById('qso-counter').style.display = '';
+      `);
+      const dataUrl = nativeImage.toDataURL();
+      return { success: true, dataUrl, width: nativeImage.getSize().width, height: nativeImage.getSize().height };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Capture a specific rect of the main window (for inline activation map)
+  ipcMain.handle('capture-main-window-rect', async (_e, rect) => {
+    if (!win || win.isDestroyed()) return { success: false, error: 'Main window not available' };
+    try {
+      const nativeImage = await win.webContents.capturePage(rect);
+      const dataUrl = nativeImage.toDataURL();
+      return { success: true, dataUrl, width: nativeImage.getSize().width, height: nativeImage.getSize().height };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Save share image JPG via save dialog
+  ipcMain.handle('save-share-image', async (event, data) => {
+    const { jpgBase64, parkRef, callsign } = data;
+    if (!jpgBase64) return { success: false, error: 'No image data' };
+    try {
+      const parentWin = BrowserWindow.fromWebContents(event.sender) || win;
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const defaultName = `${callsign || 'POTACAT'}-${parkRef || 'activation'}-${dateStr}.jpg`;
+      const result = await dialog.showSaveDialog(parentWin, {
+        title: 'Save Share Image',
+        defaultPath: path.join(app.getPath('pictures'), defaultName),
+        filters: [
+          { name: 'JPEG Image', extensions: ['jpg', 'jpeg'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (result.canceled) return { success: false };
+      const buf = Buffer.from(jpgBase64, 'base64');
+      fs.writeFileSync(result.filePath, buf);
+      return { success: true, path: result.filePath };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Start spot fetching
   refreshSpots();
   const refreshMs = Math.max(15, settings.refreshInterval || 30) * 1000;
@@ -3467,8 +3531,9 @@ app.whenReady().then(() => {
   });
 
   // --- Log Import IPC ---
-  ipcMain.handle('import-adif', async () => {
-    const result = await dialog.showOpenDialog(win, {
+  ipcMain.handle('import-adif', async (event) => {
+    const parentWin = BrowserWindow.fromWebContents(event.sender) || win;
+    const result = await dialog.showOpenDialog(parentWin, {
       title: 'Import Log File(s)',
       filters: [
         { name: 'Log Files', extensions: ['adi', 'adif', 'sqlite', 'db'] },
@@ -3485,17 +3550,24 @@ app.whenReady().then(() => {
 
     for (const filePath of result.filePaths) {
       try {
-        const qsos = isSqliteFile(filePath)
-          ? await parseSqliteFile(filePath)
-          : parseAllQsos(filePath);
-        for (const qso of qsos) {
-          appendImportedQso(logPath, qso);
-          uniqueCalls.add(qso.call.toUpperCase());
-          totalImported++;
+        if (isSqliteFile(filePath)) {
+          const qsos = await parseSqliteFile(filePath);
+          for (const qso of qsos) {
+            appendImportedQso(logPath, qso);
+            uniqueCalls.add(qso.call.toUpperCase());
+            totalImported++;
+          }
+        } else {
+          const qsos = parseAllRawQsos(filePath);
+          for (const qso of qsos) {
+            appendRawQso(logPath, qso);
+            uniqueCalls.add((qso.CALL || '').toUpperCase());
+            totalImported++;
+          }
         }
         fileNames.push(path.basename(filePath));
       } catch (err) {
-        dialog.showMessageBox(win, {
+        dialog.showMessageBox(parentWin, {
           type: 'error',
           title: 'Import Failed',
           message: `Failed to parse ${path.basename(filePath)}`,
@@ -3510,8 +3582,14 @@ app.whenReady().then(() => {
     // Scan imported QSOs for event matches
     scanLogForEvents();
 
+    // Notify pop-out logbook to refresh (if open and not the caller)
+    if (qsoPopoutWin && !qsoPopoutWin.isDestroyed() &&
+        BrowserWindow.fromWebContents(event.sender) !== qsoPopoutWin) {
+      qsoPopoutWin.webContents.send('qso-popout-refresh');
+    }
+
     const fileList = fileNames.join(', ');
-    dialog.showMessageBox(win, {
+    dialog.showMessageBox(parentWin, {
       type: 'info',
       title: 'Import Complete',
       message: `Successfully imported ${fileList}`,

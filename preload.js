@@ -115,6 +115,9 @@ contextBridge.exposeInMainWorld('api', {
   getPastActivations: () => ipcRenderer.invoke('get-past-activations'),
   deleteActivation: (parkRef, date) => ipcRenderer.invoke('delete-activation', parkRef, date),
   resolveCallsignLocations: (callsigns) => ipcRenderer.invoke('resolve-callsign-locations', callsigns),
+  captureActmapPopout: () => ipcRenderer.invoke('capture-actmap-popout'),
+  captureMainWindowRect: (rect) => ipcRenderer.invoke('capture-main-window-rect', rect),
+  saveShareImage: (data) => ipcRenderer.invoke('save-share-image', data),
   // Zoom
   setZoom: (factor) => webFrame.setZoomFactor(factor),
   getZoom: () => webFrame.getZoomFactor(),

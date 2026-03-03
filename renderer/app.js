@@ -7743,6 +7743,7 @@ async function showPastActivations() {
         <div class="activator-history-actions">
           <button class="act-hist-export-btn" title="Export this activation as ADIF">Export ADIF</button>
           <button class="act-hist-map-btn" title="Show contacts on map">Map</button>
+          <button class="act-hist-share-btn" title="Save map as shareable image">Share Image</button>
           <button class="act-hist-delete-btn" title="Delete this activation">Delete</button>
         </div>
         <table class="act-hist-table">
@@ -7771,6 +7772,11 @@ async function showPastActivations() {
       detail.querySelector('.act-hist-map-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         showActivationMap(act);
+      });
+      // Share Image button
+      detail.querySelector('.act-hist-share-btn').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await renderShareImage(act);
       });
       // Delete button (two-click confirmation)
       const deleteBtn = detail.querySelector('.act-hist-delete-btn');
@@ -7852,6 +7858,10 @@ let activationMap = null;
 let activationMapMarkers = [];
 
 async function showActivationMap(act) {
+  // Hide spots table if visible — map needs the full view
+  if (activatorSpotsVisible) toggleActivatorSpots();
+  if (activatorRbnVisible) toggleActivatorRbn();
+
   const mapPanel = document.getElementById('activation-map-panel');
   const mapTitle = document.getElementById('activation-map-title');
   mapPanel.classList.remove('hidden');
@@ -8306,6 +8316,307 @@ if (activatorExportBtn) {
     }
   });
 }
+
+/**
+ * Render a 1080x1080 social-sharable activation image.
+ * @param {object} [pastAct] — Past activation object. If omitted, uses live activation state.
+ */
+async function renderShareImage(pastAct) {
+  // Show loading overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:rgba(10,10,24,0.85);';
+  overlay.innerHTML = '<style>@keyframes _shareSpin{to{transform:rotate(360deg)}}</style><div style="text-align:center;color:#fff;font-family:Segoe UI,sans-serif;"><div style="width:36px;height:36px;border:3px solid rgba(255,255,255,0.2);border-top-color:#4ecca3;border-radius:50%;animation:_shareSpin 0.8s linear infinite;margin:0 auto 16px;"></div><div style="font-size:16px;">Building image\u2026</div></div>';
+  document.body.appendChild(overlay);
+  try {
+  // Determine data source: past activation or live
+  const isPast = !!pastAct;
+  let shareCallsign, shareRefs, shareParkName, shareContacts, shareParkRef;
+
+  if (isPast) {
+    shareCallsign = myCallsign || '';
+    shareRefs = [pastAct.parkRef].filter(Boolean);
+    shareContacts = pastAct.contacts || [];
+    shareParkRef = pastAct.parkRef || '';
+    // Look up park name from DB
+    try {
+      const parkData = await window.api.getPark(pastAct.parkRef);
+      shareParkName = parkData?.name || '';
+    } catch { shareParkName = ''; }
+  } else {
+    shareCallsign = myCallsign || '';
+    shareRefs = activatorParkRefs.map(p => p.ref).filter(Boolean);
+    shareParkName = primaryParkName();
+    shareContacts = activatorContacts;
+    shareParkRef = primaryParkRef();
+  }
+
+  if (!shareContacts.length) {
+    alert('No contacts to share.');
+    return;
+  }
+
+  // --- Render a dedicated square map fitted to park + contacts ---
+  // Create an offscreen container for a square Leaflet map
+  // 9:16 portrait container for social sharing (1080x1920)
+  const W = 1080, H = 1920;
+  // Map container must match 9:16 aspect so cover-crop doesn't cut sides
+  const mapH = Math.min(window.innerHeight - 20, H);
+  const mapW = Math.round(mapH * (W / H));
+  const mapContainer = document.createElement('div');
+  mapContainer.style.cssText = `position:fixed;left:0;top:0;width:${mapW}px;height:${mapH}px;z-index:9999;`;
+  document.body.appendChild(mapContainer);
+
+  const shareMap = L.map(mapContainer, {
+    zoomControl: false, attributionControl: false, worldCopyJump: true,
+  });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, className: 'dark-tiles',
+  }).addTo(shareMap);
+
+  // Resolve park location
+  let parkLat = null, parkLon = null;
+  try {
+    const parkData = await window.api.getPark(shareParkRef);
+    if (parkData?.latitude && parkData?.longitude) {
+      parkLat = parseFloat(parkData.latitude);
+      parkLon = parseFloat(parkData.longitude);
+    }
+  } catch {}
+
+  // Park marker
+  if (parkLat != null) {
+    const parkIcon = L.divIcon({
+      className: '',
+      html: '<div style="background:#4ecca3;width:18px;height:18px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 8px rgba(78,204,163,0.6);"></div>',
+      iconSize: [18, 18], iconAnchor: [9, 9],
+    });
+    L.marker([parkLat, parkLon], { icon: parkIcon, zIndexOffset: 1000 }).addTo(shareMap);
+  }
+
+  // Resolve contact locations
+  const callsigns = [...new Set(shareContacts.map(c => c.callsign).filter(Boolean))];
+  let locations = {};
+  try { locations = await window.api.resolveCallsignLocations(callsigns); } catch {}
+
+  const bounds = [];
+  if (parkLat != null) bounds.push([parkLat, parkLon]);
+  const usedPositions = [];
+
+  for (const c of shareContacts) {
+    const gridPos = c.grid ? gridToLatLonLocal(c.grid) : null;
+    const loc = gridPos || locations[c.callsign];
+    if (!loc) continue;
+    let cLat = loc.lat, cLon = loc.lon;
+    // Jitter overlapping positions
+    const overlap = usedPositions.filter(p => Math.abs(p[0] - cLat) < 0.01 && Math.abs(p[1] - cLon) < 0.01).length;
+    if (overlap > 0) {
+      const angle = (overlap * 137.5) * Math.PI / 180;
+      const r = 0.8 + overlap * 0.3;
+      cLat += r * Math.cos(angle);
+      cLon += r * Math.sin(angle);
+    }
+    usedPositions.push([cLat, cLon]);
+
+    L.circleMarker([cLat, cLon], {
+      radius: 7, fillColor: '#4fc3f7', color: '#fff', weight: 1.5, fillOpacity: 0.85,
+    }).addTo(shareMap);
+    bounds.push([cLat, cLon]);
+
+    // Arc from park to contact
+    if (parkLat != null) {
+      const arcPts = greatCircleArc(parkLat, parkLon, cLat, cLon, 50);
+      L.polyline(arcPts, { color: '#4fc3f7', weight: 1.5, opacity: 0.5, dashArray: '6,4' }).addTo(shareMap);
+    }
+  }
+
+  // Fit bounds with generous padding for text overlay areas
+  // Top gradient covers ~25% of height, bottom ~18%, so pad accordingly
+  if (bounds.length > 1) {
+    const padTop = Math.round(mapH * 0.28);    // clear top text overlay
+    const padBottom = Math.round(mapH * 0.22);  // clear bottom branding
+    const padLR = Math.round(mapW * 0.15);      // side margins
+    shareMap.fitBounds(bounds, {
+      paddingTopLeft: [padLR, padTop],
+      paddingBottomRight: [padLR, padBottom],
+    });
+  } else if (parkLat != null) {
+    shareMap.setView([parkLat, parkLon], 5);
+  } else {
+    shareMap.setView([39.8, -98.5], 4);
+  }
+
+  // Wait for tiles to load
+  await new Promise(resolve => {
+    let resolved = false;
+    const done = () => { if (!resolved) { resolved = true; resolve(); } };
+    shareMap.once('idle', done);
+    setTimeout(done, 4000); // max 4s
+  });
+  // Extra buffer for tile rendering
+  await new Promise(r => setTimeout(r, 500));
+
+  // Hide overlay during capture so it doesn't darken the map
+  overlay.style.display = 'none';
+  await new Promise(r => setTimeout(r, 50)); // let repaint
+  const rect = mapContainer.getBoundingClientRect();
+  const capture = await window.api.captureMainWindowRect({
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+  });
+
+  // Clean up offscreen map (overlay stays hidden — save dialog comes next)
+  shareMap.remove();
+  document.body.removeChild(mapContainer);
+
+  if (!capture || !capture.success || !capture.dataUrl) {
+    alert('Could not capture map: ' + (capture?.error || 'unknown error'));
+    return;
+  }
+
+  // Load the captured map into an Image
+  const mapImg = new Image();
+  await new Promise((resolve, reject) => {
+    mapImg.onload = resolve;
+    mapImg.onerror = () => reject(new Error('Failed to decode map image'));
+    mapImg.src = capture.dataUrl;
+  });
+
+  // Load the POTACAT icon
+  const iconImg = new Image();
+  await new Promise((resolve) => {
+    iconImg.onload = resolve;
+    iconImg.onerror = resolve; // proceed even if icon fails
+    iconImg.src = '../assets/icon-256.png';
+  });
+
+  // --- Canvas layout: 1080x1920 (9:16 portrait) ---
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Draw map as background, cover-crop to fill 1080x1920
+  const mw = mapImg.naturalWidth, mh = mapImg.naturalHeight;
+  const canvasAspect = W / H;
+  const imgAspect = mw / mh;
+  let sx = 0, sy = 0, sw = mw, sh = mh;
+  if (imgAspect > canvasAspect) {
+    // Image is wider — crop sides
+    sw = Math.round(mh * canvasAspect);
+    sx = Math.round((mw - sw) / 2);
+  } else {
+    // Image is taller — crop top/bottom
+    sh = Math.round(mw / canvasAspect);
+    sy = Math.round((mh - sh) / 2);
+  }
+  ctx.drawImage(mapImg, sx, sy, sw, sh, 0, 0, W, H);
+
+  // Gradient overlays for text readability
+  // Top: ~400px gradient for callsign/park/QSO text
+  const topGrad = ctx.createLinearGradient(0, 0, 0, 480);
+  topGrad.addColorStop(0, 'rgba(10, 10, 24, 0.94)');
+  topGrad.addColorStop(0.55, 'rgba(10, 10, 24, 0.7)');
+  topGrad.addColorStop(1, 'rgba(10, 10, 24, 0)');
+  ctx.fillStyle = topGrad;
+  ctx.fillRect(0, 0, W, 480);
+
+  // Bottom: ~350px gradient for branding (above IG/FB comment zones)
+  const botGrad = ctx.createLinearGradient(0, H - 350, 0, H);
+  botGrad.addColorStop(0, 'rgba(10, 10, 24, 0)');
+  botGrad.addColorStop(0.4, 'rgba(10, 10, 24, 0.7)');
+  botGrad.addColorStop(1, 'rgba(10, 10, 24, 0.94)');
+  ctx.fillStyle = botGrad;
+  ctx.fillRect(0, H - 350, W, 350);
+
+  // --- Top text (safe zone: 80px margins, start at y=120) ---
+  const safeX = 80;
+  let textY = 184;
+
+  // Callsign (large bold)
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 64px "Segoe UI", sans-serif';
+  ctx.textBaseline = 'top';
+  ctx.fillText(shareCallsign || 'ACTIVATOR', safeX, textY);
+  textY += 84;
+
+  // "Activated US-1234" or multi-park
+  const parkLine = shareRefs.length > 0
+    ? 'Activated ' + shareRefs.join(', ')
+    : 'Activation';
+  ctx.fillStyle = '#4ecca3';
+  ctx.font = 'bold 44px "Segoe UI", sans-serif';
+  ctx.fillText(parkLine, safeX, textY);
+  textY += 60;
+
+  // Park name
+  if (shareParkName && shareParkName.length <= 50) {
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = '32px "Segoe UI", sans-serif';
+    ctx.fillText(shareParkName, safeX, textY);
+    textY += 46;
+  }
+
+  // QSO count and modes
+  const modes = [...new Set(shareContacts.map(c => c.mode).filter(Boolean))];
+  const qsoCount = shareContacts.length;
+  const modeLine = modes.length > 0 ? ' on ' + modes.join(', ') : '';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '38px "Segoe UI", sans-serif';
+  ctx.fillText(`${qsoCount} QSO${qsoCount !== 1 ? 's' : ''}${modeLine}`, safeX, textY);
+
+  // --- Bottom branding (above IG/FB safe zone, ~270px from bottom) ---
+  const brandY = H - 270;
+  const iconSize = 48;
+  if (iconImg.naturalWidth > 0) {
+    ctx.drawImage(iconImg, safeX, brandY - iconSize + 8, iconSize, iconSize);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '26px "Segoe UI", sans-serif';
+  ctx.textBaseline = 'bottom';
+  const brandX = iconImg.naturalWidth > 0 ? safeX + iconSize + 14 : safeX;
+  const trackedText = 'Tracked with ';
+  const trackedWidth = ctx.measureText(trackedText).width;
+  ctx.fillText(trackedText, brandX, brandY - 4);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 26px "Segoe UI", sans-serif';
+  ctx.fillText('POTACAT', brandX + trackedWidth, brandY - 4);
+
+  // Date stamp (bottom right, same line as branding)
+  let dateLabel;
+  if (isPast && pastAct.date) {
+    const y = pastAct.date.substring(0, 4), m = pastAct.date.substring(4, 6), d = pastAct.date.substring(6, 8);
+    dateLabel = new Date(`${y}-${m}-${d}`).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  } else {
+    dateLabel = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '22px "Segoe UI", sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(dateLabel, W - 80, brandY - 4);
+  ctx.textAlign = 'left';
+
+  // Convert to JPG and save
+  const jpgDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const jpgBase64 = jpgDataUrl.split(',')[1];
+  const result = await window.api.saveShareImage({
+    jpgBase64,
+    parkRef: shareParkRef,
+    callsign: shareCallsign,
+  });
+  if (result && result.success) {
+    showLogToast(`Share image saved to ${result.path.split(/[\\/]/).pop()}`);
+  }
+  } catch (err) {
+    console.error('Share image error:', err);
+    alert('Error creating share image: ' + (err?.message || String(err)));
+  } finally {
+    overlay.remove();
+  }
+}
+
+
 
 // Back to Hunter button
 if (activatorBackBtn) {

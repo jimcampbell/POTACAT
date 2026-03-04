@@ -150,6 +150,7 @@
         pttDown = false;
         pttBtn.classList.remove('active');
         txBanner.classList.add('hidden');
+        muteRxAudio(false);
         break;
 
       case 'kicked':
@@ -213,6 +214,7 @@
         // Server forced RX
         pttDown = false;
         pttBtn.classList.remove('active');
+        muteRxAudio(false);
       }
     }
   }
@@ -397,11 +399,17 @@
   });
 
   // --- PTT ---
+  function muteRxAudio(mute) {
+    // Mute the incoming RX audio during TX to prevent hearing your own voice back
+    if (remoteAudio) remoteAudio.muted = mute;
+  }
+
   function pttStart() {
     if (pttDown) return;
     pttDown = true;
     pttBtn.classList.add('active');
     txBanner.classList.remove('hidden');
+    muteRxAudio(true);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ptt', state: true }));
     }
@@ -412,6 +420,7 @@
     pttDown = false;
     pttBtn.classList.remove('active');
     txBanner.classList.add('hidden');
+    muteRxAudio(false);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ptt', state: false }));
     }
@@ -432,6 +441,7 @@
     pttDown = false;
     pttBtn.classList.remove('active');
     txBanner.classList.add('hidden');
+    muteRxAudio(false);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'estop' }));
     }

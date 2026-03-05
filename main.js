@@ -96,6 +96,55 @@ let remoteAudioWin = null; // hidden BrowserWindow for WebRTC audio bridge
 let _currentFreqHz = 0;    // tracked for remote radio status
 let _currentMode = '';
 let _remoteTxState = false;
+let _currentNbState = false;
+let _currentAtuState = false;
+let _currentVfo = 'A';
+let _currentFilterWidth = 0;
+
+// Filter preset tables for rig controls (Hz values)
+const FILTER_PRESETS = {
+  SSB: [1800, 2100, 2400, 2700, 3000, 3600],
+  CW:  [50, 100, 200, 500, 1000, 1500, 2400],
+  DIG: [500, 1000, 2000, 3000, 4000],
+};
+
+function getFilterPresets(mode) {
+  const m = (mode || '').toUpperCase();
+  if (m === 'CW') return FILTER_PRESETS.CW;
+  if (m === 'FT8' || m === 'FT4' || m === 'DIGU' || m === 'DIGL' || m === 'RTTY' || m === 'PKTUSB' || m === 'PKTLSB') return FILTER_PRESETS.DIG;
+  return FILTER_PRESETS.SSB; // default for SSB/USB/LSB/FM/AM
+}
+
+function findNearestPreset(presets, currentWidth) {
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < presets.length; i++) {
+    const d = Math.abs(presets[i] - currentWidth);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return best;
+}
+
+function detectRigType() {
+  const target = settings.catTarget;
+  if (!target) return 'unknown';
+  if (target.type === 'rigctld' || target.type === 'rigctldnet') return 'rigctld';
+  if (target.type === 'tcp') return 'flex'; // TCP CAT ports 5002-5005 are always FlexRadio
+  if (target.type === 'serial') {
+    if (cat && cat._isYaesu && cat._isYaesu()) return 'yaesu';
+    return 'kenwood';
+  }
+  return 'unknown';
+}
+
+function getRigCapabilities(rigType) {
+  switch (rigType) {
+    case 'flex':    return { nb: true, atu: true, vfo: true, filter: true, filterType: 'arbitrary' };
+    case 'yaesu':   return { nb: true, atu: false, vfo: true, filter: true, filterType: 'indexed' };
+    case 'kenwood': return { nb: true, atu: false, vfo: true, filter: true, filterType: 'direct' };
+    case 'rigctld': return { nb: true, atu: false, vfo: true, filter: true, filterType: 'passband' };
+    default:        return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none' };
+  }
+}
 
 // --- Watchlist notifications ---
 const recentNotifications = new Map(); // callsign → timestamp for dedup (5-min window)
@@ -301,6 +350,14 @@ function sendCatPower(watts) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-power', watts);
 }
 
+function sendCatNb(on) {
+  // For Flex rigs, NB is controlled via SmartSDR API — ignore Kenwood CAT NB poll
+  // responses which can fight with the API state (stale/different values)
+  if (detectRigType() === 'flex' && smartSdr && smartSdr.connected) return;
+  _currentNbState = on;
+  broadcastRemoteRadioStatus();
+}
+
 function sendCatLog(msg) {
   const ts = new Date().toISOString().slice(11, 23);
   const line = `[CAT ${ts}] ${msg}`;
@@ -352,6 +409,7 @@ async function connectCat() {
     });
     cat.on('frequency', sendCatFrequency);
     cat.on('mode', sendCatMode);
+    cat.on('nb', sendCatNb);
     const rigctldPort = target.rigctldPort || 4532;
     sendCatLog(`Connecting to rigctld on 127.0.0.1:${rigctldPort}`);
     cat.connect({ type: 'rigctld', host: '127.0.0.1', port: rigctldPort });
@@ -364,6 +422,7 @@ async function connectCat() {
     });
     cat.on('frequency', sendCatFrequency);
     cat.on('mode', sendCatMode);
+    cat.on('nb', sendCatNb);
     const host = target.host || '127.0.0.1';
     const port = target.port || 4532;
     sendCatLog(`Connecting to remote rigctld on ${host}:${port}`);
@@ -376,6 +435,7 @@ async function connectCat() {
     cat.on('frequency', sendCatFrequency);
     cat.on('mode', sendCatMode);
     cat.on('power', sendCatPower);
+    cat.on('nb', sendCatNb);
     if (target) {
       cat.connect(target);
     }
@@ -1147,10 +1207,32 @@ function connectWsjtx() {
       // In activator mode, inject MY_SIG fields for each park ref (cross-product)
       const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref);
       if (settings.appMode === 'activator' && parkRefs.length > 0) {
+        const allQsoData = [];
         for (let i = 0; i < parkRefs.length; i++) {
           const parkQso = { ...qsoData, mySig: 'POTA', mySigInfo: parkRefs[i].ref, myGridsquare: settings.grid || '' };
           if (i > 0) parkQso.skipLogbookForward = true; // only forward first record
+          allQsoData.push(parkQso);
           await saveQsoRecord(parkQso);
+        }
+        // Notify renderer so activator view gets the contact
+        if (win && !win.isDestroyed()) {
+          const freqKhz = Math.round(freqMHz * 1000);
+          const timeOn = qsoData.timeOn || '';
+          const timeUtc = timeOn.length >= 4 ? `${timeOn.slice(0, 2)}:${timeOn.slice(2, 4)}` : '';
+          win.webContents.send('wsjtx-activator-qso', {
+            callsign: qsoData.callsign,
+            timeUtc,
+            freqDisplay: freqMHz.toFixed(3),
+            mode: qsoData.mode,
+            band: qsoData.band || '',
+            rstSent: qsoData.rstSent,
+            rstRcvd: qsoData.rstRcvd,
+            name: qsoData.name || '',
+            myParks: parkRefs.map(p => p.ref),
+            theirParks: [],
+            qsoData: allQsoData[0],
+            qsoDataList: allQsoData,
+          });
         }
       } else {
         await saveQsoRecord(qsoData);
@@ -1239,10 +1321,11 @@ function updateWsjtxHighlights() {
 // --- SmartSDR panadapter spots ---
 function needsSmartSdr() {
   // Connect SmartSDR API if panadapter spots are enabled, CW keyer is active,
-  // or WSJT-X is active with a Flex (TCP CAT) so we can tune via the API when CAT is released
+  // WSJT-X is active with a Flex, or ECHO CAT remote needs rig controls
   if (settings.smartSdrSpots) return true;
   if (settings.enableCwKeyer) return true;
   if (settings.enableWsjtx && settings.catTarget && settings.catTarget.type === 'tcp') return true;
+  if (settings.enableRemote && settings.catTarget && settings.catTarget.type === 'tcp') return true;
   return false;
 }
 
@@ -1379,6 +1462,10 @@ function connectRemote() {
     remoteServer.sendRigsToClient(rigs, settings.activeRigId || null);
     // Push activator state
     pushActivatorStateToPhone();
+    // Send worked parks for new-to-me filter
+    if (workedParks.size > 0) {
+      remoteServer.sendWorkedParks([...workedParks.keys()]);
+    }
     if (win && !win.isDestroyed()) {
       win.webContents.send('remote-status', { connected: true });
     }
@@ -1436,6 +1523,90 @@ function connectRemote() {
     const rigs = (settings.rigs || []).map(r => ({ id: r.id, name: r.name }));
     remoteServer.sendRigsToClient(rigs, rig.id);
     console.log('[Echo CAT] Switched rig to:', rig.name);
+  });
+
+  // --- Rig controls (filter, NB, VFO) ---
+  // Helper: true if SmartSDR API is available for rig control commands
+  function flexSdr() { return smartSdr && smartSdr.connected; }
+
+  function applyFilter(width) {
+    if (flexSdr()) {
+      const m = (_currentMode || '').toUpperCase();
+      let lo, hi;
+      if (m === 'CW') {
+        lo = Math.max(0, 600 - Math.round(width / 2));
+        hi = 600 + Math.round(width / 2);
+      } else {
+        lo = 100;
+        hi = 100 + width;
+      }
+      smartSdr.setSliceFilter(0, lo, hi);
+    } else if (cat && cat.connected) {
+      cat.setFilterWidth(width);
+    }
+    _currentFilterWidth = width;
+    broadcastRemoteRadioStatus();
+  }
+
+  remoteServer.on('set-filter', ({ width }) => {
+    if (!width || width <= 0) return;
+    applyFilter(width);
+    console.log('[Echo CAT] Set filter width:', width, 'Hz');
+  });
+
+  remoteServer.on('filter-step', ({ direction }) => {
+    const presets = getFilterPresets(_currentMode);
+    let idx = findNearestPreset(presets, _currentFilterWidth);
+    if (direction === 'wider' && idx < presets.length - 1) idx++;
+    else if (direction === 'narrower' && idx > 0) idx--;
+    applyFilter(presets[idx]);
+    console.log('[Echo CAT] Filter step:', direction, '→', presets[idx], 'Hz');
+  });
+
+  remoteServer.on('set-nb', ({ on }) => {
+    if (flexSdr()) {
+      smartSdr.setSliceNb(0, on);
+    } else if (cat && cat.connected) {
+      cat.setNb(on);
+    }
+    _currentNbState = on;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] NB:', on ? 'ON' : 'OFF');
+  });
+
+  remoteServer.on('set-atu', ({ on }) => {
+    if (flexSdr()) {
+      smartSdr.setAtu(on);
+    }
+    _currentAtuState = on;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] ATU:', on ? 'ON' : 'OFF');
+  });
+
+  remoteServer.on('set-vfo', ({ vfo }) => {
+    if (flexSdr()) {
+      smartSdr.setActiveSlice(vfo === 'B' ? 1 : 0);
+    } else if (cat && cat.connected) {
+      cat.setVfo(vfo);
+    }
+    _currentVfo = vfo;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] VFO:', vfo);
+  });
+
+  remoteServer.on('swap-vfo', () => {
+    const rigType = detectRigType();
+    const newVfo = _currentVfo === 'A' ? 'B' : 'A';
+    if (rigType === 'yaesu' && cat && cat.connected) {
+      cat.swapVfo();
+    } else if (flexSdr()) {
+      smartSdr.setActiveSlice(newVfo === 'B' ? 1 : 0);
+    } else if (cat && cat.connected) {
+      cat.setVfo(newVfo);
+    }
+    _currentVfo = newVfo;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] Swap VFO →', newVfo);
   });
 
   remoteServer.on('set-activator-park', async ({ parkRef, activationType, activationName: actName, sig }) => {
@@ -1643,11 +1814,18 @@ function handleRemotePtt(state) {
 
 function broadcastRemoteRadioStatus() {
   if (!remoteServer || !remoteServer.running) return;
+  const rigType = detectRigType();
   const status = {
     freq: _currentFreqHz || 0,
     mode: _currentMode || '',
     catConnected: (cat && cat.connected) || (smartSdr && smartSdr.connected),
     txState: _remoteTxState,
+    rigType,
+    nb: _currentNbState,
+    atu: _currentAtuState,
+    vfo: _currentVfo,
+    filterWidth: _currentFilterWidth,
+    capabilities: getRigCapabilities(rigType),
   };
   remoteServer.broadcastRadioStatus(status);
 }
@@ -2050,17 +2228,118 @@ function processLlotaSpots(raw) {
 
 let lastPotaSotaSpots = []; // cache of last fetched POTA+SOTA+WWFF+LLOTA spots
 
+// --- Net Reminder helpers ---
+
+function isNetScheduledToday(net, today) {
+  if (!net.enabled) return false;
+  const sched = net.schedule;
+  if (!sched) return true; // no schedule = always
+  if (sched.type === 'daily') return true;
+  if (sched.type === 'weekly') {
+    const dow = today.getDay(); // 0=Sun
+    return Array.isArray(sched.days) && sched.days.includes(dow);
+  }
+  if (sched.type === 'dates') {
+    const iso = today.getFullYear() + '-' +
+      String(today.getMonth() + 1).padStart(2, '0') + '-' +
+      String(today.getDate()).padStart(2, '0');
+    return Array.isArray(sched.dates) && sched.dates.includes(iso);
+  }
+  return false;
+}
+
+function getNetTimes(net, today) {
+  const [hh, mm] = (net.startTime || '00:00').split(':').map(Number);
+  let startMs;
+  if (net.timeZone === 'utc') {
+    startMs = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate(), hh, mm);
+  } else {
+    startMs = new Date(today.getFullYear(), today.getMonth(), today.getDate(), hh, mm).getTime();
+  }
+  const dur = (net.duration || 60) * 60000;
+  const lead = (net.leadTime != null ? net.leadTime : 15) * 60000;
+  return { startMs, endMs: startMs + dur, showMs: startMs - lead };
+}
+
+function getActiveNetSpots() {
+  const nets = settings.netReminders;
+  if (!Array.isArray(nets) || nets.length === 0) return [];
+  const now = Date.now();
+  const spots = [];
+  // Check today and yesterday (for midnight-spanning nets)
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  for (const net of nets) {
+    if (!net.enabled) continue;
+    let active = false;
+    let startMs, endMs, showMs;
+    // Check today
+    if (isNetScheduledToday(net, today)) {
+      const t = getNetTimes(net, today);
+      if (now >= t.showMs && now < t.endMs) {
+        active = true;
+        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      }
+    }
+    // Check yesterday (midnight spanning)
+    if (!active && isNetScheduledToday(net, yesterday)) {
+      const t = getNetTimes(net, yesterday);
+      if (now >= t.showMs && now < t.endMs) {
+        active = true;
+        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      }
+    }
+    if (!active) continue;
+
+    // Build comments string
+    let comments;
+    if (now < startMs) {
+      const minsLeft = Math.ceil((startMs - now) / 60000);
+      comments = minsLeft >= 60
+        ? `Starts in ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m`
+        : `Starts in ${minsLeft}m`;
+    } else {
+      const minsLeft = Math.ceil((endMs - now) / 60000);
+      comments = minsLeft >= 60
+        ? `On air \u2014 ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m left`
+        : `On air \u2014 ${minsLeft}m left`;
+    }
+
+    spots.push({
+      source: 'net',
+      callsign: net.name || 'Net',
+      frequency: String(net.frequency),
+      freqMHz: (net.frequency / 1000).toFixed(4),
+      mode: net.mode || 'SSB',
+      band: freqToBand(net.frequency / 1000),
+      spotTime: new Date(startMs).toISOString(),
+      comments,
+      reference: '', parkName: '', locationDesc: '',
+      distance: null, bearing: null, lat: null, lon: null, continent: null,
+      _netId: net.id,
+    });
+  }
+  return spots;
+}
+
 function sendMergedSpots() {
   if (!win || win.isDestroyed()) return;
-  const merged = [...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
+  const netSpots = getActiveNetSpots();
+  const merged = [...netSpots, ...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
   win.webContents.send('spots', merged);
-  pushSpotsToSmartSdr(merged);
-  pushSpotsToTci(merged);
-  // Forward to ECHO CAT — SSB only, respect max spot age
+  // Filter net spots out of panadapter pushes (no lat/lon, not real signals)
+  const realSpots = merged.filter(s => s.source !== 'net');
+  pushSpotsToSmartSdr(realSpots);
+  pushSpotsToTci(realSpots);
+  // Forward to ECHO CAT — SSB only (net spots always pass), respect max spot age
   if (remoteServer && remoteServer.running) {
     const maxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
     const now = Date.now();
     const echoSpots = merged.filter(s => {
+      // Net spots always pass through to ECHO CAT
+      if (s.source === 'net') return true;
       // SSB only
       const m = (s.mode || '').toUpperCase();
       if (m !== 'SSB' && m !== 'USB' && m !== 'LSB') return false;
@@ -2281,6 +2560,10 @@ function loadWorkedParks() {
     if (win && !win.isDestroyed()) {
       // Serialize Map as array of [key, value] pairs
       win.webContents.send('worked-parks', [...workedParks.entries()]);
+    }
+    // Push to ECHO CAT phone
+    if (remoteServer && remoteServer.running) {
+      remoteServer.sendWorkedParks([...workedParks.keys()]);
     }
   } catch (err) {
     console.error('Failed to parse POTA parks CSV:', err.message);

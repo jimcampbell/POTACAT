@@ -57,6 +57,13 @@
   let currentFreqKhz = 0;
   let currentMode = '';
   let tunedFreqKhz = '';
+  let currentNb = false;
+  let currentAtu = false;
+  let currentVfo = 'A';
+  let currentFilterWidth = 0;
+  let rigCapabilities = { nb: false, atu: false, vfo: false, filter: false };
+  let rigControlsOpen = false;
+  let txState = false;
 
   // --- Activator state ---
   let activeTab = 'spots';
@@ -71,6 +78,8 @@
   let sessionContacts = [];
   let offlineQueue = JSON.parse(localStorage.getItem('echocat-offline-queue') || '[]');
   let searchDebounce = null;
+  let workedParksSet = new Set();  // park refs from CSV for new-to-me filter
+  let showNewOnly = false;
 
   // --- Activator elements ---
   const activationBanner = document.getElementById('activation-banner');
@@ -101,6 +110,24 @@
   const exportAdifBtn = document.getElementById('export-adif-btn');
   const sourceBar = document.getElementById('source-bar');
   const filterBar = document.getElementById('filter-bar');
+  const newOnlyChip = document.getElementById('new-only-chip');
+
+  // Rig controls elements
+  const rigCtrlToggle = document.getElementById('rig-ctrl-toggle');
+  const rigControls = document.getElementById('rig-controls');
+  const rcFilterGroup = document.getElementById('rc-filter');
+  const rcNbGroup = document.getElementById('rc-nb');
+  const rcVfoGroup = document.getElementById('rc-vfo');
+  const rcBwDn = document.getElementById('rc-bw-dn');
+  const rcBwUp = document.getElementById('rc-bw-up');
+  const rcBwLabel = document.getElementById('rc-bw-label');
+  const rcNbBtn = document.getElementById('rc-nb-btn');
+  const rcAtuGroup = document.getElementById('rc-atu');
+  const rcAtuSep = document.getElementById('rc-atu-sep');
+  const rcAtuBtn = document.getElementById('rc-atu-btn');
+  const rcVfoA = document.getElementById('rc-vfo-a');
+  const rcVfoB = document.getElementById('rc-vfo-b');
+  const rcVfoSwap = document.getElementById('rc-vfo-swap');
 
   // --- Connect ---
   connectBtn.addEventListener('click', () => {
@@ -236,6 +263,12 @@
         updateLogBadge();
         break;
 
+      case 'worked-parks':
+        workedParksSet = new Set(msg.refs || []);
+        newOnlyChip.classList.toggle('hidden', workedParksSet.size === 0);
+        renderSpots();
+        break;
+
       case 'park-results':
         showSearchResults(msg.results || []);
         break;
@@ -263,15 +296,53 @@
     if (s.catConnected !== undefined) {
       catDot.classList.toggle('connected', s.catConnected);
       catDot.title = s.catConnected ? 'Radio connected' : 'Radio disconnected';
+      rigControls.classList.toggle('disabled', !s.catConnected);
     }
     if (s.txState !== undefined) {
+      txState = s.txState;
       txBanner.classList.toggle('hidden', !s.txState);
+      rigControls.classList.toggle('disabled', s.txState);
       if (!s.txState && pttDown) {
         pttDown = false;
         pttBtn.classList.remove('active');
         muteRxAudio(false);
       }
     }
+    // Rig controls state
+    if (s.nb !== undefined) {
+      currentNb = s.nb;
+      rcNbBtn.classList.toggle('active', s.nb);
+    }
+    if (s.atu !== undefined) {
+      currentAtu = s.atu;
+      rcAtuBtn.classList.toggle('active', s.atu);
+    }
+    if (s.vfo) {
+      currentVfo = s.vfo;
+      rcVfoA.classList.toggle('active', s.vfo === 'A');
+      rcVfoB.classList.toggle('active', s.vfo === 'B');
+    }
+    if (s.filterWidth !== undefined) {
+      currentFilterWidth = s.filterWidth;
+      rcBwLabel.textContent = formatBw(s.filterWidth);
+    }
+    if (s.capabilities) {
+      rigCapabilities = s.capabilities;
+      rcFilterGroup.classList.toggle('hidden', !s.capabilities.filter);
+      rcNbGroup.classList.toggle('hidden', !s.capabilities.nb);
+      rcAtuGroup.classList.toggle('hidden', !s.capabilities.atu);
+      rcAtuSep.classList.toggle('hidden', !s.capabilities.atu);
+      rcVfoGroup.classList.toggle('hidden', !s.capabilities.vfo);
+      // Hide gear icon if no capabilities at all
+      const anyCapability = s.capabilities.filter || s.capabilities.nb || s.capabilities.atu || s.capabilities.vfo;
+      rigCtrlToggle.classList.toggle('hidden', !anyCapability);
+    }
+  }
+
+  function formatBw(hz) {
+    if (!hz || hz <= 0) return '--';
+    if (hz >= 1000) return (hz / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return hz + '';
   }
 
   function formatFreq(hz) {
@@ -282,9 +353,16 @@
   }
 
   // --- Spots ---
+  function isNewPark(s) {
+    return workedParksSet.size > 0 &&
+      (s.source === 'pota' || s.source === 'wwff') &&
+      s.reference && !workedParksSet.has(s.reference);
+  }
+
   function renderSpots() {
     const filtered = spots.filter(s => {
       if (bandFilter !== 'all' && s.band !== bandFilter) return false;
+      if (showNewOnly && !isNewPark(s)) return false;
       return true;
     });
 
@@ -294,6 +372,10 @@
     }
 
     filtered.sort((a, b) => {
+      // Pin net spots to top
+      const aNet = a.source === 'net' ? 1 : 0;
+      const bNet = b.source === 'net' ? 1 : 0;
+      if (aNet !== bNet) return bNet - aNet;
       const ta = parseSpotTime(a.spotTime);
       const tb = parseSpotTime(b.spotTime);
       return tb - ta;
@@ -302,18 +384,23 @@
     spotList.innerHTML = filtered.map(s => {
       const srcClass = 'source-' + (s.source || 'pota');
       const tunedClass = (tunedFreqKhz && s.frequency === tunedFreqKhz) ? ' tuned' : '';
+      const newPark = isNewPark(s);
+      const newClass = newPark ? ' new-park' : '';
       const refClass = s.source === 'sota' ? 'sota' : s.source === 'dxc' ? 'dxc' : '';
       const ref = s.reference || s.locationDesc || '';
-      const age = formatAge(s.spotTime);
+      const isNet = s.source === 'net';
+      const age = isNet ? (s.comments || '') : formatAge(s.spotTime);
       const freqStr = formatSpotFreq(s.frequency);
       const src = s.source || 'pota';
-      return `<div class="spot-card ${srcClass}${tunedClass}" data-freq="${s.frequency}" data-mode="${s.mode || ''}" data-bearing="${s.bearing || ''}" data-call="${esc(s.callsign)}" data-ref="${esc(ref)}" data-src="${src}">
-        <span class="spot-call">${esc(s.callsign)}</span>
+      const newBadge = newPark ? '<span class="new-badge">NEW</span>' : '';
+      const logBtn = isNet ? '' : '<button type="button" class="spot-log-btn">Log</button>';
+      return `<div class="spot-card ${srcClass}${tunedClass}${newClass}" data-freq="${s.frequency}" data-mode="${s.mode || ''}" data-bearing="${s.bearing || ''}" data-call="${esc(s.callsign)}" data-ref="${esc(ref)}" data-src="${src}">
+        <span class="spot-call">${esc(s.callsign)}${newBadge}</span>
         <span class="spot-freq">${freqStr}</span>
         <span class="spot-mode">${esc(s.mode || '?')}</span>
         <span class="spot-ref ${refClass}">${esc(ref)}</span>
         <span class="spot-age">${age}</span>
-        <button type="button" class="spot-log-btn">Log</button>
+        ${logBtn}
       </div>`;
     }).join('');
   }
@@ -407,6 +494,13 @@
     renderSpots();
   });
 
+  // --- New-only filter ---
+  newOnlyChip.addEventListener('click', () => {
+    showNewOnly = !showNewOnly;
+    newOnlyChip.classList.toggle('active', showNewOnly);
+    renderSpots();
+  });
+
   // --- Frequency direct input ---
   freqDisplay.addEventListener('click', () => {
     statusBar.classList.add('editing');
@@ -484,6 +578,64 @@
     muteRxAudio(false);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'estop' }));
+    }
+  });
+
+  // --- Rig Controls ---
+  rigCtrlToggle.addEventListener('click', () => {
+    rigControlsOpen = !rigControlsOpen;
+    rigControls.classList.toggle('hidden', !rigControlsOpen);
+    rigCtrlToggle.classList.toggle('active', rigControlsOpen);
+  });
+
+  rcBwDn.addEventListener('click', () => {
+    if (txState) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'filter-step', direction: 'narrower' }));
+    }
+  });
+
+  rcBwUp.addEventListener('click', () => {
+    if (txState) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'filter-step', direction: 'wider' }));
+    }
+  });
+
+  rcNbBtn.addEventListener('click', () => {
+    if (txState) return;
+    const newState = !currentNb;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set-nb', on: newState }));
+    }
+  });
+
+  rcAtuBtn.addEventListener('click', () => {
+    if (txState) return;
+    const newState = !currentAtu;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set-atu', on: newState }));
+    }
+  });
+
+  rcVfoA.addEventListener('click', () => {
+    if (txState) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set-vfo', vfo: 'A' }));
+    }
+  });
+
+  rcVfoB.addEventListener('click', () => {
+    if (txState) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set-vfo', vfo: 'B' }));
+    }
+  });
+
+  rcVfoSwap.addEventListener('click', () => {
+    if (txState) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'swap-vfo' }));
     }
   });
 

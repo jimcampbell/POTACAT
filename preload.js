@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   onWsjtxDecode: (cb) => ipcRenderer.on('wsjtx-decode', (_e, d) => cb(d)),
   onWsjtxClear: (cb) => ipcRenderer.on('wsjtx-clear', () => cb()),
   onWsjtxQsoLogged: (cb) => ipcRenderer.on('wsjtx-qso-logged', (_e, q) => cb(q)),
+  onWsjtxActivatorQso: (cb) => ipcRenderer.on('wsjtx-activator-qso', (_e, c) => cb(c)),
   wsjtxReply: (decode) => ipcRenderer.send('wsjtx-reply', decode),
   wsjtxHaltTx: () => ipcRenderer.send('wsjtx-halt-tx'),
   saveQso: (qsoData) => ipcRenderer.invoke('save-qso', qsoData),

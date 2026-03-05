@@ -1276,6 +1276,11 @@ dialog input, dialog select {
   background: rgba(255, 107, 107, 0.06);
 }
 
+.spot-net {
+  border-left: 3px solid #ffd740;
+  background: rgba(255, 215, 64, 0.08);
+}
+
 /* Source badge in table column */
 .source-badge {
   display: inline-block;
@@ -1293,6 +1298,7 @@ dialog input, dialog select {
 .source-badge-wwff { background: #26a69a; color: #000; }
 .source-badge-llota { background: #42a5f5; color: #000; }
 .source-badge-pskr { background: #ff6b6b; color: #000; }
+.source-badge-net  { background: #ffd740; color: #000; }
 
 /* When row tinting is disabled, remove backgrounds but keep left borders */
 .no-source-tint .spot-pota,
@@ -1301,7 +1307,8 @@ dialog input, dialog select {
 .no-source-tint .spot-rbn,
 .no-source-tint .spot-wwff,
 .no-source-tint .spot-llota,
-.no-source-tint .spot-pskr {
+.no-source-tint .spot-pskr,
+.no-source-tint .spot-net {
   background: transparent;
 }
 
@@ -1327,6 +1334,18 @@ dialog input, dialog select {
   padding: 1px 3px;
   border-radius: 3px;
   background: #ff9800;
+  color: #1a1a2e;
+  vertical-align: middle;
+  cursor: default;
+}
+
+.net-badge {
+  margin-left: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: #ffd740;
   color: #1a1a2e;
   vertical-align: middle;
   cursor: default;
@@ -1713,6 +1732,49 @@ dialog input, dialog select {
 
 .rig-editor-buttons button:first-child:hover {
   background: #3db892;
+}
+
+/* Net editor panel (mirrors rig editor) */
+#net-editor {
+  border: 1px solid #ffd740;
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 8px;
+  background: var(--bg-panel);
+}
+
+#net-editor h4 {
+  color: #ffd740;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+/* Net reminder list items */
+.net-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.net-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.net-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.net-item-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 /* Hamlib rig list box */
@@ -2331,6 +2393,12 @@ dialog input, dialog select {
 .log-save-btn:hover {
   background: #3db892 !important;
 }
+.addl-park-wrapper { margin-bottom: 6px; }
+.addl-park-row { display: flex; gap: 4px; align-items: center; }
+.addl-park-row input { flex: 1; text-transform: uppercase; }
+.addl-park-remove { background: transparent; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 16px; padding: 0 4px; }
+.addl-park-remove:hover { color: var(--accent-red); }
+.addl-park-name { font-size: 12px; color: #4ecca3; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .respot-network-bar {
   padding: 6px 10px;

@@ -849,6 +849,80 @@
       <span class="help-text" style="margin-left:12px;display:block;">Uses your POTACAT logfile to track DXCC progress.</span>
     </fieldset>
 
+    <!-- Net Reminders -->
+    <fieldset class="source-toggles">
+      <legend>Net Reminders</legend>
+      <span class="help-text" style="display:block;margin-bottom:6px;">Schedule recurring nets to appear as pinned spots. Tap to tune your radio at net time.</span>
+      <div id="net-reminder-list"></div>
+      <button type="button" id="net-add-btn" class="settings-add-btn">+ Add Net</button>
+      <div id="net-editor" class="hidden">
+        <h4 id="net-editor-title">Add Net</h4>
+        <label>Net Name:
+          <input type="text" id="set-net-name" placeholder="POTA Happy Hour" maxlength="40">
+        </label>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;">Frequency (kHz):
+            <input type="number" id="set-net-freq" placeholder="7268" min="1" max="999999" step="1">
+          </label>
+          <label style="width:90px;">Mode:
+            <select id="set-net-mode">
+              <option value="SSB">SSB</option>
+              <option value="CW">CW</option>
+              <option value="FM">FM</option>
+              <option value="FT8">FT8</option>
+              <option value="FT4">FT4</option>
+              <option value="RTTY">RTTY</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;">Start Time (HH:MM):
+            <input type="time" id="set-net-time" value="17:00">
+          </label>
+          <label style="width:90px;">Time Zone:
+            <select id="set-net-tz">
+              <option value="local">Local</option>
+              <option value="utc">UTC</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;">Duration (min):
+            <input type="number" id="set-net-duration" value="60" min="5" max="480" step="5">
+          </label>
+          <label style="flex:1;">Lead Time (min):
+            <input type="number" id="set-net-lead" value="15" min="0" max="120" step="5">
+          </label>
+        </div>
+        <div style="margin-top:6px;">
+          <span style="font-size:12px;color:var(--text-secondary);">Schedule:</span>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <label class="radio-label"><input type="radio" name="net-schedule" value="daily" checked> Daily</label>
+            <label class="radio-label"><input type="radio" name="net-schedule" value="weekly"> Weekly</label>
+            <label class="radio-label"><input type="radio" name="net-schedule" value="dates"> Specific Dates</label>
+          </div>
+        </div>
+        <div id="net-weekly-days" class="hidden" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="0"> Sun</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="1"> Mon</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="2"> Tue</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="3"> Wed</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="4"> Thu</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="5"> Fri</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="6"> Sat</label>
+        </div>
+        <div id="net-specific-dates" class="hidden" style="margin-top:4px;">
+          <label>Dates (comma-separated):
+            <input type="text" id="set-net-dates" placeholder="2026-03-15, 2026-03-22">
+          </label>
+        </div>
+        <div class="rig-editor-buttons">
+          <button type="button" id="net-save-btn">Save Net</button>
+          <button type="button" id="net-cancel-btn">Cancel</button>
+        </div>
+      </div>
+    </fieldset>
+
     <!-- 8. Display (trimmed — bearing moved to Antenna, SmartSDR absorbed) -->
     <fieldset class="source-toggles">
       <legend>Display</legend>
@@ -1079,6 +1153,13 @@
       </label>
     </div>
     <div id="log-ref-display" class="hidden" style="margin:8px 0;font-size:13px;color:#4ecca3;"></div>
+    <div id="log-addl-parks-section" class="hidden" style="margin:6px 0;">
+      <label class="checkbox-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="log-addl-parks-cb"> Additional Parks
+      </label>
+      <div id="log-addl-parks-list" class="hidden" style="margin-top:4px;"></div>
+      <button type="button" id="log-addl-parks-add" class="hidden" style="margin-top:4px;font-size:12px;">+ Add Park</button>
+    </div>
     <label>Notes:
       <input type="text" id="log-comment" placeholder="Optional notes">
     </label>

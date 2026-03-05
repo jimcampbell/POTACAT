@@ -13,6 +13,7 @@
   --dxc: #e040fb;
   --rbn: #4fc3f7;
   --pskr: #ff6b6b;
+  --net: #ffd740;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
@@ -233,6 +234,95 @@ html, body {
 #status-bar.editing #mode-badge { display: none !important; }
 #status-bar.editing #freq-edit { display: flex !important; }
 
+/* --- Rig Controls Toggle (gear icon in status bar) --- */
+.rig-ctrl-toggle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  padding: 2px 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.rig-ctrl-toggle.active {
+  color: var(--pota);
+}
+
+/* --- Rig Controls Strip --- */
+#rig-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-header);
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+.rc-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rc-sep {
+  width: 1px;
+  height: 24px;
+  background: #444;
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+.rc-btn {
+  min-width: 36px;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid #444;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.rc-btn:active {
+  background: var(--bg);
+  border-color: var(--pota);
+}
+
+.rc-toggle.active {
+  color: var(--pota);
+  border-color: var(--pota);
+  background: rgba(78, 204, 163, 0.15);
+}
+
+.rc-vfo.active {
+  color: var(--pota);
+  border-color: var(--pota);
+  background: rgba(78, 204, 163, 0.15);
+}
+
+.rc-bw-label {
+  min-width: 44px;
+  text-align: center;
+  font-size: 13px;
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--text);
+}
+
+#rig-controls.disabled .rc-btn {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
 /* --- TX Banner --- */
 #tx-banner {
   background: var(--accent);
@@ -358,6 +448,7 @@ html, body {
 .spot-card.source-dxc  { border-left-color: var(--dxc); }
 .spot-card.source-rbn  { border-left-color: var(--rbn); }
 .spot-card.source-pskr { border-left-color: var(--pskr); }
+.spot-card.source-net  { border-left-color: var(--net); }
 
 .spot-call {
   font-weight: 700;
@@ -397,6 +488,31 @@ html, body {
   font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+/* New-to-me park */
+.spot-card.new-park {
+  border-left-color: #66ff99 !important;
+}
+.new-badge {
+  display: inline-block;
+  background: #4ecca3;
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+.new-chip {
+  --src-color: #66ff99;
+  border-color: #66ff99 !important;
+  color: #66ff99 !important;
+}
+.new-chip.active {
+  background: #66ff99 !important;
+  color: #000 !important;
 }
 
 .spot-empty {

@@ -46,6 +46,30 @@
         <span id="cat-dot" class="cat-dot disconnected" title="Radio disconnected"></span>
         <span id="audio-dot" class="audio-dot hidden" title="Audio"></span>
         <span id="latency">--ms</span>
+        <button type="button" id="rig-ctrl-toggle" class="rig-ctrl-toggle" title="Rig Controls">&#x2699;</button>
+      </div>
+    </div>
+
+    <!-- Rig controls strip (collapsible) -->
+    <div id="rig-controls" class="hidden">
+      <div id="rc-filter" class="rc-group">
+        <button type="button" class="rc-btn" id="rc-bw-dn" title="Narrower">&#x25C0;</button>
+        <span id="rc-bw-label" class="rc-bw-label">--</span>
+        <button type="button" class="rc-btn" id="rc-bw-up" title="Wider">&#x25B6;</button>
+      </div>
+      <div class="rc-sep"></div>
+      <div id="rc-nb" class="rc-group">
+        <button type="button" class="rc-btn rc-toggle" id="rc-nb-btn">NB</button>
+      </div>
+      <div class="rc-sep" id="rc-atu-sep"></div>
+      <div id="rc-atu" class="rc-group hidden">
+        <button type="button" class="rc-btn rc-toggle" id="rc-atu-btn">ATU</button>
+      </div>
+      <div class="rc-sep"></div>
+      <div id="rc-vfo" class="rc-group">
+        <button type="button" class="rc-btn rc-vfo" id="rc-vfo-a">A</button>
+        <button type="button" class="rc-btn rc-vfo" id="rc-vfo-b">B</button>
+        <button type="button" class="rc-btn" id="rc-vfo-swap" title="Swap VFO">A&#x21C4;B</button>
       </div>
     </div>
 
@@ -95,6 +119,7 @@
         <button class="filter-chip" data-band="10m">10</button>
         <button class="filter-chip" data-band="6m">6</button>
       </div>
+      <button id="new-only-chip" class="filter-chip new-chip hidden" data-band="">NEW</button>
     </div>
 
     <!-- Spot list -->

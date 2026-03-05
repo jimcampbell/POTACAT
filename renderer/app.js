@@ -245,6 +245,22 @@ const clusterNodeList = document.getElementById('cluster-node-list');
 const clusterPresetSelect = document.getElementById('cluster-preset-select');
 const clusterAddBtn = document.getElementById('cluster-add-btn');
 const clusterCustomFields = document.getElementById('cluster-custom-fields');
+const netReminderList = document.getElementById('net-reminder-list');
+const netAddBtn = document.getElementById('net-add-btn');
+const netEditor = document.getElementById('net-editor');
+const netEditorTitle = document.getElementById('net-editor-title');
+const setNetName = document.getElementById('set-net-name');
+const setNetFreq = document.getElementById('set-net-freq');
+const setNetMode = document.getElementById('set-net-mode');
+const setNetTime = document.getElementById('set-net-time');
+const setNetTz = document.getElementById('set-net-tz');
+const setNetDuration = document.getElementById('set-net-duration');
+const setNetLead = document.getElementById('set-net-lead');
+const netWeeklyDays = document.getElementById('net-weekly-days');
+const netSpecificDates = document.getElementById('net-specific-dates');
+const setNetDates = document.getElementById('set-net-dates');
+const netSaveBtn = document.getElementById('net-save-btn');
+const netCancelBtn = document.getElementById('net-cancel-btn');
 const setShowBeacons = document.getElementById('set-show-beacons');
 const setShowDxBar = document.getElementById('set-show-dx-bar');
 const rbnConfig = document.getElementById('rbn-config');
@@ -259,6 +275,7 @@ let enableRemote = false;
 let remoteConnected = false;
 let clusterNodeStatuses = []; // [{id, name, host, connected}, ...]
 let currentClusterNodes = []; // live node list for settings UI
+let currentNetReminders = []; // live net list for settings UI
 
 const CLUSTER_PRESETS = [
   { name: 'W3LPL', host: 'w3lpl.net', port: 7373 },
@@ -443,6 +460,10 @@ const logComment = document.getElementById('log-comment');
 const logSaveBtn = document.getElementById('log-save');
 const logCancelBtn = document.getElementById('log-cancel');
 const logDialogClose = document.getElementById('log-dialog-close');
+const logAddlParksCb = document.getElementById('log-addl-parks-cb');
+const logAddlParksList = document.getElementById('log-addl-parks-list');
+const logAddlParksAdd = document.getElementById('log-addl-parks-add');
+const logAddlParksSection = document.getElementById('log-addl-parks-section');
 
 // --- UTC Clock ---
 function updateUtcClock() {
@@ -1443,6 +1464,171 @@ function renderClusterNodeList(nodes) {
   }
 }
 
+// --- Net reminder list rendering ---
+let editingNetId = null;
+
+function renderNetList(nets) {
+  netReminderList.innerHTML = '';
+  for (const net of nets) {
+    const item = document.createElement('div');
+    item.className = 'net-item';
+    item.dataset.id = net.id;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = net.enabled;
+    cb.addEventListener('change', () => { net.enabled = cb.checked; });
+
+    const info = document.createElement('div');
+    info.className = 'net-item-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'net-item-name';
+    nameEl.textContent = net.name;
+    const detailEl = document.createElement('div');
+    detailEl.className = 'net-item-detail';
+    const schedStr = net.schedule?.type === 'weekly'
+      ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].filter((_,i) => (net.schedule.days || []).includes(i)).join(', ')
+      : net.schedule?.type === 'dates'
+        ? (net.schedule.dates || []).join(', ')
+        : 'Daily';
+    detailEl.textContent = `${net.frequency} kHz ${net.mode} \u2022 ${net.startTime} ${net.timeZone === 'utc' ? 'UTC' : 'Local'} \u2022 ${schedStr}`;
+    info.appendChild(nameEl);
+    info.appendChild(detailEl);
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'node-item-btn';
+    editBtn.textContent = '\u270E';
+    editBtn.title = 'Edit net';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openNetEditor('edit', net.id);
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'node-item-btn node-delete-btn';
+    delBtn.textContent = '\u2715';
+    delBtn.title = 'Remove net';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentNetReminders = currentNetReminders.filter(n => n.id !== net.id);
+      renderNetList(currentNetReminders);
+    });
+
+    item.appendChild(cb);
+    item.appendChild(info);
+    item.appendChild(editBtn);
+    item.appendChild(delBtn);
+    netReminderList.appendChild(item);
+  }
+}
+
+function openNetEditor(mode, netId) {
+  editingNetId = netId || null;
+  if (mode === 'edit') {
+    netEditorTitle.textContent = 'Edit Net';
+    const net = currentNetReminders.find(n => n.id === netId);
+    if (net) {
+      setNetName.value = net.name || '';
+      setNetFreq.value = net.frequency || '';
+      setNetMode.value = net.mode || 'SSB';
+      setNetTime.value = net.startTime || '17:00';
+      setNetTz.value = net.timeZone || 'local';
+      setNetDuration.value = net.duration || 60;
+      setNetLead.value = net.leadTime != null ? net.leadTime : 15;
+      const schedType = net.schedule?.type || 'daily';
+      document.querySelector(`input[name="net-schedule"][value="${schedType}"]`).checked = true;
+      updateNetScheduleUI(schedType);
+      if (schedType === 'weekly') {
+        netWeeklyDays.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.checked = (net.schedule.days || []).includes(parseInt(cb.value));
+        });
+      }
+      if (schedType === 'dates') {
+        setNetDates.value = (net.schedule.dates || []).join(', ');
+      }
+    }
+  } else {
+    netEditorTitle.textContent = 'Add Net';
+    setNetName.value = '';
+    setNetFreq.value = '';
+    setNetMode.value = 'SSB';
+    setNetTime.value = '17:00';
+    setNetTz.value = 'local';
+    setNetDuration.value = 60;
+    setNetLead.value = 15;
+    document.querySelector('input[name="net-schedule"][value="daily"]').checked = true;
+    updateNetScheduleUI('daily');
+    netWeeklyDays.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    setNetDates.value = '';
+  }
+  netEditor.classList.remove('hidden');
+  netAddBtn.classList.add('hidden');
+  setNetName.focus();
+}
+
+function updateNetScheduleUI(type) {
+  netWeeklyDays.classList.toggle('hidden', type !== 'weekly');
+  netSpecificDates.classList.toggle('hidden', type !== 'dates');
+}
+
+document.querySelectorAll('input[name="net-schedule"]').forEach(r => {
+  r.addEventListener('change', () => updateNetScheduleUI(r.value));
+});
+
+netAddBtn.addEventListener('click', () => openNetEditor('add'));
+
+netCancelBtn.addEventListener('click', () => {
+  netEditor.classList.add('hidden');
+  netAddBtn.classList.remove('hidden');
+  editingNetId = null;
+});
+
+netSaveBtn.addEventListener('click', () => {
+  const name = setNetName.value.trim();
+  const freq = parseInt(setNetFreq.value, 10);
+  if (!name || !freq) { alert('Name and frequency are required.'); return; }
+
+  const schedType = document.querySelector('input[name="net-schedule"]:checked').value;
+  const schedule = { type: schedType };
+  if (schedType === 'weekly') {
+    schedule.days = [];
+    netWeeklyDays.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+      schedule.days.push(parseInt(cb.value));
+    });
+  }
+  if (schedType === 'dates') {
+    schedule.dates = setNetDates.value.split(',').map(d => d.trim()).filter(Boolean);
+  }
+
+  const netObj = {
+    id: editingNetId || Date.now().toString(36),
+    name,
+    frequency: freq,
+    mode: setNetMode.value,
+    startTime: setNetTime.value || '17:00',
+    timeZone: setNetTz.value || 'local',
+    duration: parseInt(setNetDuration.value, 10) || 60,
+    leadTime: parseInt(setNetLead.value, 10) || 0,
+    schedule,
+    enabled: true,
+  };
+
+  if (editingNetId) {
+    const idx = currentNetReminders.findIndex(n => n.id === editingNetId);
+    if (idx !== -1) {
+      netObj.enabled = currentNetReminders[idx].enabled;
+      currentNetReminders[idx] = netObj;
+    }
+  } else {
+    currentNetReminders.push(netObj);
+  }
+
+  renderNetList(currentNetReminders);
+  netEditor.classList.add('hidden');
+  netAddBtn.classList.remove('hidden');
+  editingNetId = null;
+});
+
 // Populate preset dropdown
 function populateClusterPresets() {
   clusterPresetSelect.innerHTML = '<option value="">Add a node...</option>';
@@ -1828,6 +2014,8 @@ function getFiltered() {
   const continents = getDropdownValues(continentFilterEl);
   const maxAgeSecs = maxAgeMin * 60;
   return allSpots.filter((s) => {
+    // Net spots always pass through all filters
+    if (s.source === 'net') return true;
     const sourceOff =
       (s.source === 'pota' && !enablePota) ||
       (s.source === 'sota' && !enableSota) ||
@@ -1859,6 +2047,10 @@ function getFiltered() {
 // --- Sorting ---
 function sortSpots(spots) {
   return spots.slice().sort((a, b) => {
+    // Pin net spots above everything
+    const aNet = a.source === 'net' ? 1 : 0;
+    const bNet = b.source === 'net' ? 1 : 0;
+    if (aNet !== bNet) return bNet - aNet;
     // Pin DX expeditions to the top
     const aExp = expeditionCallsigns.has(a.callsign.toUpperCase()) ? 1 : 0;
     const bExp = expeditionCallsigns.has(b.callsign.toUpperCase()) ? 1 : 0;
@@ -2687,7 +2879,7 @@ const PRIVILEGE_RANGES = {
 
 const SOURCE_LABELS = {
   pota: 'POTA', sota: 'SOTA', dxc: 'DX', rbn: 'RBN',
-  wwff: 'WWFF', llota: 'LLOTA', pskr: 'FreeDV',
+  wwff: 'WWFF', llota: 'LLOTA', pskr: 'FreeDV', net: 'NET',
 };
 const CW_DIGI_MODES = new Set(['CW', 'FT8', 'FT4', 'RTTY', 'DIGI', 'JS8', 'PSK31', 'PSK']);
 const PHONE_MODES = new Set(['SSB', 'USB', 'LSB', 'FM', 'AM']);
@@ -2848,7 +3040,7 @@ function bindPopupClickHandlers(mapInstance) {
 // --- Scan ---
 function getScanList() {
   const filtered = sortSpots(getFiltered());
-  return filtered.filter((s) => !scanSkipped.has(s.frequency) && !isWorkedSpot(s));
+  return filtered.filter((s) => s.source !== 'net' && !scanSkipped.has(s.frequency) && !isWorkedSpot(s));
 }
 
 function startScan() {
@@ -3783,6 +3975,7 @@ function render() {
       if (s.source === 'wwff') tr.classList.add('spot-wwff');
       if (s.source === 'llota') tr.classList.add('spot-llota');
       if (s.source === 'pskr') tr.classList.add('spot-pskr');
+      if (s.source === 'net') tr.classList.add('spot-net');
       if (expeditionCallsigns.has(s.callsign.toUpperCase())) tr.classList.add('spot-expedition');
       if (s.comments && /POTA.?CAT/i.test(s.comments)) tr.classList.add('potacat-respot');
 
@@ -3835,18 +4028,20 @@ function render() {
       // Build all cells into a map keyed by data-col, then append in colOrder
       const cellMap = new Map();
 
-      // Log button cell
+      // Log button cell (hidden for net spots)
       const logTd = document.createElement('td');
       logTd.className = 'log-cell log-col';
       logTd.setAttribute('data-col', 'log');
-      const logButton = document.createElement('button');
-      logButton.className = 'log-btn';
-      logButton.textContent = isCompact ? 'L' : 'Log';
-      logButton.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openLogPopup(s);
-      });
-      logTd.appendChild(logButton);
+      if (s.source !== 'net') {
+        const logButton = document.createElement('button');
+        logButton.className = 'log-btn';
+        logButton.textContent = isCompact ? 'L' : 'Log';
+        logButton.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openLogPopup(s);
+        });
+        logTd.appendChild(logButton);
+      }
       cellMap.set('log', logTd);
 
       // Callsign cell — clickable link to QRZ
@@ -3893,6 +4088,13 @@ function render() {
         dxp.title = 'DX Expedition (Club Log)';
         dxp.textContent = 'DXP';
         callTd.appendChild(dxp);
+      }
+      if (s.source === 'net') {
+        const netBadge = document.createElement('span');
+        netBadge.className = 'net-badge';
+        netBadge.title = 'Scheduled Net';
+        netBadge.textContent = 'NET';
+        callTd.appendChild(netBadge);
       }
       // Event badge (e.g. "250" for America 250 WAS)
       const matchedEvent = getEventForCallsign(s.callsign);
@@ -3947,8 +4149,8 @@ function render() {
         { val: (s.lat != null && s.lon != null) ? latLonToGridLocal(s.lat, s.lon).slice(0, 4) : '', col: 'grid' },
         { val: formatDistance(s.distance), col: 'distance' },
         { val: formatBearing(s.bearing), cls: 'bearing-col', col: 'bearing' },
-        { val: formatAge(s.spotTime), col: 'spotTime' },
-        { val: s.comments || '', col: 'comments' },
+        { val: s.source === 'net' ? (s.comments || '') : formatAge(s.spotTime), col: 'spotTime' },
+        { val: s.source === 'net' ? '' : (s.comments || ''), col: 'comments' },
       ];
 
       for (const cell of cells) {
@@ -4062,6 +4264,75 @@ function freqKhzToBand(khz) {
 
 let currentLogSpot = null;
 
+// --- Additional Parks helpers ---
+const ADDL_PARKS_MAX = 3;
+
+function addParkInput(ref) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'addl-park-wrapper';
+  const row = document.createElement('div');
+  row.className = 'addl-park-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'US-1234';
+  input.value = ref || '';
+  input.spellcheck = false;
+  const nameLabel = document.createElement('div');
+  nameLabel.className = 'addl-park-name';
+  let lookupTimer = null;
+  input.addEventListener('input', () => {
+    clearTimeout(lookupTimer);
+    const val = input.value.trim().toUpperCase();
+    if (val.length < 3) { nameLabel.textContent = ''; return; }
+    lookupTimer = setTimeout(async () => {
+      try {
+        const park = await window.api.getPark(val);
+        nameLabel.textContent = park && park.name ? park.name : '';
+      } catch { nameLabel.textContent = ''; }
+    }, 300);
+  });
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'addl-park-remove';
+  removeBtn.textContent = '\u00d7';
+  removeBtn.title = 'Remove';
+  removeBtn.addEventListener('click', () => {
+    wrapper.remove();
+    logAddlParksAdd.classList.toggle('hidden', logAddlParksList.children.length >= ADDL_PARKS_MAX);
+    if (!logAddlParksList.children.length) logAddlParksCb.checked = false;
+    logAddlParksList.classList.toggle('hidden', !logAddlParksCb.checked);
+    logAddlParksAdd.classList.toggle('hidden', !logAddlParksCb.checked);
+  });
+  row.appendChild(input);
+  row.appendChild(removeBtn);
+  wrapper.appendChild(row);
+  wrapper.appendChild(nameLabel);
+  logAddlParksList.appendChild(wrapper);
+  logAddlParksAdd.classList.toggle('hidden', logAddlParksList.children.length >= ADDL_PARKS_MAX);
+  input.focus();
+}
+
+function getAdditionalParks() {
+  return Array.from(logAddlParksList.querySelectorAll('.addl-park-wrapper input'))
+    .map(el => el.value.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+logAddlParksCb.addEventListener('change', () => {
+  if (logAddlParksCb.checked) {
+    logAddlParksList.classList.remove('hidden');
+    logAddlParksAdd.classList.remove('hidden');
+    if (!logAddlParksList.children.length) addParkInput('');
+  } else {
+    logAddlParksList.classList.add('hidden');
+    logAddlParksAdd.classList.add('hidden');
+  }
+});
+
+logAddlParksAdd.addEventListener('click', () => {
+  if (logAddlParksList.children.length < ADDL_PARKS_MAX) addParkInput('');
+});
+
 function openLogPopup(spot) {
   currentLogSpot = spot;
   logCallsign.value = spot.callsign || '';
@@ -4109,6 +4380,14 @@ function openLogPopup(spot) {
   } else {
     logRefDisplay.classList.add('hidden');
   }
+
+  // Additional Parks section: show for park spots (POTA/WWFF/LLOTA), not SOTA
+  logAddlParksCb.checked = false;
+  logAddlParksList.innerHTML = '';
+  logAddlParksList.classList.add('hidden');
+  logAddlParksAdd.classList.add('hidden');
+  const isParkSpot = spot.reference && ['pota', 'wwff', 'llota'].includes(spot.source);
+  logAddlParksSection.classList.toggle('hidden', !isParkSpot);
 
   logComment.value = '';
 
@@ -4372,6 +4651,28 @@ logSaveBtn.addEventListener('click', async () => {
 
       lastResult = await window.api.saveQso(qsoData);
       if (!lastResult.success) break;
+
+      // Save additional park records (two-fer / three-fer)
+      const addlParks = getAdditionalParks();
+      for (const addlRef of addlParks) {
+        const addlComment = [logComment.value.trim(), `[${sig} ${addlRef}]`].filter(Boolean).join(' ');
+        const addlData = {
+          ...qsoData,
+          sigInfo: addlRef,
+          potaRef: sig === 'POTA' ? addlRef : qsoData.potaRef,
+          wwffRef: sig === 'WWFF' ? addlRef : qsoData.wwffRef,
+          comment: addlComment,
+          respot: false,
+          wwffRespot: false,
+          llotaRespot: false,
+          dxcRespot: false,
+          respotComment: '',
+          skipLogbookForward: true,
+        };
+        const addlResult = await window.api.saveQso(addlData);
+        if (!addlResult.success) { lastResult = addlResult; break; }
+      }
+      if (lastResult && !lastResult.success) break;
     }
 
     const displayCalls = callsigns.join(', ');
@@ -4759,6 +5060,11 @@ async function openSettingsDialog() {
     currentClusterNodes = [{ id: Date.now().toString(36), name: preset ? preset.name : host, host, port, enabled: true, preset: preset ? preset.name : null }];
   }
   renderClusterNodeList(currentClusterNodes);
+  // Load net reminders
+  currentNetReminders = Array.isArray(s.netReminders) ? JSON.parse(JSON.stringify(s.netReminders)) : [];
+  renderNetList(currentNetReminders);
+  netEditor.classList.add('hidden');
+  netAddBtn.classList.remove('hidden');
   clusterConfig.classList.toggle('hidden', !s.enableCluster);
   rbnConfig.classList.toggle('hidden', !s.enableRbn);
   setEnableWsjtx.checked = s.enableWsjtx === true;
@@ -5001,6 +5307,7 @@ settingsSave.addEventListener('click', async () => {
     wsjtxAutoLog: wsjtxAutoLogEnabled,
     myCallsign: myCallsign,
     clusterNodes: clusterNodes,
+    netReminders: currentNetReminders,
     showBeacons: showBeaconsEnabled,
     showDxBar: showDxBarEnabled,
     colorRows: colorRowsEnabled,
@@ -5968,6 +6275,36 @@ window.api.onWsjtxQsoLogged((qso) => {
   // Show a toast when WSJT-X logs a QSO
   const freqMHz = (qso.txFrequency / 1e6).toFixed(3);
   showLogToast(`WSJT-X logged ${qso.dxCall} on ${freqMHz} MHz ${qso.mode}`);
+});
+
+// WSJT-X QSO logged while in activator mode — add to activator contact list
+window.api.onWsjtxActivatorQso((contact) => {
+  if (appMode !== 'activator' || !activationActive) return;
+  activatorContacts.push(contact);
+  renderActivatorLog();
+  updateActivatorCounter();
+  // Push to activation map pop-out
+  if (actmapPopoutOpen) {
+    window.api.actmapPopoutContact({
+      parkRefs: activatorParkRefs.map(p => p.ref),
+      contact,
+    });
+  }
+  // Fire-and-forget QRZ lookup for name + grid
+  window.api.qrzLookup(contact.callsign).then(info => {
+    if (info) {
+      contact.name = qrzDisplayName(info);
+      if (info.grid) contact.grid = info.grid;
+      renderActivatorLog();
+      if (actmapPopoutOpen && info.grid) {
+        window.api.actmapPopoutContact({
+          parkRefs: activatorParkRefs.map(p => p.ref),
+          contact,
+          update: true,
+        });
+      }
+    }
+  }).catch(() => {});
 });
 
 // --- Radio frequency tracking ---

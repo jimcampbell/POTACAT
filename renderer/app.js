@@ -7672,9 +7672,12 @@ document.getElementById('welcome-start').addEventListener('click', async () => {
   if (qrzPass) saveData.qrzPassword = qrzPass;
   delete saveData.appVersion; // runtime-only, don't persist
 
-  // Add rig if configured in welcome
+  // Add rig if configured in welcome (skip if already exists)
   if (welcomeRig) {
-    saveData.rigs = [...(currentSettings.rigs || []), welcomeRig];
+    const existingRigs = currentSettings.rigs || [];
+    if (!existingRigs.some(r => r.id === welcomeRig.id)) {
+      saveData.rigs = [...existingRigs, welcomeRig];
+    }
     saveData.activeRigId = welcomeRig.id;
   }
 

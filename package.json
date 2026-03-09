@@ -32,6 +32,7 @@
       "lib/**/*",
       "renderer/**/*",
       "assets/icon.png",
+      "assets/icon.ico",
       "assets/icon-256.png",
       "assets/icon-light.png",
       "assets/cty.dat",
@@ -41,6 +42,7 @@
       "!node_modules/sharp/**/*"
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         "nsis",
         "portable"

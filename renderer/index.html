@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.tile.openstreetmap.org; connect-src 'self' https://*.tile.openstreetmap.org;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org; connect-src 'self' https://*.tile.openstreetmap.org;">
   <title>POTACAT</title>
   <link rel="stylesheet" href="../node_modules/leaflet/dist/leaflet.css">
   <link rel="stylesheet" href="styles.css">
@@ -33,6 +33,8 @@
           <label class="multi-dropdown-item"><input type="checkbox" value="12m"> 12m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="10m"> 10m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="6m"> 6m</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="2m"> 2m</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="70cm"> 70cm</label>
         </div>
       </div>
       <div class="multi-dropdown" id="mode-filter">
@@ -43,6 +45,7 @@
           <label class="multi-dropdown-item"><input type="checkbox" value="SSB"> SSB</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="FT8"> FT8</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="FT4"> FT4</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="FT2"> FT2</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="FM"> FM</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="RTTY"> RTTY</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="FREEDV"> FreeDV</label>
@@ -71,6 +74,7 @@
           <label class="spots-toggle"><input type="checkbox" id="spots-cluster"> <span style="color:#e040fb">DX Cluster</span></label>
           <label class="spots-toggle"><input type="checkbox" id="spots-rbn"> <span style="color:#00bcd4">RBN</span></label>
           <label class="spots-toggle"><input type="checkbox" id="spots-pskr"> <span style="color:#ff6b6b">FreeDV</span></label>
+          <label class="spots-toggle"><input type="checkbox" id="spots-dxe" checked> DX Expeditions</label>
           <div class="spots-panel-divider"></div>
           <div class="spots-panel-section-label">Filters</div>
           <label class="spots-toggle"><input type="checkbox" id="spots-hide-worked"> Hide worked stations</label>
@@ -101,6 +105,21 @@
             <span>Activator</span>
           </label>
           <div class="spots-panel-divider"></div>
+          <div class="echo-cat-quick">
+            <label class="switch-label compact">
+              <span>ECHOCAT</span>
+              <div class="switch"><input type="checkbox" id="quick-echo-cat"><span class="switch-slider"></span></div>
+            </label>
+            <div id="echo-cat-info" class="echo-cat-info hidden">
+              <div class="echo-cat-url" id="echo-cat-url"></div>
+              <div class="echo-cat-token-row">
+                <span class="echo-cat-token-label">Token:</span>
+                <span class="echo-cat-token-value" id="echo-cat-token"></span>
+                <button type="button" id="echo-cat-copy" class="echo-cat-copy-btn" title="Copy connection info">Copy</button>
+              </div>
+            </div>
+          </div>
+          <div class="spots-panel-divider"></div>
           <button type="button" id="open-settings-btn" class="settings-dropdown-link">Open Settings...</button>
         </div>
       </div>
@@ -110,11 +129,13 @@
         <button id="view-map-btn" class="view-btn" title="Map view">Map</button>
         <button id="popout-map-btn" class="view-btn popout-btn" title="Pop-out map window">&#x2197;</button>
         <button id="view-rbn-btn" class="view-btn hidden" title="Reverse Beacon Network">RBN</button>
+        <button id="cluster-terminal-btn" class="view-btn hidden" title="DX Cluster Terminal">Terminal</button>
       </div>
     </div>
     <div class="status-bar">
       <span id="utc-clock" class="utc-clock"></span>
       <span id="cat-status" class="status disconnected">CAT</span>
+      <span id="remote-tx-indicator" class="status hidden" style="background:#e94560;color:#fff;font-weight:bold;animation:tx-blink 1s ease-in-out infinite;">ECHOCAT TX</span>
       <span id="wsjtx-status" class="status disconnected hidden">WSJT-X</span>
       <span id="cw-keyer-status" class="status hidden" style="background:#b8860b;color:#fff;cursor:pointer;">CW</span>
       <span id="cw-text-display" class="hidden" style="font-family:monospace;font-size:11px;color:#4fc3f7;margin-left:4px;max-width:300px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;direction:rtl;text-align:left;"></span>
@@ -191,6 +212,7 @@
         <option value="CW">CW</option>
         <option value="FT8">FT8</option>
         <option value="FT4">FT4</option>
+        <option value="FT2">FT2</option>
         <option value="FM">FM</option>
         <option value="RTTY">RTTY</option>
         <option value="PSK31">PSK31</option>
@@ -199,10 +221,12 @@
       <button id="activator-continue-btn" class="activator-continue-btn hidden">Continue</button>
       <button id="activator-stop-btn" class="activator-stop-btn hidden">Stop Activation</button>
       <div id="activator-counter" class="activator-counter" title="Contacts logged (10 = valid activation)">0</div>
-      <button id="activator-map-btn" class="activator-map-btn" title="Open activation map">Map</button>
-      <button id="activator-spots-btn" class="activator-spots-btn" title="Show/hide hunter spots">Spots</button>
-      <button id="activator-spots-popout-btn" class="activator-spots-btn" title="Pop out spots window" style="padding:4px 6px;font-size:11px;">&#x2197;</button>
-      <button id="activator-rbn-btn" class="activator-spots-btn hidden" title="Show/hide Reverse Beacon Network">RBN</button>
+      <div class="act-btn-group">
+        <button id="activator-map-btn" class="act-btn-group-item" title="Open activation map">Map</button>
+        <button id="activator-spots-btn" class="act-btn-group-item" title="Show/hide hunter spots">Spots</button>
+        <button id="activator-spots-popout-btn" class="act-btn-group-item act-btn-group-narrow" title="Pop out spots window">&#x2197;</button>
+        <button id="activator-rbn-btn" class="act-btn-group-item hidden" title="Show/hide Reverse Beacon Network">RBN</button>
+      </div>
       <button id="activator-history-btn" class="activator-history-btn" title="Past Activations">Past</button>
       <span id="activator-timer" class="activator-timer" title="Activation duration">--:--</span>
       <span id="activator-utc" class="activator-utc"></span>
@@ -369,6 +393,8 @@
             <option value="12m">12m</option>
             <option value="10m">10m</option>
             <option value="6m">6m</option>
+            <option value="2m">2m</option>
+            <option value="70cm">70cm</option>
           </select>
         </label>
         <label class="dxcc-filter-label">Mode:
@@ -402,6 +428,8 @@
               <th class="dxcc-band-col">12m</th>
               <th class="dxcc-band-col">10m</th>
               <th class="dxcc-band-col">6m</th>
+              <th class="dxcc-band-col">2m</th>
+              <th class="dxcc-band-col">70cm</th>
             </tr>
           </thead>
           <tbody id="dxcc-matrix-body"></tbody>
@@ -426,6 +454,8 @@
             <label class="multi-dropdown-item"><input type="checkbox" value="12m"> 12m</label>
             <label class="multi-dropdown-item"><input type="checkbox" value="10m"> 10m</label>
             <label class="multi-dropdown-item"><input type="checkbox" value="6m"> 6m</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="2m"> 2m</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="70cm"> 70cm</label>
           </div>
         </div>
         <label class="rbn-age-filter">Max age:
@@ -488,6 +518,7 @@
       <span id="conn-cluster" class="conn-pill hidden"><span class="conn-dot"></span> DX Cluster</span>
       <span id="conn-rbn" class="conn-pill hidden"><span class="conn-dot"></span> RBN</span>
       <span id="conn-pskr" class="conn-pill hidden"><span class="conn-dot"></span> FreeDV</span>
+      <span id="conn-remote" class="conn-pill hidden"><span class="conn-dot"></span> Echo CAT</span>
     </div>
     <!-- 0.5 App Mode -->
     <fieldset class="source-toggles">
@@ -516,6 +547,20 @@
         </label>
         <label class="checkbox-label"><input type="checkbox" id="set-qrz-full-name"> Show full name (first + last) instead of first name only</label>
         <span class="help-text" style="display:block;margin-top:4px;">Credentials are stored locally and only sent to xmldata.qrz.com</span>
+        <div id="qrz-logbook-section" class="hidden" style="margin-top:8px;border-top:1px solid #333;padding-top:8px;">
+          <div id="qrz-sub-status" class="help-text"></div>
+          <button type="button" id="qrz-recheck-btn" class="text-btn" style="margin-top:4px;">Recheck QRZ Subscription</button>
+          <label class="checkbox-label" style="margin-top:6px;">
+            <input type="checkbox" id="set-qrz-logbook" disabled> Upload each QSO to QRZ Logbook automatically
+          </label>
+          <div id="qrz-logbook-config" class="hidden" style="margin-left:12px;margin-top:4px;">
+            <label>QRZ Logbook API Key:
+              <input type="password" id="set-qrz-api-key" placeholder="From qrz.com Account Settings">
+            </label>
+            <span class="help-text" style="display:block;margin-top:4px;">Get your API key from qrz.com &rarr; My Account &rarr; QRZ Logbook Settings</span>
+            <div id="qrz-api-status" class="help-text" style="margin-top:4px;"></div>
+          </div>
+        </div>
       </div>
       <label>Distance Unit:
         <select id="set-dist-unit">
@@ -640,6 +685,18 @@
           <label>Host: <input type="text" id="set-rigctldnet-host" placeholder="192.168.1.100" value="127.0.0.1"></label>
           <label>Port: <input type="number" id="set-rigctldnet-port" min="1" max="65535" value="4532"></label>
         </div>
+        <details id="rig-audio-details" style="margin-top:8px;">
+          <summary style="cursor:pointer;font-size:13px;color:#4fc3f7;">ECHOCAT Audio (optional)</summary>
+          <div style="margin-top:6px;margin-left:4px;">
+            <label>Audio Input (radio RX &rarr; phone):
+              <select id="rig-remote-audio-input" style="width:100%;margin-top:2px;"><option value="">-- system default --</option></select>
+            </label>
+            <label style="margin-top:4px;display:block;">Audio Output (phone &rarr; radio TX):
+              <select id="rig-remote-audio-output" style="width:100%;margin-top:2px;"><option value="">-- system default --</option></select>
+            </label>
+            <span class="help-text" style="margin-top:4px;display:block;">Set per-rig audio devices for ECHOCAT remote operation</span>
+          </div>
+        </details>
         <div class="rig-editor-buttons">
           <button type="button" id="rig-save-btn">Save Rig</button>
           <button type="button" id="rig-cancel-btn">Cancel</button>
@@ -681,6 +738,7 @@
         <span class="help-text" style="display:block;margin-top:6px;">Enable up to 3 nodes for simultaneous connections. Duplicate spots are automatically removed.</span>
         <label class="checkbox-label" style="margin-top:6px;"><input type="checkbox" id="set-show-beacons"> Show /B beacon stations</label>
         <label class="checkbox-label" style="margin-top:6px;"><input type="checkbox" id="set-show-dx-bar"> Show DX command bar below spot table</label>
+        <label class="checkbox-label" style="margin-top:6px;"><input type="checkbox" id="set-enable-cluster-terminal"> Show DX Cluster Terminal button</label>
       </div>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-rbn"> Reverse Beacon Network</label>
       <div id="rbn-config" class="radio-sub hidden">
@@ -696,6 +754,7 @@
         <span class="help-text" style="display:block;margin-top:4px;">Must match WSJT-X Settings &rarr; Reporting &rarr; UDP Server port. Enable "Accept UDP requests" in WSJT-X.</span>
         <label class="checkbox-label" style="margin-top:6px;"><input type="checkbox" id="set-wsjtx-highlight" checked> Highlight POTA activators in WSJT-X</label>
         <label class="checkbox-label"><input type="checkbox" id="set-wsjtx-auto-log"> Auto-log WSJT-X QSOs to POTACAT</label>
+        <span class="help-text" style="display:block;margin-top:6px;"><b>Startup order:</b> Open WSJT-X first, then POTACAT, then your logger (ACLog, etc.). Your logger may warn about a shared socket — this is normal and can be dismissed.</span>
       </div>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-pskr"> FreeDV (PSKReporter)</label>
       <div id="pskr-config" class="radio-sub hidden">
@@ -792,6 +851,7 @@
             <select id="set-logbook-type">
               <option value="">Select...</option>
               <option value="dxkeeper">DXLab DXKeeper</option>
+              <option value="hamrs">HamRS</option>
               <option value="hrd">Ham Radio Deluxe</option>
               <option value="log4om">Log4OM 2</option>
               <option value="n3fjp">N3FJP</option>
@@ -818,6 +878,81 @@
       <span class="help-text" style="margin-left:12px;display:block;">Uses your POTACAT logfile to track DXCC progress.</span>
     </fieldset>
 
+    <!-- Net Reminders -->
+    <fieldset class="source-toggles">
+      <legend>Net Reminders</legend>
+      <span class="help-text" style="display:block;margin-bottom:6px;">Schedule recurring nets to appear as pinned spots. Tap to tune your radio at net time.</span>
+      <div id="net-reminder-list"></div>
+      <button type="button" id="net-add-btn" class="settings-add-btn">+ Add Net</button>
+      <div id="net-editor" class="hidden">
+        <h4 id="net-editor-title">Add Net</h4>
+        <label>Net Name:
+          <input type="text" id="set-net-name" placeholder="POTA Happy Hour" maxlength="40">
+        </label>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;">Frequency (kHz):
+            <input type="number" id="set-net-freq" placeholder="7268" min="1" max="999999" step="1">
+          </label>
+          <label style="width:90px;">Mode:
+            <select id="set-net-mode">
+              <option value="SSB">SSB</option>
+              <option value="CW">CW</option>
+              <option value="FM">FM</option>
+              <option value="FT8">FT8</option>
+              <option value="FT4">FT4</option>
+              <option value="FT2">FT2</option>
+              <option value="RTTY">RTTY</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;">Start Time (HH:MM):
+            <input type="time" id="set-net-time" value="17:00">
+          </label>
+          <label style="width:90px;">Time Zone:
+            <select id="set-net-tz">
+              <option value="local">Local</option>
+              <option value="utc">UTC</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;">Duration (min):
+            <input type="number" id="set-net-duration" value="60" min="5" max="480" step="5">
+          </label>
+          <label style="flex:1;">Lead Time (min):
+            <input type="number" id="set-net-lead" value="15" min="0" max="120" step="5">
+          </label>
+        </div>
+        <div style="margin-top:6px;">
+          <span style="font-size:12px;color:var(--text-secondary);">Schedule:</span>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <label class="radio-label"><input type="radio" name="net-schedule" value="daily" checked> Daily</label>
+            <label class="radio-label"><input type="radio" name="net-schedule" value="weekly"> Weekly</label>
+            <label class="radio-label"><input type="radio" name="net-schedule" value="dates"> Specific Dates</label>
+          </div>
+        </div>
+        <div id="net-weekly-days" class="hidden" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="0"> Sun</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="1"> Mon</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="2"> Tue</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="3"> Wed</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="4"> Thu</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="5"> Fri</label>
+          <label class="checkbox-label" style="min-width:auto;"><input type="checkbox" value="6"> Sat</label>
+        </div>
+        <div id="net-specific-dates" class="hidden" style="margin-top:4px;">
+          <label>Dates (comma-separated):
+            <input type="text" id="set-net-dates" placeholder="2026-03-15, 2026-03-22">
+          </label>
+        </div>
+        <div class="rig-editor-buttons">
+          <button type="button" id="net-save-btn">Save Net</button>
+          <button type="button" id="net-cancel-btn">Cancel</button>
+        </div>
+      </div>
+    </fieldset>
+
     <!-- 8. Display (trimmed — bearing moved to Antenna, SmartSDR absorbed) -->
     <fieldset class="source-toggles">
       <legend>Display</legend>
@@ -829,6 +964,7 @@
         </div>
         <span>Light Mode</span>
       </label>
+      <label class="checkbox-label"><input type="checkbox" id="set-colorblind"> Colorblind mode (deuteranopia)</label>
       <label class="checkbox-label"><input type="checkbox" id="set-color-rows" checked> Color table rows by spot source</label>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-solar"> Solar Propagation</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Shows SFI, K, and A indices in the status bar</span>
@@ -917,7 +1053,35 @@
         </div>
       </div>
     </fieldset>
-    <!-- 10. About (merged Privacy + Diagnostics) -->
+    <!-- 10. ECHOCAT -->
+    <fieldset class="source-toggles">
+      <legend>ECHOCAT</legend>
+      <label class="checkbox-label"><input type="checkbox" id="set-enable-remote"> Enable ECHOCAT (phone browser over Tailscale)</label>
+      <div id="remote-config" class="radio-sub hidden" style="margin-top:6px;margin-left:12px;">
+        <label>Port:
+          <input type="number" id="set-remote-port" placeholder="7300" min="1024" max="65535" value="7300" style="width:80px;">
+        </label>
+        <label class="checkbox-label" style="margin-top:8px;"><input type="checkbox" id="set-remote-require-token"> Require access token</label>
+        <div id="remote-token-row" class="hidden" style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+          <label>Token:
+            <input type="text" id="set-remote-token" style="width:120px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;" placeholder="e.g. K3SBP" autocomplete="off" spellcheck="false">
+          </label>
+          <button type="button" id="remote-regen-token" style="padding:2px 8px;">Random</button>
+        </div>
+        <span class="help-text">Tailscale already secures the connection — token is optional</span>
+        <div id="remote-audio-display" style="margin-top:8px;font-size:12px;color:#aaa;">
+          Audio: <span id="remote-audio-summary">not configured — set in My Rigs</span>
+        </div>
+        <div style="margin-top:4px;">
+          <label>PTT Safety Timeout (seconds):
+            <input type="number" id="set-remote-ptt-timeout" min="30" max="600" value="180" style="width:70px;">
+          </label>
+        </div>
+        <div id="remote-url-display" style="margin-top:8px;font-family:monospace;font-size:12px;"></div>
+        <span class="help-text">To use ECHOCAT securely outside your home network, install <a href="https://tailscale.com" target="_blank" style="color:#4fc3f7;">Tailscale</a> on both your shack computer and phone. Audio, tuning, and PTT are all encrypted over the Tailscale VPN.</span>
+      </div>
+    </fieldset>
+    <!-- 11. About (merged Privacy + Diagnostics) -->
     <fieldset class="source-toggles">
       <legend>About</legend>
       <label class="checkbox-label"><input type="checkbox" id="set-disable-auto-update"> Disable automatic updates</label>
@@ -934,7 +1098,7 @@
       <button id="settings-cancel">Cancel</button>
     </div>
     <div class="settings-footer">
-      <div class="settings-version">v0.9.28 beta &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
+      <div class="settings-version">v0.9.42 beta &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
       <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
       <div class="settings-links">
         <a href="#" id="discord-link">Discord</a>
@@ -964,6 +1128,19 @@
         <input type="text" id="log-op-name" readonly tabindex="-1" style="color:#b0bec5;background:transparent;border-color:#333;">
       </label>
     </div>
+    <div id="log-type-picker" class="log-type-chips">
+      <button type="button" class="log-type-chip" data-type="dx">DX</button>
+      <button type="button" class="log-type-chip" data-type="pota">POTA</button>
+      <button type="button" class="log-type-chip" data-type="sota">SOTA</button>
+      <button type="button" class="log-type-chip" data-type="wwff">WWFF</button>
+      <button type="button" class="log-type-chip" data-type="llota">LLOTA</button>
+    </div>
+    <div id="log-ref-input-section" class="hidden" style="margin:2px 0 4px;">
+      <label style="display:block;">Reference:
+        <input type="text" id="log-ref-input" placeholder="e.g. US-1234 or US-1234, US-5678" style="text-transform:uppercase;" spellcheck="false" autocomplete="off">
+      </label>
+      <div id="log-ref-name" style="font-size:12px;color:var(--accent-green);margin-top:2px;min-height:16px;white-space:pre-line;"></div>
+    </div>
     <div style="display:flex;gap:8px;">
       <label style="flex:1;">Frequency (kHz):
         <input type="text" id="log-frequency">
@@ -974,6 +1151,7 @@
           <option value="SSB">SSB</option>
           <option value="FT8">FT8</option>
           <option value="FT4">FT4</option>
+          <option value="FT2">FT2</option>
           <option value="FM">FM</option>
           <option value="RTTY">RTTY</option>
           <option value="USB">USB</option>
@@ -1019,7 +1197,6 @@
         </div>
       </label>
     </div>
-    <div id="log-ref-display" class="hidden" style="margin:8px 0;font-size:13px;color:#4ecca3;"></div>
     <label>Notes:
       <input type="text" id="log-comment" placeholder="Optional notes">
     </label>
@@ -1073,7 +1250,7 @@
         <tr><td><kbd>F2</kbd></td><td>View/Edit Logbook</td></tr>
         <tr><td><kbd>F5</kbd></td><td>Check for updates</td></tr>
         <tr><td><kbd>F11</kbd></td><td>Welcome / setup screen</td></tr>
-        <tr><td><kbd>&uarr;</kbd> <kbd>&darr;</kbd></td><td>Navigate spots &amp; tune radio</td></tr>
+        <tr><td><kbd>&uarr;&darr;</kbd></td><td>Navigate spots &amp; tune radio</td></tr>
         <tr><td><kbd>Space</kbd></td><td>Start / stop scan</td></tr>
         <tr><td><kbd>S</kbd></td><td>Toggle split mode</td></tr>
         <tr><td><kbd>Ctrl+L</kbd></td><td>Quick Log (unspotted QSO)</td></tr>

@@ -15,18 +15,20 @@ const { loadCtyDat, resolveCallsign, getAllEntities } = require('./lib/cty');
 const { parseAdifFile, parseWorkedQsos, parseAllQsos, parseAllRawQsos, parseSqliteFile, parseSqliteConfirmed, isSqliteFile, parseRecord: parseAdifRecord } = require('./lib/adif');
 const { DxClusterClient } = require('./lib/dxcluster');
 const { RbnClient } = require('./lib/rbn');
-const { appendQso, buildAdifRecord, appendImportedQso, rewriteAdifFile, ADIF_HEADER, adifField } = require('./lib/adif-writer');
-const { SmartSdrClient } = require('./lib/smartsdr');
-const { TciClient } = require('./lib/tci');
+const { appendQso, buildAdifRecord, appendImportedQso, appendRawQso, rewriteAdifFile, ADIF_HEADER, adifField } = require('./lib/adif-writer');
+const { SmartSdrClient, setColorblindMode: setSmartSdrColorblind } = require('./lib/smartsdr');
+const { TciClient, setTciColorblindMode } = require('./lib/tci');
 const { IambicKeyer } = require('./lib/keyer');
 const { parsePotaParksCSV } = require('./lib/pota-parks');
 const { WsjtxClient } = require('./lib/wsjtx');
 const { PskrClient } = require('./lib/pskreporter');
+const { RemoteServer } = require('./lib/remote-server');
 const { fetchSpots: fetchWwffSpots } = require('./lib/wwff');
 const { fetchSpots: fetchLlotaSpots } = require('./lib/llota');
 const { postWwffRespot } = require('./lib/wwff-respot');
 const { QrzClient } = require('./lib/qrz');
 const { callsignToProgram, fetchParksForProgram, loadParksCache, saveParksCache, isCacheStale, searchParks: searchParksDb, getPark: getParkDb, buildParksMap } = require('./lib/pota-parks-db');
+const { fetchDxCalExpeditions } = require('./lib/dxcal');
 const { autoUpdater } = require('electron-updater');
 
 // --- QRZ.com callsign lookup ---
@@ -62,6 +64,7 @@ let popoutWin = null; // pop-out map window
 let qsoPopoutWin = null; // pop-out QSO log window
 let actmapPopoutWin = null; // pop-out activation map window
 let spotsPopoutWin = null; // pop-out spots window (activator mode)
+let clusterPopoutWin = null; // pop-out DX cluster terminal window
 let cat = null;
 let spotTimer = null;
 let solarTimer = null;
@@ -83,13 +86,70 @@ let wsjtx = null;
 let wsjtxStatus = null; // last Status message from WSJT-X
 let wsjtxHighlightTimer = null; // throttle timer for highlight updates
 let donorCallsigns = new Set(); // supporter callsigns from potacat.com
-let expeditionCallsigns = new Set(); // active DX expeditions from Club Log
+let expeditionCallsigns = new Set(); // active DX expeditions from Club Log + danplanet iCal
+let expeditionMeta = new Map(); // callsign → { entity, startDate, endDate, description }
 let activeEvents = [];                // events fetched from remote endpoint
 const EVENTS_CACHE_PATH = path.join(app.getPath('userData'), 'events-cache.json');
 let pskr = null;
 let pskrSpots = [];       // streaming PSKReporter FreeDV spots (FIFO, max 500)
 let pskrFlushTimer = null; // throttle timer for PSKReporter → renderer updates
 let keyer = null;          // IambicKeyer instance for CW MIDI keying
+let remoteServer = null;   // RemoteServer instance for phone remote access
+let remoteAudioWin = null; // hidden BrowserWindow for WebRTC audio bridge
+let _currentFreqHz = 0;    // tracked for remote radio status
+let _currentMode = '';
+let _remoteTxState = false;
+let _currentNbState = false;
+let _currentAtuState = false;
+let _currentVfo = 'A';
+let _currentFilterWidth = 0;
+let _currentRfGain = 0;
+let _currentTxPower = 100;
+
+// Filter preset tables for rig controls (Hz values)
+const FILTER_PRESETS = {
+  SSB: [1800, 2100, 2400, 2700, 3000, 3600],
+  CW:  [50, 100, 200, 500, 1000, 1500, 2400],
+  DIG: [500, 1000, 2000, 3000, 4000],
+};
+
+function getFilterPresets(mode) {
+  const m = (mode || '').toUpperCase();
+  if (m === 'CW') return FILTER_PRESETS.CW;
+  if (m === 'FT8' || m === 'FT4' || m === 'FT2' || m === 'DIGU' || m === 'DIGL' || m === 'RTTY' || m === 'PKTUSB' || m === 'PKTLSB') return FILTER_PRESETS.DIG;
+  return FILTER_PRESETS.SSB; // default for SSB/USB/LSB/FM/AM
+}
+
+function findNearestPreset(presets, currentWidth) {
+  let best = 0, bestDist = Infinity;
+  for (let i = 0; i < presets.length; i++) {
+    const d = Math.abs(presets[i] - currentWidth);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  return best;
+}
+
+function detectRigType() {
+  const target = settings.catTarget;
+  if (!target) return 'unknown';
+  if (target.type === 'rigctld' || target.type === 'rigctldnet') return 'rigctld';
+  if (target.type === 'tcp') return 'flex'; // TCP CAT ports 5002-5005 are always FlexRadio
+  if (target.type === 'serial') {
+    if (cat && cat._isYaesu && cat._isYaesu()) return 'yaesu';
+    return 'kenwood';
+  }
+  return 'unknown';
+}
+
+function getRigCapabilities(rigType) {
+  switch (rigType) {
+    case 'flex':    return { nb: true, atu: true, vfo: false, filter: true, filterType: 'arbitrary', rfgain: true, txpower: true };
+    case 'yaesu':   return { nb: true, atu: false, vfo: true, filter: true, filterType: 'indexed', rfgain: false, txpower: false };
+    case 'kenwood': return { nb: true, atu: false, vfo: true, filter: true, filterType: 'direct', rfgain: false, txpower: false };
+    case 'rigctld': return { nb: true, atu: false, vfo: true, filter: true, filterType: 'passband', rfgain: true, txpower: true };
+    default:        return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none', rfgain: false, txpower: false };
+  }
+}
 
 // --- Watchlist notifications ---
 const recentNotifications = new Map(); // callsign → timestamp for dedup (5-min window)
@@ -277,18 +337,44 @@ function spawnRigctld(target, portOverride) {
 
 function sendCatStatus(s) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-status', s);
+  // If CAT disconnected while ECHOCAT PTT was active, force-release PTT
+  // and notify the phone so it can update its UI state
+  if (!s.connected && _remoteTxState && remoteServer && remoteServer.running) {
+    console.log('[Echo CAT] CAT disconnected during TX — forcing PTT release');
+    _remoteTxState = false;
+    remoteServer.forcePttRelease();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('remote-tx-state', false);
+    }
+  }
 }
 
 function sendCatFrequency(hz) {
+  if (hz > 0 && hz < 100000) {
+    console.warn(`[CAT] Ignoring suspicious frequency: ${hz} Hz (below 100 kHz)`);
+    return;
+  }
   if (win && !win.isDestroyed()) win.webContents.send('cat-frequency', hz);
+  _currentFreqHz = hz;
+  broadcastRemoteRadioStatus();
 }
 
 function sendCatMode(mode) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-mode', mode);
+  _currentMode = mode;
+  broadcastRemoteRadioStatus();
 }
 
 function sendCatPower(watts) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-power', watts);
+}
+
+function sendCatNb(on) {
+  // For Flex rigs, NB is controlled via SmartSDR API — ignore Kenwood CAT NB poll
+  // responses which can fight with the API state (stale/different values)
+  if (detectRigType() === 'flex' && smartSdr && smartSdr.connected) return;
+  _currentNbState = on;
+  broadcastRemoteRadioStatus();
 }
 
 function sendCatLog(msg) {
@@ -342,6 +428,7 @@ async function connectCat() {
     });
     cat.on('frequency', sendCatFrequency);
     cat.on('mode', sendCatMode);
+    cat.on('nb', sendCatNb);
     const rigctldPort = target.rigctldPort || 4532;
     sendCatLog(`Connecting to rigctld on 127.0.0.1:${rigctldPort}`);
     cat.connect({ type: 'rigctld', host: '127.0.0.1', port: rigctldPort });
@@ -354,6 +441,7 @@ async function connectCat() {
     });
     cat.on('frequency', sendCatFrequency);
     cat.on('mode', sendCatMode);
+    cat.on('nb', sendCatNb);
     const host = target.host || '127.0.0.1';
     const port = target.port || 4532;
     sendCatLog(`Connecting to remote rigctld on ${host}:${port}`);
@@ -366,6 +454,7 @@ async function connectCat() {
     cat.on('frequency', sendCatFrequency);
     cat.on('mode', sendCatMode);
     cat.on('power', sendCatPower);
+    cat.on('nb', sendCatNb);
     if (target) {
       cat.connect(target);
     }
@@ -458,6 +547,26 @@ function sendClusterStatus() {
   }
   const s = { nodes };
   if (win && !win.isDestroyed()) win.webContents.send('cluster-status', s);
+  // Push cluster state to ECHOCAT phone
+  if (remoteServer && remoteServer.running) {
+    const anyConnected = nodes.some(n => n.connected);
+    remoteServer.broadcastClusterState(anyConnected);
+    updateRemoteSettings();
+  }
+}
+
+function getClusterNodeList() {
+  const nodes = [];
+  for (const [id, entry] of clusterClients) {
+    nodes.push({ id, name: entry.nodeConfig.name, host: entry.nodeConfig.host, connected: entry.client.connected });
+  }
+  return nodes;
+}
+
+function sendClusterNodesToPopout() {
+  if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) {
+    clusterPopoutWin.webContents.send('cluster-popout-nodes', getClusterNodeList());
+  }
 }
 
 function connectCluster() {
@@ -526,8 +635,15 @@ function connectCluster() {
       }
     });
 
+    client.on('line', (line) => {
+      if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) {
+        clusterPopoutWin.webContents.send('cluster-popout-line', { nodeId: node.id, line });
+      }
+    });
+
     client.on('status', () => {
       sendClusterStatus();
+      sendClusterNodesToPopout();
     });
 
     client.connect({
@@ -925,6 +1041,145 @@ function disconnectPskr() {
   sendPskrStatus({ connected: false });
 }
 
+// --- Shared QSO save logic ---
+// Module-scoped so WSJT-X, Echo CAT, and IPC handlers can all use it
+async function saveQsoRecord(qsoData) {
+  // Inject operator callsign from settings
+  if (settings.myCallsign && !qsoData.operator) {
+    qsoData.operator = settings.myCallsign.toUpperCase();
+  }
+  const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+  appendQso(logPath, qsoData);
+
+  // Notify QSO pop-out window
+  if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
+    qsoPopoutWin.webContents.send('qso-popout-added', qsoData);
+  }
+
+  // Track QSO in telemetry (fire-and-forget)
+  const qsoSource = (qsoData.sig || '').toLowerCase();
+  trackQso(['pota', 'sota', 'wwff', 'llota'].includes(qsoSource) ? qsoSource : null);
+
+  // Check if QSO matches any active event and auto-mark progress
+  checkEventQso(qsoData);
+
+  // Update worked QSOs map and notify renderer
+  if (qsoData.callsign) {
+    const call = qsoData.callsign.toUpperCase();
+    const entry = { date: qsoData.qsoDate || '', ref: (qsoData.sigInfo || '').toUpperCase(), band: (qsoData.band || '').toUpperCase(), mode: (qsoData.mode || '').toUpperCase() };
+    if (!workedQsos.has(call)) workedQsos.set(call, []);
+    workedQsos.get(call).push(entry);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('worked-qsos', [...workedQsos.entries()]);
+    }
+    if (remoteServer && remoteServer.running) {
+      remoteServer.sendWorkedQsos([...workedQsos.entries()]);
+    }
+  }
+
+  // Forward to external logbook if enabled
+  // skipLogbookForward: multi-park activations send one ADIF record per park ref,
+  // but external logbooks only need one QSO per physical contact
+  if (settings.sendToLogbook && settings.logbookType && !qsoData.skipLogbookForward) {
+    try {
+      await forwardToLogbook(qsoData);
+    } catch (fwdErr) {
+      console.error('Logbook forwarding failed:', fwdErr.message);
+      return { success: true, logbookError: fwdErr.message };
+    }
+  }
+
+  // Upload to QRZ Logbook if enabled (independent of logbook forwarding)
+  if (settings.qrzLogbook && settings.qrzApiKey && !qsoData.skipLogbookForward) {
+    try {
+      await sendToQrzLogbook(qsoData);
+    } catch (qrzErr) {
+      console.error('QRZ Logbook upload failed:', qrzErr.message);
+      return { success: true, qrzError: qrzErr.message };
+    }
+  }
+
+  // Re-spot on POTA if requested
+  if (qsoData.respot && qsoData.sig === 'POTA' && qsoData.sigInfo && settings.myCallsign) {
+    try {
+      await postPotaRespot({
+        activator: qsoData.callsign,
+        spotter: settings.myCallsign.toUpperCase(),
+        frequency: qsoData.frequency,
+        reference: qsoData.sigInfo,
+        mode: qsoData.mode,
+        comments: qsoData.respotComment || '',
+      });
+      trackRespot('pota');
+    } catch (respotErr) {
+      console.error('POTA re-spot failed:', respotErr.message);
+      return { success: true, respotError: respotErr.message };
+    }
+  }
+
+  // Re-spot on WWFF if requested — validate ref starts with KFF/xFF (WWFF format)
+  if (qsoData.wwffRespot && qsoData.wwffReference && settings.myCallsign) {
+    if (!/^[A-Z0-9]{1,4}FF-\d{4}$/i.test(qsoData.wwffReference)) {
+      console.warn('WWFF re-spot skipped: reference does not match WWFF format:', qsoData.wwffReference);
+    } else {
+      try {
+        await postWwffRespot({
+          activator: qsoData.callsign,
+          spotter: settings.myCallsign.toUpperCase(),
+          frequency: qsoData.frequency,
+          reference: qsoData.wwffReference,
+          mode: qsoData.mode,
+          comments: qsoData.respotComment || '',
+        });
+        trackRespot('wwff');
+      } catch (respotErr) {
+        console.error('WWFF re-spot failed:', respotErr.message);
+        return { success: true, wwffRespotError: respotErr.message };
+      }
+    }
+  }
+
+  // Re-spot on LLOTA if requested — validate ref matches LLOTA format (XX-NNNN where sig=LLOTA)
+  if (qsoData.llotaRespot && qsoData.llotaReference) {
+    if (qsoData.sig !== 'LLOTA') {
+      console.warn('LLOTA re-spot skipped: QSO sig is', qsoData.sig, 'not LLOTA, ref:', qsoData.llotaReference);
+    } else {
+      try {
+        await postLlotaRespot({
+          activator: qsoData.callsign,
+          frequency: qsoData.frequency,
+          reference: qsoData.llotaReference,
+          mode: qsoData.mode,
+          comments: qsoData.respotComment || '',
+        });
+        trackRespot('llota');
+      } catch (respotErr) {
+        console.error('LLOTA re-spot failed:', respotErr.message);
+        return { success: true, llotaRespotError: respotErr.message };
+      }
+    }
+  }
+
+  // Spot on DX Cluster if requested
+  if (qsoData.dxcRespot) {
+    try {
+      let sent = 0;
+      for (const [, entry] of clusterClients) {
+        if (entry.client.sendSpot({ frequency: qsoData.frequency, callsign: qsoData.callsign, comment: qsoData.respotComment || '' })) {
+          sent++;
+        }
+      }
+      if (sent === 0) throw new Error('no connected nodes');
+    } catch (respotErr) {
+      console.error('DX Cluster spot failed:', respotErr.message);
+      return { success: true, dxcRespotError: respotErr.message };
+    }
+  }
+
+  const didRespot = (qsoData.respot && qsoData.sig === 'POTA') || qsoData.wwffRespot || qsoData.llotaRespot || qsoData.dxcRespot;
+  return { success: true, resposted: didRespot || false };
+}
+
 // --- WSJT-X integration ---
 function sendWsjtxStatus(s) {
   if (win && !win.isDestroyed()) win.webContents.send('wsjtx-status', s);
@@ -995,46 +1250,64 @@ function connectWsjtx() {
 
   wsjtx.on('logged-adif', async ({ adif }) => {
     if (!settings.wsjtxAutoLog) return;
-    // Append the raw ADIF record to our log file
-    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
     try {
-      // Ensure log file exists with header
-      if (!fs.existsSync(logPath)) {
-        fs.writeFileSync(logPath, 'POTACAT ADIF Log\n<EOH>\n');
-      }
-      fs.appendFileSync(logPath, adif + '\n');
-      // Reload worked callsigns
-      loadWorkedQsos();
-    } catch (err) {
-      console.error('Failed to append WSJT-X ADIF:', err.message);
-    }
+      const f = parseAdifRecord(adif);
+      const freqMHz = parseFloat(f.FREQ || '0');
+      // WSJT-X sends MODE=MFSK + SUBMODE=FT4; prefer SUBMODE when available
+      const wsjtxMode = f.SUBMODE || f.MODE || '';
+      const qsoData = {
+        callsign: f.CALL || '',
+        frequency: String(Math.round(freqMHz * 1000)),
+        mode: wsjtxMode,
+        qsoDate: f.QSO_DATE || '',
+        timeOn: f.TIME_ON || '',
+        rstSent: f.RST_SENT || '',
+        rstRcvd: f.RST_RCVD || '',
+        txPower: f.TX_PWR || '',
+        band: f.BAND || '',
+        sig: f.SIG || '',
+        sigInfo: f.SIG_INFO || '',
+        name: f.NAME || '',
+        gridsquare: f.GRIDSQUARE || '',
+        comment: f.COMMENT || '',
+        operator: f.OPERATOR || settings.myCallsign || '',
+      };
 
-    // Forward to external logbook (ACLog, Log4OM, etc.) if enabled
-    if (settings.sendToLogbook && settings.logbookType) {
-      try {
-        const f = parseAdifRecord(adif);
-        const freqMHz = parseFloat(f.FREQ || '0');
-        const qsoData = {
-          callsign: f.CALL || '',
-          frequency: String(Math.round(freqMHz * 1000)),
-          mode: f.MODE || '',
-          qsoDate: f.QSO_DATE || '',
-          timeOn: f.TIME_ON || '',
-          rstSent: f.RST_SENT || '',
-          rstRcvd: f.RST_RCVD || '',
-          txPower: f.TX_PWR || '',
-          band: f.BAND || '',
-          sig: f.SIG || '',
-          sigInfo: f.SIG_INFO || '',
-          name: f.NAME || '',
-          gridsquare: f.GRIDSQUARE || '',
-          comment: f.COMMENT || '',
-          operator: f.OPERATOR || settings.myCallsign || '',
-        };
-        await forwardToLogbook(qsoData);
-      } catch (fwdErr) {
-        console.error('WSJT-X logbook forwarding failed:', fwdErr.message);
+      // In activator mode, inject MY_SIG fields for each park ref (cross-product)
+      const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref);
+      if (settings.appMode === 'activator' && parkRefs.length > 0) {
+        const allQsoData = [];
+        for (let i = 0; i < parkRefs.length; i++) {
+          const parkQso = { ...qsoData, mySig: 'POTA', mySigInfo: parkRefs[i].ref, myGridsquare: settings.grid || '' };
+          if (i > 0) parkQso.skipLogbookForward = true; // only forward first record
+          allQsoData.push(parkQso);
+          await saveQsoRecord(parkQso);
+        }
+        // Notify renderer so activator view gets the contact
+        if (win && !win.isDestroyed()) {
+          const freqKhz = Math.round(freqMHz * 1000);
+          const timeOn = qsoData.timeOn || '';
+          const timeUtc = timeOn.length >= 4 ? `${timeOn.slice(0, 2)}:${timeOn.slice(2, 4)}` : '';
+          win.webContents.send('wsjtx-activator-qso', {
+            callsign: qsoData.callsign,
+            timeUtc,
+            freqDisplay: freqMHz.toFixed(3),
+            mode: qsoData.mode,
+            band: qsoData.band || '',
+            rstSent: qsoData.rstSent,
+            rstRcvd: qsoData.rstRcvd,
+            name: qsoData.name || '',
+            myParks: parkRefs.map(p => p.ref),
+            theirParks: [],
+            qsoData: allQsoData[0],
+            qsoDataList: allQsoData,
+          });
+        }
+      } else {
+        await saveQsoRecord(qsoData);
       }
+    } catch (err) {
+      console.error('Failed to log WSJT-X QSO:', err.message);
     }
   });
 
@@ -1106,8 +1379,10 @@ function updateWsjtxHighlights() {
     }
   }
 
-  // Set highlights for active POTA callsigns — green background
-  const bgColor = { r: 78, g: 204, b: 163 }; // #4ecca3 POTA green
+  // Set highlights for active POTA callsigns
+  const bgColor = settings?.colorblindMode
+    ? { r: 79, g: 195, b: 247 }  // #4fc3f7 sky blue (CB-safe)
+    : { r: 78, g: 204, b: 163 }; // #4ecca3 POTA green
   const fgColor = { r: 0, g: 0, b: 0 };
   for (const call of activators) {
     wsjtx.highlightCallsign(call, bgColor, fgColor);
@@ -1117,10 +1392,13 @@ function updateWsjtxHighlights() {
 // --- SmartSDR panadapter spots ---
 function needsSmartSdr() {
   // Connect SmartSDR API if panadapter spots are enabled, CW keyer is active,
-  // or WSJT-X is active with a Flex (TCP CAT) so we can tune via the API when CAT is released
+  // WSJT-X is active with a Flex, ECHOCAT remote needs rig controls,
+  // or CW XIT offset is configured (XIT is applied via SmartSDR slice commands)
   if (settings.smartSdrSpots) return true;
   if (settings.enableCwKeyer) return true;
   if (settings.enableWsjtx && settings.catTarget && settings.catTarget.type === 'tcp') return true;
+  if (settings.enableRemote && settings.catTarget && settings.catTarget.type === 'tcp') return true;
+  if (settings.cwXit && settings.catTarget && settings.catTarget.type === 'tcp') return true;
   return false;
 }
 
@@ -1140,6 +1418,8 @@ function connectSmartSdr() {
   smartSdr.setPersistentId(settings.smartSdrClientId);
   // Tell SmartSDR whether CW keyer needs GUI auth
   smartSdr.setNeedsCw(!!settings.enableCwKeyer);
+  // Bind to GUI client for ECHOCAT rig controls (ATU, etc.)
+  smartSdr.setNeedsBind(!!settings.enableRemote);
   // Log CW auth results
   smartSdr.on('cw-auth', ({ method, ok }) => {
     console.log(`[SmartSDR] CW auth: method=${method} ok=${ok}`);
@@ -1177,10 +1457,12 @@ function pushSpotsToSmartSdr(spots) {
   if (now - lastSmartSdrPush < 5000) return;
   lastSmartSdrPush = now;
 
-  const maxAgeMs = (settings.smartSdrMaxAge != null ? settings.smartSdrMaxAge : 15) * 60000;
+  const tableMaxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
+  const sdrMaxAgeMs = (settings.smartSdrMaxAge != null ? settings.smartSdrMaxAge : 15) * 60000;
+  const maxAgeMs = sdrMaxAgeMs > 0 ? Math.min(sdrMaxAgeMs, tableMaxAgeMs) : tableMaxAgeMs;
 
   for (const spot of spots) {
-    // Age filter — skip spots older than the configured max age (0 = no limit)
+    // Age filter — skip spots older than the effective max age (table age or panadapter age, whichever is smaller)
     if (maxAgeMs > 0 && spot.spotTime) {
       const t = spot.spotTime.endsWith('Z') ? spot.spotTime : spot.spotTime + 'Z';
       const age = now - new Date(t).getTime();
@@ -1215,6 +1497,731 @@ function disconnectTci() {
   }
 }
 
+// --- ECHOCAT ---
+function pushActivatorStateToPhone() {
+  if (!remoteServer || !remoteServer.hasClient()) return;
+  const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref).map(p => ({ ref: p.ref, name: p.name || '' }));
+  remoteServer.broadcastActivatorState({
+    appMode: settings.appMode || 'hunter',
+    parkRefs,
+    grid: settings.grid || '',
+  });
+  remoteServer.sendSessionContacts();
+}
+
+function updateRemoteSettings() {
+  if (!remoteServer) return;
+  const anyCluster = [...clusterClients.values()].some(e => e.client.connected);
+  remoteServer.setRemoteSettings({
+    myCallsign: settings.myCallsign || '',
+    grid: settings.grid || '',
+    clusterConnected: anyCluster,
+    respotDefault: settings.respotDefault !== false,
+    respotTemplate: settings.respotTemplate || '{rst} in {QTH} 73s {mycallsign} via POTACAT',
+    dxRespotTemplate: settings.dxRespotTemplate || 'Heard in {QTH} 73s {mycallsign} via POTACAT',
+    scanDwell: parseInt(settings.scanDwell, 10) || 7,
+    refreshInterval: settings.refreshInterval || 30,
+    maxAgeMin: settings.maxAgeMin != null ? settings.maxAgeMin : 5,
+    distUnit: settings.distUnit || 'mi',
+    cwXit: settings.cwXit || 0,
+  });
+}
+
+function connectRemote() {
+  disconnectRemote();
+  if (!settings.enableRemote) return;
+
+  remoteServer = new RemoteServer();
+  if (settings.colorblindMode) remoteServer.setColorblindMode(true);
+
+  remoteServer.on('tune', ({ freqKhz, mode, bearing }) => {
+    console.log('[Echo CAT] Tune request:', freqKhz, 'kHz, mode:', mode || '(keep)');
+    tuneRadio(freqKhz, mode, bearing, { clearXit: true });
+  });
+
+  remoteServer.on('ptt', ({ state }) => {
+    handleRemotePtt(state);
+  });
+
+  remoteServer.on('client-connected', () => {
+    broadcastRemoteRadioStatus();
+    // Send current source toggles to phone
+    remoteServer.sendSourcesToClient({
+      pota: settings.enablePota !== false,
+      sota: settings.enableSota === true,
+      wwff: settings.enableWwff === true,
+      llota: settings.enableLlota === true,
+      cluster: settings.enableCluster === true,
+    });
+    // Send rig list so phone can switch rigs
+    const rigs = (settings.rigs || []).map(r => ({ id: r.id, name: r.name }));
+    remoteServer.sendRigsToClient(rigs, settings.activeRigId || null);
+    // Push activator state
+    pushActivatorStateToPhone();
+    // Send worked parks for new-to-me filter
+    if (workedParks.size > 0) {
+      remoteServer.sendWorkedParks([...workedParks.keys()]);
+    }
+    // Send worked QSOs for worked-spot display
+    if (workedQsos.size > 0) {
+      remoteServer.sendWorkedQsos([...workedQsos.entries()]);
+    }
+    // Push settings needed by phone (callsign, grid, respot defaults, cluster state)
+    updateRemoteSettings();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('remote-status', { connected: true });
+    }
+  });
+
+  remoteServer.on('client-disconnected', () => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('remote-status', { connected: false });
+    }
+    destroyRemoteAudioWindow();
+  });
+
+  remoteServer.on('set-sources', (sources) => {
+    if (!sources) return;
+    const map = { pota: 'enablePota', sota: 'enableSota', wwff: 'enableWwff', llota: 'enableLlota', cluster: 'enableCluster' };
+    const newSettings = {};
+    for (const [key, settingKey] of Object.entries(map)) {
+      if (key in sources) newSettings[settingKey] = !!sources[key];
+    }
+    // Save and apply — same as settings dialog save
+    Object.assign(settings, newSettings);
+    saveSettings(settings);
+    // Sync desktop UI — reload prefs so spots dropdown matches
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('reload-prefs');
+    }
+    // Reconnect cluster if toggled
+    if ('enableCluster' in newSettings) {
+      if (newSettings.enableCluster) connectCluster(); else disconnectCluster();
+    }
+    // Refresh spots with new sources
+    refreshSpots();
+    console.log('[Echo CAT] Sources updated:', newSettings);
+  });
+
+  remoteServer.on('switch-rig', ({ rigId }) => {
+    const rig = (settings.rigs || []).find(r => r.id === rigId);
+    if (!rig) return;
+    settings.activeRigId = rig.id;
+    settings.catTarget = rig.catTarget;
+    settings.remoteAudioInput = rig.remoteAudioInput || '';
+    settings.remoteAudioOutput = rig.remoteAudioOutput || '';
+    saveSettings(settings);
+    if (!settings.enableWsjtx) connectCat();
+    connectSmartSdr();
+    // Restart audio bridge with new rig's audio devices
+    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+      startRemoteAudio();
+    }
+    // Sync desktop UI
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('reload-prefs');
+    }
+    // Confirm back to phone
+    const rigs = (settings.rigs || []).map(r => ({ id: r.id, name: r.name }));
+    remoteServer.sendRigsToClient(rigs, rig.id);
+    console.log('[Echo CAT] Switched rig to:', rig.name);
+  });
+
+  // --- Rig controls (filter, NB, VFO) ---
+  // Helper: true if SmartSDR API is available for rig control commands
+  function flexSdr() { return smartSdr && smartSdr.connected; }
+
+  function applyFilter(width) {
+    if (flexSdr()) {
+      const m = (_currentMode || '').toUpperCase();
+      let lo, hi;
+      if (m === 'CW') {
+        lo = Math.max(0, 600 - Math.round(width / 2));
+        hi = 600 + Math.round(width / 2);
+      } else {
+        lo = 100;
+        hi = 100 + width;
+      }
+      smartSdr.setSliceFilter(0, lo, hi);
+    } else if (cat && cat.connected) {
+      cat.setFilterWidth(width);
+    }
+    _currentFilterWidth = width;
+    broadcastRemoteRadioStatus();
+  }
+
+  remoteServer.on('set-filter', ({ width }) => {
+    if (!width || width <= 0) return;
+    applyFilter(width);
+    console.log('[Echo CAT] Set filter width:', width, 'Hz');
+  });
+
+  remoteServer.on('filter-step', ({ direction }) => {
+    const presets = getFilterPresets(_currentMode);
+    let idx = findNearestPreset(presets, _currentFilterWidth);
+    if (direction === 'wider' && idx < presets.length - 1) idx++;
+    else if (direction === 'narrower' && idx > 0) idx--;
+    applyFilter(presets[idx]);
+    console.log('[Echo CAT] Filter step:', direction, '→', presets[idx], 'Hz');
+  });
+
+  remoteServer.on('set-nb', ({ on }) => {
+    if (flexSdr()) {
+      smartSdr.setSliceNb(0, on);
+    } else if (cat && cat.connected) {
+      cat.setNb(on);
+    }
+    _currentNbState = on;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] NB:', on ? 'ON' : 'OFF');
+  });
+
+  remoteServer.on('set-atu', ({ on }) => {
+    if (flexSdr()) {
+      smartSdr.setAtu(on);
+    }
+    _currentAtuState = on;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] ATU:', on ? 'ON' : 'OFF');
+  });
+
+  remoteServer.on('set-vfo', ({ vfo }) => {
+    if (flexSdr()) {
+      smartSdr.setActiveSlice(vfo === 'B' ? 1 : 0);
+    } else if (cat && cat.connected) {
+      cat.setVfo(vfo);
+    }
+    _currentVfo = vfo;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] VFO:', vfo);
+  });
+
+  remoteServer.on('swap-vfo', () => {
+    const rigType = detectRigType();
+    const newVfo = _currentVfo === 'A' ? 'B' : 'A';
+    if (rigType === 'yaesu' && cat && cat.connected) {
+      cat.swapVfo();
+    } else if (flexSdr()) {
+      smartSdr.setActiveSlice(newVfo === 'B' ? 1 : 0);
+    } else if (cat && cat.connected) {
+      cat.setVfo(newVfo);
+    }
+    _currentVfo = newVfo;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] Swap VFO →', newVfo);
+  });
+
+  remoteServer.on('set-rfgain', ({ value }) => {
+    if (flexSdr()) {
+      // Flex RF Gain: slider 0–100 maps to -10 to +20 dB
+      const dB = (value * 0.3) - 10;
+      smartSdr.setRfGain(0, dB);
+    } else if (cat && cat.connected && detectRigType() === 'rigctld') {
+      cat.setRfGain(value / 100);
+    }
+    _currentRfGain = value;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] RF Gain →', value);
+  });
+
+  remoteServer.on('set-txpower', ({ value }) => {
+    if (flexSdr()) {
+      smartSdr.setTxPower(value);
+    } else if (cat && cat.connected && detectRigType() === 'rigctld') {
+      cat.setTxPower(value / 100);
+    }
+    _currentTxPower = value;
+    broadcastRemoteRadioStatus();
+    console.log('[Echo CAT] TX Power →', value);
+  });
+
+  remoteServer.on('set-activator-park', async ({ parkRef, activationType, activationName: actName, sig }) => {
+    console.log('[Echo CAT] Set activator park:', parkRef || actName, 'type:', activationType);
+    settings.appMode = 'activator';
+    if (parkRef) {
+      settings.activatorParkRefs = [{ id: parkRef, ref: parkRef, name: '' }];
+      // Look up park name
+      let parkName = '';
+      try {
+        const park = getParkDb(parksMap, parkRef);
+        if (park && park.name) parkName = park.name;
+      } catch {}
+      if (parkName) {
+        settings.activatorParkRefs[0].name = parkName;
+      }
+    } else {
+      settings.activatorParkRefs = [];
+    }
+    saveSettings(settings);
+
+    // Push updated state to phone
+    pushActivatorStateToPhone();
+    // Sync desktop UI
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('reload-prefs');
+    }
+    // Reset session contacts for new activation
+    remoteServer.resetSessionContacts();
+  });
+
+  remoteServer.on('search-parks', ({ query }) => {
+    try {
+      const results = searchParksDb(parksArray, query);
+      remoteServer.sendParkResults(results || []);
+    } catch (err) {
+      console.error('[Echo CAT] Park search error:', err.message);
+      remoteServer.sendParkResults([]);
+    }
+  });
+
+  remoteServer.on('set-refresh-interval', ({ value }) => {
+    const val = Math.max(15, parseInt(value, 10) || 30);
+    settings.refreshInterval = val;
+    saveSettings(settings);
+    if (spotTimer) clearInterval(spotTimer);
+    spotTimer = setInterval(refreshSpots, val * 1000);
+    console.log('[Echo CAT] Refresh interval →', val, 's');
+  });
+
+  remoteServer.on('set-mode', ({ mode }) => {
+    if (!mode) return;
+    console.log('[Echo CAT] Set mode →', mode);
+    // Reset rate limiter so mode-only change goes through
+    _lastTuneFreq = 0;
+    tuneRadio(_currentFreqHz / 1000, mode);
+  });
+
+  remoteServer.on('set-scan-dwell', ({ value }) => {
+    const val = Math.max(1, parseInt(value, 10) || 7);
+    settings.scanDwell = val;
+    saveSettings(settings);
+    console.log('[Echo CAT] Scan dwell →', val, 's');
+  });
+
+  remoteServer.on('set-max-age', ({ value }) => {
+    const val = Math.max(1, parseInt(value, 10) || 5);
+    settings.maxAgeMin = val;
+    saveSettings(settings);
+    console.log('[Echo CAT] Max spot age →', val, 'm');
+  });
+
+  remoteServer.on('set-dist-unit', ({ value }) => {
+    if (value === 'mi' || value === 'km') {
+      settings.distUnit = value;
+      saveSettings(settings);
+      console.log('[Echo CAT] Distance unit →', value);
+    }
+  });
+
+  remoteServer.on('set-cw-xit', ({ value }) => {
+    const val = Math.max(-999, Math.min(999, parseInt(value, 10) || 0));
+    settings.cwXit = val;
+    saveSettings(settings);
+    console.log('[Echo CAT] CW XIT →', val, 'Hz');
+  });
+
+  remoteServer.on('lookup-call', async ({ callsign }) => {
+    const call = (callsign || '').toUpperCase().trim();
+    if (!call) return;
+    let name = '';
+    let location = '';
+    // Try QRZ first (has operator name)
+    if (qrz.configured && settings.enableQrz) {
+      try {
+        const r = await qrz.lookup(call);
+        if (r) {
+          name = r.nickname || r.fname || '';
+          if (r.name && name) name += ' ' + r.name;
+          else if (r.name) name = r.name;
+          const parts = [];
+          if (r.addr2) parts.push(r.addr2);
+          if (r.state) parts.push(r.state);
+          if (r.country && r.country !== 'United States') parts.push(r.country);
+          location = parts.join(', ');
+        }
+      } catch {}
+    }
+    // Fallback to cty.dat for country
+    if (!name && !location && ctyDb) {
+      const entity = resolveCallsign(call, ctyDb);
+      if (entity) location = entity.name || '';
+    }
+    remoteServer.sendCallLookup({ callsign: call, name, location });
+  });
+
+  remoteServer.on('get-past-activations', () => {
+    try {
+      const activations = getPastActivations();
+      remoteServer.sendPastActivations(activations);
+    } catch (err) {
+      console.error('[Echo CAT] Past activations error:', err.message);
+      remoteServer.sendPastActivations([]);
+    }
+  });
+
+  remoteServer.on('get-activation-map-data', ({ parkRef, date, contacts }) => {
+    try {
+      // Look up park coordinates
+      let park = null;
+      if (parkRef) {
+        const p = getParkDb(parksMap, parkRef);
+        if (p) park = { ref: parkRef, name: p.name || '', lat: parseFloat(p.latitude) || null, lon: parseFloat(p.longitude) || null };
+      }
+      // Resolve contact locations via cty.dat
+      const resolvedContacts = [];
+      for (const c of (contacts || [])) {
+        let loc = null;
+        // Try grid square first (more precise)
+        if (c.myGridsquare || c.gridsquare) {
+          // Grid squares would need client-side conversion; use cty.dat here
+        }
+        // Resolve via cty.dat
+        if (ctyDb && c.callsign) {
+          const entity = resolveCallsign(c.callsign, ctyDb);
+          if (entity && entity.lat != null && entity.lon != null) {
+            const area = getCallAreaCoords(c.callsign, entity.name);
+            if (area) {
+              loc = { lat: area.lat, lon: area.lon, name: entity.name };
+            } else {
+              loc = { lat: entity.lat, lon: entity.lon, name: entity.name };
+            }
+          }
+        }
+        resolvedContacts.push({
+          callsign: c.callsign || '',
+          freq: c.freq || '',
+          mode: c.mode || '',
+          lat: loc ? loc.lat : null,
+          lon: loc ? loc.lon : null,
+          entityName: loc ? loc.name : '',
+        });
+      }
+      remoteServer.sendActivationMapData({ parkRef, park, resolvedContacts });
+    } catch (err) {
+      console.error('[Echo CAT] Activation map data error:', err.message);
+      remoteServer.sendActivationMapData({ parkRef, park: null, resolvedContacts: [] });
+    }
+  });
+
+  remoteServer.on('get-all-qsos', () => {
+    try {
+      const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+      const qsos = parseAllRawQsos(logPath);
+      // Send with idx so phone can reference by index for edit/delete
+      const mapped = qsos.map((q, i) => ({ idx: i, ...q }));
+      remoteServer.sendAllQsos(mapped);
+    } catch (err) {
+      console.error('[Echo CAT] get-all-qsos error:', err.message);
+      remoteServer.sendAllQsos([]);
+    }
+  });
+
+  remoteServer.on('update-qso', ({ idx, fields }) => {
+    try {
+      const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+      const qsos = parseAllRawQsos(logPath);
+      if (idx < 0 || idx >= qsos.length) {
+        remoteServer.sendQsoUpdated({ success: false, idx, error: 'Invalid index' });
+        return;
+      }
+      Object.assign(qsos[idx], fields);
+      rewriteAdifFile(logPath, qsos);
+      loadWorkedQsos();
+      // Notify desktop QSO pop-out
+      if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
+        qsoPopoutWin.webContents.send('qso-popout-updated', { idx, fields });
+      }
+      remoteServer.sendQsoUpdated({ success: true, idx, fields });
+    } catch (err) {
+      remoteServer.sendQsoUpdated({ success: false, idx, error: err.message });
+    }
+  });
+
+  remoteServer.on('delete-qso', ({ idx }) => {
+    try {
+      const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+      const qsos = parseAllRawQsos(logPath);
+      if (idx < 0 || idx >= qsos.length) {
+        remoteServer.sendQsoDeleted({ success: false, idx, error: 'Invalid index' });
+        return;
+      }
+      qsos.splice(idx, 1);
+      rewriteAdifFile(logPath, qsos);
+      loadWorkedQsos();
+      // Notify desktop QSO pop-out
+      if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
+        qsoPopoutWin.webContents.send('qso-popout-deleted', idx);
+      }
+      remoteServer.sendQsoDeleted({ success: true, idx });
+    } catch (err) {
+      remoteServer.sendQsoDeleted({ success: false, idx, error: err.message });
+    }
+  });
+
+  remoteServer.on('log-qso', async (data) => {
+    if (!data || !data.callsign) {
+      remoteServer.sendLogResult({ success: false, error: 'Missing callsign' });
+      return;
+    }
+    try {
+      const now = new Date();
+      const qsoDate = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const qsoTime = now.toISOString().slice(11, 16).replace(/:/g, '');
+      const freqKhz = parseFloat(data.freqKhz) || 0;
+      const freqMhz = freqKhz / 1000;
+      const band = freqToBand(freqMhz) || '';
+
+      const sig = data.sig || '';
+      const sigInfo = data.sigInfo || '';
+      const userComment = (data.userComment || '').trim();
+      let comment = '';
+      if (sigInfo && userComment) comment = `[${sig} ${sigInfo}] ${userComment}`;
+      else if (sigInfo) comment = `[${sig} ${sigInfo}]`;
+      else comment = userComment;
+
+      const qsoData = {
+        callsign: data.callsign.toUpperCase(),
+        frequency: String(freqKhz),
+        mode: (data.mode || '').toUpperCase(),
+        band,
+        qsoDate,
+        timeOn: qsoTime,
+        rstSent: data.rstSent || '59',
+        rstRcvd: data.rstRcvd || '59',
+        sig,
+        sigInfo,
+        comment,
+      };
+
+      // Pass through respot flags from phone
+      if (data.respot) qsoData.respot = true;
+      if (data.wwffRespot) { qsoData.wwffRespot = true; qsoData.wwffReference = data.wwffReference || ''; }
+      if (data.llotaRespot) { qsoData.llotaRespot = true; qsoData.llotaReference = data.llotaReference || ''; }
+      if (data.dxcRespot) qsoData.dxcRespot = true;
+      if (data.respotComment) qsoData.respotComment = data.respotComment;
+
+      // Add station fields from settings
+      if (settings.myCallsign) {
+        qsoData.stationCallsign = settings.myCallsign.toUpperCase();
+      }
+      if (settings.txPower) {
+        qsoData.txPower = String(settings.txPower);
+      }
+
+      // Activator mode: inject mySig fields from phone or desktop settings
+      const mySig = data.mySig || '';
+      const mySigInfo = data.mySigInfo || '';
+      const myGrid = data.myGridsquare || settings.grid || '';
+
+      let result = { success: true };
+      if (mySig && mySigInfo) {
+        // Phone sent explicit park ref — use multi-park cross-product from desktop
+        const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref);
+        if (mySig === 'POTA' && parkRefs.length > 1) {
+          // Cross-product: one ADIF record per park
+          for (let i = 0; i < parkRefs.length; i++) {
+            const parkQso = { ...qsoData, mySig: 'POTA', mySigInfo: parkRefs[i].ref, myGridsquare: myGrid };
+            if (i > 0) parkQso.skipLogbookForward = true;
+            const r = await saveQsoRecord(parkQso);
+            if (r) Object.assign(result, r);
+          }
+        } else {
+          qsoData.mySig = mySig;
+          qsoData.mySigInfo = mySigInfo;
+          qsoData.myGridsquare = myGrid;
+          const r = await saveQsoRecord(qsoData);
+          if (r) Object.assign(result, r);
+        }
+      } else if (settings.appMode === 'activator') {
+        // Desktop is in activator mode but phone didn't send mySig — use desktop park refs
+        const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref);
+        if (parkRefs.length > 0) {
+          for (let i = 0; i < parkRefs.length; i++) {
+            const parkQso = { ...qsoData, mySig: 'POTA', mySigInfo: parkRefs[i].ref, myGridsquare: myGrid };
+            if (i > 0) parkQso.skipLogbookForward = true;
+            const r = await saveQsoRecord(parkQso);
+            if (r) Object.assign(result, r);
+          }
+        } else {
+          const r = await saveQsoRecord(qsoData);
+          if (r) Object.assign(result, r);
+        }
+      } else {
+        const r = await saveQsoRecord(qsoData);
+        if (r) Object.assign(result, r);
+      }
+
+      // Handle additional parks from phone
+      const additionalParks = data.additionalParks || [];
+      for (const addlRef of additionalParks) {
+        if (!addlRef) continue;
+        const addlQso = { ...qsoData, sigInfo: addlRef, respot: false, wwffRespot: false,
+          llotaRespot: false, dxcRespot: false, respotComment: '', skipLogbookForward: true };
+        await saveQsoRecord(addlQso);
+      }
+
+      // Track session contact and send enhanced log-ok
+      const contactData = {
+        callsign: qsoData.callsign,
+        timeUtc: qsoTime,
+        freqKhz: String(freqKhz),
+        mode: qsoData.mode,
+        band,
+        rstSent: qsoData.rstSent,
+        rstRcvd: qsoData.rstRcvd,
+      };
+      const contact = remoteServer.addSessionContact(contactData);
+      remoteServer.sendLogResult({
+        success: true,
+        callsign: qsoData.callsign,
+        nr: contact.nr,
+        timeUtc: contact.timeUtc,
+        freqKhz: contact.freqKhz,
+        mode: contact.mode,
+        band: contact.band,
+        rstSent: contact.rstSent,
+        rstRcvd: contact.rstRcvd,
+        resposted: result.resposted || false,
+        respotError: result.respotError || result.wwffRespotError || result.llotaRespotError || result.dxcRespotError || '',
+      });
+    } catch (err) {
+      console.error('[Echo CAT] Log QSO error:', err.message);
+      remoteServer.sendLogResult({ success: false, error: err.message });
+    }
+  });
+
+  remoteServer.on('signal-from-client', (data) => {
+    if (data && data.type === 'start-audio') {
+      // Phone requested audio — create or restart hidden audio window
+      startRemoteAudio();
+      return;
+    }
+    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+      remoteAudioWin.webContents.send('remote-audio-signal', data);
+    }
+  });
+
+  remoteServer.on('error', (err) => {
+    console.error('[Echo CAT] Error:', err.message);
+  });
+
+  const port = settings.remotePort || 7300;
+  const requireToken = settings.remoteRequireToken !== false;
+  let token = settings.remoteToken;
+  if (requireToken && !token) {
+    token = RemoteServer.generateToken();
+    settings.remoteToken = token;
+    saveSettings(settings);
+  }
+  remoteServer.start(port, token, {
+    requireToken,
+    pttSafetyTimeout: settings.remotePttTimeout || 180,
+    rendererPath: path.join(app.getAppPath(), 'renderer'),
+    certDir: app.getPath('userData'),
+  });
+}
+
+function disconnectRemote() {
+  if (remoteServer) {
+    remoteServer.removeAllListeners();
+    remoteServer.stop();
+    remoteServer = null;
+  }
+  destroyRemoteAudioWindow();
+}
+
+function handleRemotePtt(state) {
+  const target = settings.catTarget;
+  const isFlexRig = target && target.type === 'tcp';
+  if (isFlexRig) {
+    // FlexRadio: use SmartSDR xmit command (voice PTT, not CW PTT)
+    if (smartSdr && smartSdr.connected) {
+      smartSdr.setTransmit(state);
+    }
+  } else {
+    // Non-Flex rig (serial or rigctld): use TX;/RX; or T 1/T 0
+    if (cat && cat.connected) {
+      cat.setTransmit(state);
+    }
+  }
+
+  _remoteTxState = state;
+
+  // Broadcast to desktop UI
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('remote-tx-state', state);
+  }
+  // Broadcast to phone
+  broadcastRemoteRadioStatus();
+}
+
+function broadcastRemoteRadioStatus() {
+  if (!remoteServer || !remoteServer.running) return;
+  const rigType = detectRigType();
+  const status = {
+    freq: _currentFreqHz || 0,
+    mode: _currentMode || '',
+    catConnected: (cat && cat.connected) || (smartSdr && smartSdr.connected),
+    txState: _remoteTxState,
+    rigType,
+    nb: _currentNbState,
+    atu: _currentAtuState,
+    vfo: _currentVfo,
+    filterWidth: _currentFilterWidth,
+    rfgain: _currentRfGain,
+    txpower: _currentTxPower,
+    capabilities: getRigCapabilities(rigType),
+  };
+  remoteServer.broadcastRadioStatus(status);
+}
+
+// --- Remote Audio (hidden BrowserWindow for WebRTC) ---
+function startRemoteAudio() {
+  // If window already exists, tell it to restart a fresh WebRTC session
+  if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+    remoteAudioWin.webContents.send('remote-audio-start', {
+      inputDeviceId: settings.remoteAudioInput || '',
+      outputDeviceId: settings.remoteAudioOutput || '',
+    });
+    return;
+  }
+
+  remoteAudioWin = new BrowserWindow({
+    width: 400,
+    height: 300,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-remote-audio.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  remoteAudioWin.loadFile(path.join(__dirname, 'renderer', 'remote-audio.html'));
+
+  remoteAudioWin.webContents.on('did-finish-load', () => {
+    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+      remoteAudioWin.webContents.send('remote-audio-start', {
+        inputDeviceId: settings.remoteAudioInput || '',
+        outputDeviceId: settings.remoteAudioOutput || '',
+      });
+    }
+  });
+
+  remoteAudioWin.on('closed', () => {
+    remoteAudioWin = null;
+  });
+}
+
+function destroyRemoteAudioWindow() {
+  if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+    remoteAudioWin.webContents.send('remote-audio-stop');
+    setTimeout(() => {
+      if (remoteAudioWin && !remoteAudioWin.isDestroyed()) remoteAudioWin.close();
+    }, 500);
+  }
+}
+
 let lastTciPush = 0;
 
 function pushSpotsToTci(spots) {
@@ -1223,10 +2230,12 @@ function pushSpotsToTci(spots) {
   if (now - lastTciPush < 5000) return;
   lastTciPush = now;
 
-  const maxAgeMs = (settings.tciMaxAge != null ? settings.tciMaxAge : 15) * 60000;
+  const tableMaxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
+  const tciMaxAgeMs = (settings.tciMaxAge != null ? settings.tciMaxAge : 15) * 60000;
+  const maxAgeMs = tciMaxAgeMs > 0 ? Math.min(tciMaxAgeMs, tableMaxAgeMs) : tableMaxAgeMs;
 
   for (const spot of spots) {
-    // Age filter — skip spots older than the configured max age (0 = no limit)
+    // Age filter — skip spots older than the effective max age (table age or panadapter age, whichever is smaller)
     if (maxAgeMs > 0 && spot.spotTime) {
       const t = spot.spotTime.endsWith('Z') ? spot.spotTime : spot.spotTime + 'Z';
       const age = now - new Date(t).getTime();
@@ -1566,12 +2575,131 @@ function processLlotaSpots(raw) {
 
 let lastPotaSotaSpots = []; // cache of last fetched POTA+SOTA+WWFF+LLOTA spots
 
+// --- Net Reminder helpers ---
+
+function isNetScheduledToday(net, today) {
+  if (!net.enabled) return false;
+  const sched = net.schedule;
+  if (!sched) return true; // no schedule = always
+  if (sched.type === 'daily') return true;
+  if (sched.type === 'weekly') {
+    const dow = today.getDay(); // 0=Sun
+    return Array.isArray(sched.days) && sched.days.includes(dow);
+  }
+  if (sched.type === 'dates') {
+    const iso = today.getFullYear() + '-' +
+      String(today.getMonth() + 1).padStart(2, '0') + '-' +
+      String(today.getDate()).padStart(2, '0');
+    return Array.isArray(sched.dates) && sched.dates.includes(iso);
+  }
+  return false;
+}
+
+function getNetTimes(net, today) {
+  const [hh, mm] = (net.startTime || '00:00').split(':').map(Number);
+  let startMs;
+  if (net.timeZone === 'utc') {
+    startMs = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate(), hh, mm);
+  } else {
+    startMs = new Date(today.getFullYear(), today.getMonth(), today.getDate(), hh, mm).getTime();
+  }
+  const dur = (net.duration || 60) * 60000;
+  const lead = (net.leadTime != null ? net.leadTime : 15) * 60000;
+  return { startMs, endMs: startMs + dur, showMs: startMs - lead };
+}
+
+function getActiveNetSpots() {
+  const nets = settings.netReminders;
+  if (!Array.isArray(nets) || nets.length === 0) return [];
+  const now = Date.now();
+  const spots = [];
+  // Check today and yesterday (for midnight-spanning nets)
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  for (const net of nets) {
+    if (!net.enabled) continue;
+    let active = false;
+    let startMs, endMs, showMs;
+    // Check today
+    if (isNetScheduledToday(net, today)) {
+      const t = getNetTimes(net, today);
+      if (now >= t.showMs && now < t.endMs) {
+        active = true;
+        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      }
+    }
+    // Check yesterday (midnight spanning)
+    if (!active && isNetScheduledToday(net, yesterday)) {
+      const t = getNetTimes(net, yesterday);
+      if (now >= t.showMs && now < t.endMs) {
+        active = true;
+        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      }
+    }
+    if (!active) continue;
+
+    // Build comments string
+    let comments;
+    if (now < startMs) {
+      const minsLeft = Math.ceil((startMs - now) / 60000);
+      comments = minsLeft >= 60
+        ? `Starts in ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m`
+        : `Starts in ${minsLeft}m`;
+    } else {
+      const minsLeft = Math.ceil((endMs - now) / 60000);
+      comments = minsLeft >= 60
+        ? `On air \u2014 ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m left`
+        : `On air \u2014 ${minsLeft}m left`;
+    }
+
+    spots.push({
+      source: 'net',
+      callsign: net.name || 'Net',
+      frequency: String(net.frequency),
+      freqMHz: (net.frequency / 1000).toFixed(4),
+      mode: net.mode || 'SSB',
+      band: freqToBand(net.frequency / 1000),
+      spotTime: new Date(startMs).toISOString(),
+      comments,
+      reference: '', parkName: '', locationDesc: '',
+      distance: null, bearing: null, lat: null, lon: null, continent: null,
+      _netId: net.id,
+    });
+  }
+  return spots;
+}
+
 function sendMergedSpots() {
   if (!win || win.isDestroyed()) return;
-  const merged = [...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
+  const netSpots = getActiveNetSpots();
+  const merged = [...netSpots, ...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
   win.webContents.send('spots', merged);
-  pushSpotsToSmartSdr(merged);
-  pushSpotsToTci(merged);
+  // Filter net spots out of panadapter pushes (no lat/lon, not real signals)
+  const realSpots = merged.filter(s => s.source !== 'net');
+  pushSpotsToSmartSdr(realSpots);
+  pushSpotsToTci(realSpots);
+  // Forward to ECHOCAT — SSB only (net spots always pass), respect max spot age
+  if (remoteServer && remoteServer.running) {
+    const maxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
+    const now = Date.now();
+    const echoSpots = merged.filter(s => {
+      // Net spots always pass through to ECHOCAT
+      if (s.source === 'net') return true;
+      // SSB only
+      const m = (s.mode || '').toUpperCase();
+      if (m !== 'SSB' && m !== 'USB' && m !== 'LSB') return false;
+      // Age filter
+      if (s.spotTime) {
+        const t = s.spotTime.endsWith('Z') ? s.spotTime : s.spotTime + 'Z';
+        const age = now - new Date(t).getTime();
+        if (age > maxAgeMs) return false;
+      }
+      return true;
+    });
+    remoteServer.broadcastSpots(echoSpots);
+  }
   // Forward to spots pop-out if open
   if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) {
     spotsPopoutWin.webContents.send('spots-popout-data', merged);
@@ -1780,6 +2908,10 @@ function loadWorkedParks() {
       // Serialize Map as array of [key, value] pairs
       win.webContents.send('worked-parks', [...workedParks.entries()]);
     }
+    // Push to ECHOCAT phone
+    if (remoteServer && remoteServer.running) {
+      remoteServer.sendWorkedParks([...workedParks.keys()]);
+    }
   } catch (err) {
     console.error('Failed to parse POTA parks CSV:', err.message);
   }
@@ -1793,6 +2925,9 @@ function forwardToLogbook(qsoData) {
 
   if (type === 'log4om') {
     return sendUdpAdif(qsoData, host, port || 2237);
+  }
+  if (type === 'hamrs') {
+    return sendUdpAdif(qsoData, host, port || 2333);
   }
   if (type === 'hrd') {
     return sendUdpAdif(qsoData, host, port || 2333);
@@ -1892,6 +3027,17 @@ function sendDxkeeperTcp(qsoData, host, port) {
   });
 }
 
+/**
+ * Upload a QSO to QRZ Logbook via their API.
+ * Throws on failure (caller handles gracefully).
+ */
+async function sendToQrzLogbook(qsoData) {
+  const apiKey = settings.qrzApiKey;
+  if (!apiKey) throw new Error('QRZ API key not configured');
+  const record = buildAdifRecord(qsoData);
+  await QrzClient.uploadQso(apiKey, record, settings.myCallsign || '');
+}
+
 // --- App lifecycle ---
 function isOnScreen(saved) {
   const displays = screen.getAllDisplays();
@@ -1969,10 +3115,12 @@ function createWindow() {
     settings.mapPopoutOpen = !!(popoutWin && !popoutWin.isDestroyed());
     settings.qsoPopoutOpen = !!(qsoPopoutWin && !qsoPopoutWin.isDestroyed());
     settings.spotsPopoutOpen = !!(spotsPopoutWin && !spotsPopoutWin.isDestroyed());
+    settings.clusterPopoutOpen = !!(clusterPopoutWin && !clusterPopoutWin.isDestroyed());
     saveSettings(settings);
     if (popoutWin && !popoutWin.isDestroyed()) popoutWin.close();
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.close();
     if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.close();
+    if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) clusterPopoutWin.close();
   });
 
   // Once the renderer is actually ready to listen, send current state
@@ -2030,6 +3178,10 @@ function createWindow() {
     if (settings.spotsPopoutOpen) {
       ipcMain.emit('spots-popout-open');
     }
+    // Auto-reopen cluster terminal if it was open when the app last closed
+    if (settings.clusterPopoutOpen) {
+      ipcMain.emit('cluster-popout-open');
+    }
   });
 }
 
@@ -2052,32 +3204,71 @@ function fetchDonorList() {
   req.on('error', () => { /* silently ignore — no internet is fine */ });
 }
 
-// --- DX Expeditions (Club Log) ---
-function fetchExpeditions() {
-  const https = require('https');
-  const req = https.get('https://clublog.org/expeditions.php?api=1', (res) => {
-    let body = '';
-    res.on('data', (chunk) => { body += chunk; });
-    res.on('end', () => {
-      try {
-        const arr = JSON.parse(body);
-        // Each entry is [callsign, lastQsoDateTime, qsoCount]
-        // Only include expeditions active in the last 7 days
-        const cutoff = Date.now() - 7 * 24 * 3600000;
-        expeditionCallsigns = new Set();
-        for (const entry of arr) {
-          const lastQso = new Date(entry[1] + 'Z').getTime();
-          if (lastQso >= cutoff) {
-            expeditionCallsigns.add(entry[0].toUpperCase());
+// --- DX Expeditions (Club Log + danplanet iCal) ---
+function fetchClubLogExpeditions() {
+  return new Promise((resolve) => {
+    const https = require('https');
+    const req = https.get('https://clublog.org/expeditions.php?api=1', (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const arr = JSON.parse(body);
+          const cutoff = Date.now() - 7 * 24 * 3600000;
+          const calls = [];
+          for (const entry of arr) {
+            const lastQso = new Date(entry[1] + 'Z').getTime();
+            if (lastQso >= cutoff) calls.push(entry[0].toUpperCase());
           }
-        }
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('expedition-callsigns', [...expeditionCallsigns]);
-        }
-      } catch { /* silently ignore parse errors */ }
+          resolve(calls);
+        } catch { resolve([]); }
+      });
     });
+    req.on('error', () => resolve([]));
   });
-  req.on('error', () => { /* silently ignore */ });
+}
+
+async function fetchExpeditions() {
+  const [clubLogResult, dxCalResult] = await Promise.allSettled([
+    fetchClubLogExpeditions(),
+    fetchDxCalExpeditions(),
+  ]);
+
+  const merged = new Set();
+  const meta = new Map();
+
+  // Club Log callsigns
+  if (clubLogResult.status === 'fulfilled') {
+    for (const cs of clubLogResult.value) merged.add(cs);
+  }
+
+  // danplanet iCal expeditions — richer metadata
+  if (dxCalResult.status === 'fulfilled') {
+    for (const exp of dxCalResult.value) {
+      for (const cs of exp.callsigns) {
+        const upper = cs.toUpperCase();
+        merged.add(upper);
+        meta.set(upper, {
+          entity: exp.entity,
+          startDate: exp.startDate,
+          endDate: exp.endDate,
+          description: exp.description,
+        });
+      }
+    }
+  }
+
+  expeditionCallsigns = merged;
+  expeditionMeta = meta;
+
+  if (win && !win.isDestroyed()) {
+    const metadata = {};
+    for (const [cs, m] of meta) metadata[cs] = m;
+    win.webContents.send('expedition-callsigns', {
+      callsigns: [...merged],
+      metadata,
+    });
+  }
 }
 
 // --- Active Events (remote endpoint) ---
@@ -2715,10 +3906,121 @@ function migrateRigSettings(s) {
   }
 }
 
+// --- Tune radio (shared by IPC and protocol handler) ---
+let _lastTuneFreq = 0;
+let _lastTuneTime = 0;
+
+function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
+  let freqHz = Math.round(parseFloat(freqKhz) * 1000); // kHz → Hz
+  const now = Date.now();
+  if (freqHz === _lastTuneFreq && now - _lastTuneTime < 300) return;
+  _lastTuneFreq = freqHz;
+  _lastTuneTime = now;
+
+  // CW XIT: use radio's XIT (TX offset only) instead of shifting tune frequency
+  const wantXit = !clearXit && (mode === 'CW') && settings.cwXit;
+  // Clear XIT when tuning to a non-CW spot (don't leave stale XIT from a previous CW tune)
+  const shouldClearXit = clearXit || (!wantXit && mode && mode !== 'CW');
+
+  const m = (mode || '').toUpperCase();
+  let filterWidth = 0;
+  if (m === 'CW') {
+    filterWidth = settings.cwFilterWidth || 0;
+  } else if (m === 'SSB' || m === 'USB' || m === 'LSB') {
+    filterWidth = settings.ssbFilterWidth || 0;
+  } else if (m === 'FT8' || m === 'FT4' || m === 'FT2' || m === 'DIGU' || m === 'DIGL') {
+    filterWidth = settings.digitalFilterWidth || 0;
+  }
+
+  if (settings.enableRotor && brng != null && !isNaN(brng)) {
+    sendRotorBearing(Math.round(brng));
+  }
+
+  if (settings.enableWsjtx && (!cat || !cat.connected)) {
+    if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
+      const sliceIndex = (settings.catTarget.port || 5002) - 5002;
+      const freqMhz = freqHz / 1e6;
+      const flexMode = (mode === 'FT8' || mode === 'FT4' || mode === 'FT2' || mode === 'JT65' || mode === 'JT9' || mode === 'WSPR')
+        ? 'DIGU' : (mode === 'CW' ? 'CW' : (mode === 'SSB' || mode === 'USB' ? 'USB' : (mode === 'LSB' ? 'LSB' : null)));
+      sendCatLog(`tune via SmartSDR API: slice=${sliceIndex} freq=${freqMhz.toFixed(6)}MHz mode=${mode}→${flexMode} filter=${filterWidth}`);
+      smartSdr.tuneSlice(sliceIndex, freqMhz, flexMode, filterWidth);
+      // Set or clear XIT on the slice
+      if (wantXit) {
+        smartSdr.setSliceXit(sliceIndex, true, settings.cwXit);
+      } else if (shouldClearXit) {
+        smartSdr.setSliceXit(sliceIndex, false);
+      }
+    }
+    return;
+  }
+
+  if (!cat || !cat.connected) return;
+  sendCatLog(`tune: freq=${freqKhz}kHz → ${freqHz}Hz mode=${mode} split=${!!settings.enableSplit} filter=${filterWidth}`);
+  cat.tune(freqHz, mode, { split: settings.enableSplit, filterWidth });
+
+  // Set or clear XIT via SmartSDR API (works even when tuning via CAT)
+  if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
+    const sliceIndex = (settings.catTarget.port || 5002) - 5002;
+    if (wantXit) {
+      smartSdr.setSliceXit(sliceIndex, true, settings.cwXit);
+    } else if (shouldClearXit) {
+      smartSdr.setSliceXit(sliceIndex, false);
+    }
+  }
+}
+
+// --- potacat:// protocol handler ---
+if (!app.isDefaultProtocolClient('potacat')) {
+  app.setAsDefaultProtocolClient('potacat');
+}
+
+function handleProtocolUrl(url) {
+  // potacat://tune/14074/USB → tune to 14074 kHz USB
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'tune' || parsed.pathname.startsWith('//tune')) {
+      const parts = parsed.pathname.replace(/^\/+/, '').split('/');
+      const segments = parts.filter(p => p && p.toLowerCase() !== 'tune');
+      const freqKhz = segments[0];
+      const mode = (segments[1] || '').toUpperCase();
+      if (freqKhz && !isNaN(parseFloat(freqKhz))) {
+        tuneRadio(parseFloat(freqKhz), mode);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to parse protocol URL:', url, err);
+  }
+}
+
+// Single instance lock — second launch passes URL to running instance
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_e, argv) => {
+    const url = argv.find(a => a.startsWith('potacat://'));
+    if (url) handleProtocolUrl(url);
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
+// macOS: handle protocol URL when app is already running
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleProtocolUrl(url);
+});
+
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   settings = loadSettings();
   migrateRigSettings(settings);
+  if (settings.colorblindMode) {
+    setSmartSdrColorblind(true);
+    setTciColorblindMode(true);
+  }
 
   // Load cty.dat for DXCC lookups
   try {
@@ -2736,9 +4038,17 @@ app.whenReady().then(() => {
   if (settings.enableRbn) connectRbn();
   connectSmartSdr(); // connects if smartSdrSpots, CW keyer, or WSJT-X+Flex
   connectTci();
+  if (settings.enableRemote) connectRemote();
   if (settings.enableCwKeyer) connectKeyer();
   if (settings.enableWsjtx) connectWsjtx();
   if (settings.enablePskr) connectPskr();
+
+  // Cold start: check if app was launched via potacat:// URL
+  const protocolUrl = process.argv.find(a => a.startsWith('potacat://'));
+  if (protocolUrl) {
+    setTimeout(() => handleProtocolUrl(protocolUrl), 2000);
+  }
+
   // Configure QRZ client from saved credentials
   if (settings.enableQrz && settings.qrzUsername && settings.qrzPassword) {
     qrz.configure(settings.qrzUsername, settings.qrzPassword);
@@ -2844,6 +4154,17 @@ app.whenReady().then(() => {
     if (popoutWin && !popoutWin.isDestroyed()) {
       popoutWin.webContents.send('popout-home', data);
     }
+  });
+
+  // Relay colorblind mode to pop-outs and panadapter integrations
+  ipcMain.on('colorblind-mode', (_e, enabled) => {
+    setSmartSdrColorblind(enabled);
+    setTciColorblindMode(enabled);
+    if (popoutWin && !popoutWin.isDestroyed()) popoutWin.webContents.send('colorblind-mode', enabled);
+    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.webContents.send('colorblind-mode', enabled);
+    if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.webContents.send('colorblind-mode', enabled);
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.webContents.send('colorblind-mode', enabled);
+    if (remoteServer) remoteServer.setColorblindMode(enabled);
   });
 
   // Relay theme changes to pop-out
@@ -3037,6 +4358,86 @@ app.whenReady().then(() => {
     }
   });
 
+  // --- DX Cluster Terminal Pop-out ---
+  ipcMain.on('cluster-popout-open', () => {
+    if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) {
+      clusterPopoutWin.focus();
+      return;
+    }
+
+    const isMac = process.platform === 'darwin';
+    clusterPopoutWin = new BrowserWindow({
+      width: 700,
+      height: 450,
+      title: 'DX Cluster Terminal',
+      show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+      icon: getIconPath(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-cluster-popout.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    // Restore saved bounds (DPI-aware)
+    const saved = settings.clusterPopoutBounds;
+    if (saved && saved.width > 200 && saved.height > 150 && isOnScreen(saved)) {
+      clusterPopoutWin.setBounds(saved);
+    }
+    clusterPopoutWin.show();
+
+    clusterPopoutWin.setMenuBarVisibility(false);
+    clusterPopoutWin.loadFile(path.join(__dirname, 'renderer', 'cluster-popout.html'));
+
+    clusterPopoutWin.on('close', () => {
+      if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) {
+        if (!clusterPopoutWin.isMaximized() && !clusterPopoutWin.isMinimized()) {
+          settings.clusterPopoutBounds = clusterPopoutWin.getBounds();
+          saveSettings(settings);
+        }
+      }
+    });
+
+    clusterPopoutWin.on('closed', () => {
+      clusterPopoutWin = null;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('cluster-popout-status', false);
+      }
+    });
+
+    clusterPopoutWin.webContents.on('did-finish-load', () => {
+      // Send current node list
+      clusterPopoutWin.webContents.send('cluster-popout-nodes', getClusterNodeList());
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('cluster-popout-status', true);
+      }
+    });
+
+    // F12 opens DevTools in pop-out
+    clusterPopoutWin.webContents.on('before-input-event', (_e, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') {
+        clusterPopoutWin.webContents.toggleDevTools();
+      }
+    });
+  });
+
+  // Cluster pop-out window controls
+  ipcMain.on('cluster-popout-minimize', () => { if (clusterPopoutWin) clusterPopoutWin.minimize(); });
+  ipcMain.on('cluster-popout-maximize', () => {
+    if (!clusterPopoutWin) return;
+    if (clusterPopoutWin.isMaximized()) clusterPopoutWin.unmaximize();
+    else clusterPopoutWin.maximize();
+  });
+  ipcMain.on('cluster-popout-close', () => { if (clusterPopoutWin) clusterPopoutWin.close(); });
+
+  // Relay theme to cluster pop-out
+  ipcMain.on('cluster-popout-theme', (_e, theme) => {
+    if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) {
+      clusterPopoutWin.webContents.send('cluster-popout-theme', theme);
+    }
+  });
+
   // --- Activation Map Pop-out ---
   ipcMain.on('actmap-popout-open', () => {
     if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) {
@@ -3126,6 +4527,70 @@ app.whenReady().then(() => {
     }
   });
 
+  // Capture activation map pop-out as PNG for social share image
+  ipcMain.handle('capture-actmap-popout', async () => {
+    if (!actmapPopoutWin || actmapPopoutWin.isDestroyed()) {
+      return { success: false, error: 'Activation map is not open' };
+    }
+    try {
+      // Hide UI overlays before capture
+      await actmapPopoutWin.webContents.executeJavaScript(`
+        document.querySelector('.titlebar').style.display = 'none';
+        document.getElementById('qso-counter').style.display = 'none';
+      `);
+      // Wait a frame for Leaflet to reflow into the freed space
+      await new Promise(r => setTimeout(r, 200));
+      const nativeImage = await actmapPopoutWin.webContents.capturePage();
+      // Restore UI overlays
+      await actmapPopoutWin.webContents.executeJavaScript(`
+        document.querySelector('.titlebar').style.display = '';
+        document.getElementById('qso-counter').style.display = '';
+      `);
+      const dataUrl = nativeImage.toDataURL();
+      return { success: true, dataUrl, width: nativeImage.getSize().width, height: nativeImage.getSize().height };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Capture a specific rect of the main window (for inline activation map)
+  ipcMain.handle('capture-main-window-rect', async (_e, rect) => {
+    if (!win || win.isDestroyed()) return { success: false, error: 'Main window not available' };
+    try {
+      const nativeImage = await win.webContents.capturePage(rect);
+      const dataUrl = nativeImage.toDataURL();
+      return { success: true, dataUrl, width: nativeImage.getSize().width, height: nativeImage.getSize().height };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Save share image JPG via save dialog
+  ipcMain.handle('save-share-image', async (event, data) => {
+    const { jpgBase64, parkRef, callsign } = data;
+    if (!jpgBase64) return { success: false, error: 'No image data' };
+    try {
+      const parentWin = BrowserWindow.fromWebContents(event.sender) || win;
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const defaultName = `${callsign || 'POTACAT'}-${parkRef || 'activation'}-${dateStr}.jpg`;
+      const result = await dialog.showSaveDialog(parentWin, {
+        title: 'Save Share Image',
+        defaultPath: path.join(app.getPath('pictures'), defaultName),
+        filters: [
+          { name: 'JPEG Image', extensions: ['jpg', 'jpeg'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (result.canceled) return { success: false };
+      const buf = Buffer.from(jpgBase64, 'base64');
+      fs.writeFileSync(result.filePath, buf);
+      return { success: true, path: result.filePath };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Start spot fetching
   refreshSpots();
   const refreshMs = Math.max(15, settings.refreshInterval || 30) * 1000;
@@ -3159,59 +4624,34 @@ app.whenReady().then(() => {
     }
   });
 
-  let _lastTuneFreq = 0;
-  let _lastTuneTime = 0;
   ipcMain.on('tune', (_e, { frequency, mode, bearing }) => {
     markUserActive();
-    let freqHz = Math.round(parseFloat(frequency) * 1000); // kHz → Hz
-    // Debounce: skip duplicate tune to same frequency within 300ms
-    const now = Date.now();
-    if (freqHz === _lastTuneFreq && now - _lastTuneTime < 300) return;
-    _lastTuneFreq = freqHz;
-    _lastTuneTime = now;
-    // Apply CW XIT offset — shift tune frequency so TX lands offset from the activator
-    if ((mode === 'CW') && settings.cwXit) {
-      freqHz += settings.cwXit;
-    }
-
-    // Look up per-mode filter width from settings
-    const m = (mode || '').toUpperCase();
-    let filterWidth = 0;
-    if (m === 'CW') {
-      filterWidth = settings.cwFilterWidth || 0;
-    } else if (m === 'SSB' || m === 'USB' || m === 'LSB') {
-      filterWidth = settings.ssbFilterWidth || 0;
-    } else if (m === 'FT8' || m === 'FT4' || m === 'DIGU' || m === 'DIGL') {
-      filterWidth = settings.digitalFilterWidth || 0;
-    }
-
-    // Send bearing to PstRotator via UDP
-    if (settings.enableRotor && bearing != null && !isNaN(bearing)) {
-      sendRotorBearing(Math.round(bearing));
-    }
-
-    // If WSJT-X is active and CAT is released, try to tune via SmartSDR API
-    if (settings.enableWsjtx && (!cat || !cat.connected)) {
-      if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
-        const sliceIndex = (settings.catTarget.port || 5002) - 5002;
-        const freqMhz = freqHz / 1e6;
-        // Map common modes to FlexRadio mode strings
-        const flexMode = (mode === 'FT8' || mode === 'FT4' || mode === 'JT65' || mode === 'JT9' || mode === 'WSPR')
-          ? 'DIGU' : (mode === 'CW' ? 'CW' : (mode === 'SSB' || mode === 'USB' ? 'USB' : (mode === 'LSB' ? 'LSB' : null)));
-        sendCatLog(`tune via SmartSDR API: slice=${sliceIndex} freq=${freqMhz.toFixed(6)}MHz mode=${mode}→${flexMode} filter=${filterWidth}`);
-        smartSdr.tuneSlice(sliceIndex, freqMhz, flexMode, filterWidth);
-      }
-      return;
-    }
-
-    if (!cat || !cat.connected) return;
-    sendCatLog(`tune IPC: freq=${frequency}kHz → ${freqHz}Hz mode=${mode} split=${!!settings.enableSplit} filter=${filterWidth} cat.connected=${cat ? cat.connected : 'no cat'}`);
-    cat.tune(freqHz, mode, { split: settings.enableSplit, filterWidth });
+    tuneRadio(frequency, mode, bearing);
   });
 
   ipcMain.on('refresh', () => { markUserActive(); refreshSpots(); });
 
   ipcMain.handle('get-settings', () => ({ ...settings, appVersion: require('./package.json').version }));
+
+  // --- ECHOCAT IPC ---
+  ipcMain.handle('get-local-ips', () => RemoteServer.getLocalIPs());
+
+  ipcMain.on('remote-audio-send-signal', (_e, data) => {
+    if (remoteServer) {
+      remoteServer.relaySignalToClient(data);
+    }
+  });
+
+  ipcMain.on('remote-audio-status', (_e, status) => {
+    console.log('[Echo CAT Audio]', JSON.stringify(status));
+    // Forward audio connection state to phone
+    if (status.connectionState && remoteServer) {
+      remoteServer.broadcastRadioStatus({ audioState: status.connectionState });
+    }
+    if (status.error) {
+      console.error('[Echo CAT Audio] Error:', status.error);
+    }
+  });
 
   // --- Events IPC ---
   ipcMain.handle('get-active-events', () => {
@@ -3338,12 +4778,21 @@ app.whenReady().then(() => {
       (has('wsjtxPort') && newSettings.wsjtxPort !== settings.wsjtxPort);
 
     const pskrChanged = has('enablePskr') && newSettings.enablePskr !== settings.enablePskr;
+
+    const remoteChanged = (has('enableRemote') && newSettings.enableRemote !== settings.enableRemote) ||
+      (has('remotePort') && newSettings.remotePort !== settings.remotePort) ||
+      (has('remoteToken') && newSettings.remoteToken !== settings.remoteToken) ||
+      (has('remoteRequireToken') && newSettings.remoteRequireToken !== settings.remoteRequireToken);
+
     const iconChanged = has('lightIcon') && newSettings.lightIcon !== settings.lightIcon;
 
     const cwKeyerChanged = (has('enableCwKeyer') && newSettings.enableCwKeyer !== settings.enableCwKeyer) ||
       (has('cwKeyerMode') && newSettings.cwKeyerMode !== settings.cwKeyerMode) ||
       (has('cwWpm') && newSettings.cwWpm !== settings.cwWpm) ||
       (has('cwSwapPaddles') && newSettings.cwSwapPaddles !== settings.cwSwapPaddles);
+
+    const activatorStateChanged = (has('appMode') && newSettings.appMode !== settings.appMode) ||
+      (has('activatorParkRefs') && JSON.stringify(newSettings.activatorParkRefs) !== JSON.stringify(settings.activatorParkRefs));
 
     const isPartialSave = !has('enablePota'); // hotkey saves only send 1-2 keys
 
@@ -3385,6 +4834,20 @@ app.whenReady().then(() => {
     // Reconnect TCI if settings changed
     if (tciChanged) {
       connectTci();
+    }
+
+    // Reconnect ECHOCAT if settings changed
+    if (remoteChanged) {
+      if (settings.enableRemote) {
+        connectRemote();
+      } else {
+        disconnectRemote();
+      }
+    }
+
+    // Push activator state to phone when park refs or app mode change
+    if (activatorStateChanged) {
+      pushActivatorStateToPhone();
     }
 
     // Reconnect CW keyer if settings changed
@@ -3467,8 +4930,9 @@ app.whenReady().then(() => {
   });
 
   // --- Log Import IPC ---
-  ipcMain.handle('import-adif', async () => {
-    const result = await dialog.showOpenDialog(win, {
+  ipcMain.handle('import-adif', async (event) => {
+    const parentWin = BrowserWindow.fromWebContents(event.sender) || win;
+    const result = await dialog.showOpenDialog(parentWin, {
       title: 'Import Log File(s)',
       filters: [
         { name: 'Log Files', extensions: ['adi', 'adif', 'sqlite', 'db'] },
@@ -3485,17 +4949,24 @@ app.whenReady().then(() => {
 
     for (const filePath of result.filePaths) {
       try {
-        const qsos = isSqliteFile(filePath)
-          ? await parseSqliteFile(filePath)
-          : parseAllQsos(filePath);
-        for (const qso of qsos) {
-          appendImportedQso(logPath, qso);
-          uniqueCalls.add(qso.call.toUpperCase());
-          totalImported++;
+        if (isSqliteFile(filePath)) {
+          const qsos = await parseSqliteFile(filePath);
+          for (const qso of qsos) {
+            appendImportedQso(logPath, qso);
+            uniqueCalls.add(qso.call.toUpperCase());
+            totalImported++;
+          }
+        } else {
+          const qsos = parseAllRawQsos(filePath);
+          for (const qso of qsos) {
+            appendRawQso(logPath, qso);
+            uniqueCalls.add((qso.CALL || '').toUpperCase());
+            totalImported++;
+          }
         }
         fileNames.push(path.basename(filePath));
       } catch (err) {
-        dialog.showMessageBox(win, {
+        dialog.showMessageBox(parentWin, {
           type: 'error',
           title: 'Import Failed',
           message: `Failed to parse ${path.basename(filePath)}`,
@@ -3510,8 +4981,14 @@ app.whenReady().then(() => {
     // Scan imported QSOs for event matches
     scanLogForEvents();
 
+    // Notify pop-out logbook to refresh (if open and not the caller)
+    if (qsoPopoutWin && !qsoPopoutWin.isDestroyed() &&
+        BrowserWindow.fromWebContents(event.sender) !== qsoPopoutWin) {
+      qsoPopoutWin.webContents.send('qso-popout-refresh');
+    }
+
     const fileList = fileNames.join(', ');
-    dialog.showMessageBox(win, {
+    dialog.showMessageBox(parentWin, {
       type: 'info',
       title: 'Import Complete',
       message: `Successfully imported ${fileList}`,
@@ -3654,9 +5131,13 @@ app.whenReady().then(() => {
     const { rigId, serialPort, baudRate, dtrOff } = config;
     let testProc = null;
     const net = require('net');
+    // Kill live rigctld first — two rigctld instances can't share a serial port
+    const hadLiveRigctld = !!rigctldProc;
+    killRigctld();
+    // Brief delay for OS to release the serial port
+    if (hadLiveRigctld) await new Promise((r) => setTimeout(r, 300));
 
     try {
-      // Spawn rigctld on port 4533 to avoid conflict with live instance on 4532
       testProc = await spawnRigctld({ rigId, serialPort, baudRate, dtrOff, verbose: true }, '4533');
 
       // Give rigctld time to initialize and open the serial port
@@ -3711,126 +5192,17 @@ app.whenReady().then(() => {
       if (testProc) {
         try { testProc.kill(); } catch { /* ignore */ }
       }
+      // Restart live rigctld if one was running before the test
+      if (hadLiveRigctld && settings.catTarget && settings.catTarget.type === 'rigctld') {
+        connectCat();
+      }
     }
   });
 
   ipcMain.handle('save-qso', async (_e, qsoData) => {
     markUserActive();
     try {
-      // Inject operator callsign from settings
-      if (settings.myCallsign && !qsoData.operator) {
-        qsoData.operator = settings.myCallsign.toUpperCase();
-      }
-      const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
-      appendQso(logPath, qsoData);
-
-      // Notify QSO pop-out window
-      if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
-        qsoPopoutWin.webContents.send('qso-popout-added', qsoData);
-      }
-
-      // Track QSO in telemetry (fire-and-forget)
-      const qsoSource = (qsoData.sig || '').toLowerCase();
-      trackQso(['pota', 'sota', 'wwff', 'llota'].includes(qsoSource) ? qsoSource : null);
-
-      // Check if QSO matches any active event and auto-mark progress
-      checkEventQso(qsoData);
-
-      // Update worked QSOs map and notify renderer
-      if (qsoData.callsign) {
-        const call = qsoData.callsign.toUpperCase();
-        const entry = { date: qsoData.qsoDate || '', ref: (qsoData.sigInfo || '').toUpperCase(), band: (qsoData.band || '').toUpperCase(), mode: (qsoData.mode || '').toUpperCase() };
-        if (!workedQsos.has(call)) workedQsos.set(call, []);
-        workedQsos.get(call).push(entry);
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('worked-qsos', [...workedQsos.entries()]);
-        }
-      }
-
-      // Forward to external logbook if enabled
-      // skipLogbookForward: multi-park activations send one ADIF record per park ref,
-      // but external logbooks only need one QSO per physical contact
-      if (settings.sendToLogbook && settings.logbookType && !qsoData.skipLogbookForward) {
-        try {
-          await forwardToLogbook(qsoData);
-        } catch (fwdErr) {
-          console.error('Logbook forwarding failed:', fwdErr.message);
-          return { success: true, logbookError: fwdErr.message };
-        }
-      }
-
-      // Re-spot on POTA if requested
-      if (qsoData.respot && qsoData.sig === 'POTA' && qsoData.sigInfo && settings.myCallsign) {
-        try {
-          await postPotaRespot({
-            activator: qsoData.callsign,
-            spotter: settings.myCallsign.toUpperCase(),
-            frequency: qsoData.frequency,
-            reference: qsoData.sigInfo,
-            mode: qsoData.mode,
-            comments: qsoData.respotComment || '',
-          });
-          // Track re-spot in telemetry (fire-and-forget)
-          trackRespot('pota');
-        } catch (respotErr) {
-          console.error('POTA re-spot failed:', respotErr.message);
-          return { success: true, respotError: respotErr.message };
-        }
-      }
-
-      // Re-spot on WWFF if requested
-      if (qsoData.wwffRespot && qsoData.wwffReference && settings.myCallsign) {
-        try {
-          await postWwffRespot({
-            activator: qsoData.callsign,
-            spotter: settings.myCallsign.toUpperCase(),
-            frequency: qsoData.frequency,
-            reference: qsoData.wwffReference,
-            mode: qsoData.mode,
-            comments: qsoData.respotComment || '',
-          });
-          trackRespot('wwff');
-        } catch (respotErr) {
-          console.error('WWFF re-spot failed:', respotErr.message);
-          return { success: true, wwffRespotError: respotErr.message };
-        }
-      }
-
-      // Re-spot on LLOTA if requested
-      if (qsoData.llotaRespot && qsoData.llotaReference) {
-        try {
-          await postLlotaRespot({
-            activator: qsoData.callsign,
-            frequency: qsoData.frequency,
-            reference: qsoData.llotaReference,
-            mode: qsoData.mode,
-            comments: qsoData.respotComment || '',
-          });
-          trackRespot('llota');
-        } catch (respotErr) {
-          console.error('LLOTA re-spot failed:', respotErr.message);
-          return { success: true, llotaRespotError: respotErr.message };
-        }
-      }
-
-      // Spot on DX Cluster if requested
-      if (qsoData.dxcRespot) {
-        try {
-          let sent = 0;
-          for (const [, entry] of clusterClients) {
-            if (entry.client.sendSpot({ frequency: qsoData.frequency, callsign: qsoData.callsign, comment: qsoData.respotComment || '' })) {
-              sent++;
-            }
-          }
-          if (sent === 0) throw new Error('no connected nodes');
-        } catch (respotErr) {
-          console.error('DX Cluster spot failed:', respotErr.message);
-          return { success: true, dxcRespotError: respotErr.message };
-        }
-      }
-
-      const didRespot = (qsoData.respot && qsoData.sig === 'POTA') || qsoData.wwffRespot || qsoData.llotaRespot || qsoData.dxcRespot;
-      return { success: true, resposted: didRespot || false };
+      return await saveQsoRecord(qsoData);
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -3855,17 +5227,21 @@ app.whenReady().then(() => {
         } catch (err) { errors.push('POTA: ' + err.message); }
       }
       if (data.wwffRespot && data.wwffReference && settings.myCallsign) {
-        try {
-          await postWwffRespot({
-            activator: data.callsign,
-            spotter: settings.myCallsign.toUpperCase(),
-            frequency: data.frequency,
-            reference: data.wwffReference,
-            mode: data.mode,
-            comments: data.comment || '',
-          });
-          trackRespot('wwff');
-        } catch (err) { errors.push('WWFF: ' + err.message); }
+        if (!/^[A-Z0-9]{1,4}FF-\d{4}$/i.test(data.wwffReference)) {
+          errors.push('WWFF: reference does not match WWFF format: ' + data.wwffReference);
+        } else {
+          try {
+            await postWwffRespot({
+              activator: data.callsign,
+              spotter: settings.myCallsign.toUpperCase(),
+              frequency: data.frequency,
+              reference: data.wwffReference,
+              mode: data.mode,
+              comments: data.comment || '',
+            });
+            trackRespot('wwff');
+          } catch (err) { errors.push('WWFF: ' + err.message); }
+        }
       }
       if (data.llotaRespot && data.llotaReference) {
         try {
@@ -3938,6 +5314,29 @@ app.whenReady().then(() => {
     } catch {
       return null;
     }
+  });
+
+  // --- QRZ Logbook API ---
+  ipcMain.handle('qrz-check-sub', async (_e, force) => {
+    if (!qrz.configured || !settings.enableQrz) {
+      return { subscriber: false, expiry: '', error: 'QRZ not configured' };
+    }
+    // Use cached subscription info if available (unless force recheck)
+    if (!force && qrz.subscriptionExpiry) {
+      return { subscriber: qrz.isSubscriber, expiry: qrz.subscriptionExpiry };
+    }
+    try {
+      qrz._sessionKey = null;
+      await qrz.login();
+      return { subscriber: qrz.isSubscriber, expiry: qrz.subscriptionExpiry };
+    } catch (err) {
+      return { subscriber: false, expiry: '', error: err.message };
+    }
+  });
+
+  ipcMain.handle('qrz-verify-api-key', async (_e, key) => {
+    if (!key) return { ok: false, message: 'No API key provided' };
+    return QrzClient.checkApiKey(key, settings.myCallsign || '');
   });
 
   // --- Activator Mode: Parks DB IPC ---
@@ -4018,21 +5417,22 @@ app.whenReady().then(() => {
     }
   });
 
-  // --- Past Activations (scan log for MY_SIG=POTA groups) ---
-  ipcMain.handle('get-past-activations', () => {
+  // --- Past Activations (scan log for MY_SIG groups — POTA, SOTA, etc.) ---
+  function getPastActivations() {
     const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
     try {
       if (!fs.existsSync(logPath)) return [];
       const qsos = parseAllRawQsos(logPath);
-      // Group by MY_SIG_INFO (park ref) + QSO_DATE
+      // Group by MY_SIG_INFO (park/summit ref) + QSO_DATE
       const groups = new Map();
       for (const q of qsos) {
-        if ((q.MY_SIG || '').toUpperCase() !== 'POTA' || !q.MY_SIG_INFO) continue;
+        const mySig = (q.MY_SIG || '').toUpperCase();
+        if (!mySig || !q.MY_SIG_INFO) continue;
         const ref = q.MY_SIG_INFO.toUpperCase();
         const date = q.QSO_DATE || '';
         const key = `${ref}|${date}`;
         if (!groups.has(key)) {
-          groups.set(key, { parkRef: ref, date, contacts: [] });
+          groups.set(key, { parkRef: ref, date, sig: mySig, contacts: [] });
         }
         groups.get(key).contacts.push({
           callsign: q.CALL || '',
@@ -4055,7 +5455,9 @@ app.whenReady().then(() => {
     } catch {
       return [];
     }
-  });
+  }
+
+  ipcMain.handle('get-past-activations', () => getPastActivations());
 
   // --- Delete activation (removes matching QSOs from ADIF log) ---
   ipcMain.handle('delete-activation', async (_e, parkRef, date) => {
@@ -4330,6 +5732,7 @@ function gracefulCleanup() {
   try { disconnectWsjtx(); } catch {}
   try { disconnectSmartSdr(); } catch {}
   try { disconnectTci(); } catch {}
+  try { disconnectRemote(); } catch {}
   try { disconnectKeyer(); } catch {}
   killRigctld();
 }

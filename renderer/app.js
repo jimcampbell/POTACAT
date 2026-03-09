@@ -26,6 +26,7 @@ let enableDxcc = false;
 let enableCluster = false;
 let enableRbn = false;
 let enablePskr = false;
+let enableDxe = true;
 let enableSolar = false;
 let enableBandActivity = false;
 let licenseClass = 'none';
@@ -38,7 +39,8 @@ let enableSplit = false;
 let activeRigName = ''; // name of the currently active rig profile
 let workedQsos = new Map(); // callsign → [{date, ref}] from QSO log
 let donorCallsigns = new Set(); // supporter callsigns from potacat.com
-let expeditionCallsigns = new Set(); // active DX expeditions from Club Log
+let expeditionCallsigns = new Set(); // active DX expeditions from Club Log + danplanet
+let expeditionMeta = new Map(); // callsign → { entity, startDate, endDate, description }
 let activeEvents = [];                // events from remote endpoint
 let eventCallsignMap = new Map();     // callsign pattern → event id (for badge matching)
 let eventOverlayOpen = false;
@@ -58,6 +60,7 @@ let popoutOpen = false; // pop-out map window is open
 let qsoPopoutOpen = false; // pop-out QSO log window is open
 let spotsPopoutOpen = false; // pop-out spots window is open
 let actmapPopoutOpen = false; // pop-out activation map window is open
+let clusterPopoutOpen = false; // pop-out cluster terminal is open
 let dxccData = null;  // { entities: [...] } from main process
 let enableWsjtx = false;
 let wsjtxDecodes = []; // recent decodes from WSJT-X (FIFO, max 50)
@@ -133,6 +136,7 @@ const spotsLlota = document.getElementById('spots-llota');
 const spotsCluster = document.getElementById('spots-cluster');
 const spotsRbn = document.getElementById('spots-rbn');
 const spotsPskr = document.getElementById('spots-pskr');
+const spotsDxe = document.getElementById('spots-dxe');
 const spotsHideWorked = document.getElementById('spots-hide-worked');
 const spotsHideParks = document.getElementById('spots-hide-parks');
 const spotsHideParksLabel = document.getElementById('spots-hide-parks-label');
@@ -240,11 +244,29 @@ const wsjtxStatusEl = document.getElementById('wsjtx-status');
 const setEnablePskr = document.getElementById('set-enable-pskr');
 const pskrConfig = document.getElementById('pskr-config');
 const setMyCallsign = document.getElementById('set-my-callsign');
+const setEnableClusterTerminal = document.getElementById('set-enable-cluster-terminal');
+const clusterTerminalBtn = document.getElementById('cluster-terminal-btn');
 const clusterConfig = document.getElementById('cluster-config');
 const clusterNodeList = document.getElementById('cluster-node-list');
 const clusterPresetSelect = document.getElementById('cluster-preset-select');
 const clusterAddBtn = document.getElementById('cluster-add-btn');
 const clusterCustomFields = document.getElementById('cluster-custom-fields');
+const netReminderList = document.getElementById('net-reminder-list');
+const netAddBtn = document.getElementById('net-add-btn');
+const netEditor = document.getElementById('net-editor');
+const netEditorTitle = document.getElementById('net-editor-title');
+const setNetName = document.getElementById('set-net-name');
+const setNetFreq = document.getElementById('set-net-freq');
+const setNetMode = document.getElementById('set-net-mode');
+const setNetTime = document.getElementById('set-net-time');
+const setNetTz = document.getElementById('set-net-tz');
+const setNetDuration = document.getElementById('set-net-duration');
+const setNetLead = document.getElementById('set-net-lead');
+const netWeeklyDays = document.getElementById('net-weekly-days');
+const netSpecificDates = document.getElementById('net-specific-dates');
+const setNetDates = document.getElementById('set-net-dates');
+const netSaveBtn = document.getElementById('net-save-btn');
+const netCancelBtn = document.getElementById('net-cancel-btn');
 const setShowBeacons = document.getElementById('set-show-beacons');
 const setShowDxBar = document.getElementById('set-show-dx-bar');
 const rbnConfig = document.getElementById('rbn-config');
@@ -253,9 +275,13 @@ const connBar = document.getElementById('settings-conn-status');
 const connCluster = document.getElementById('conn-cluster');
 const connRbn = document.getElementById('conn-rbn');
 const connPskr = document.getElementById('conn-pskr');
+const connRemote = document.getElementById('conn-remote');
 let clusterConnected = false;
+let enableRemote = false;
+let remoteConnected = false;
 let clusterNodeStatuses = []; // [{id, name, host, connected}, ...]
 let currentClusterNodes = []; // live node list for settings UI
+let currentNetReminders = []; // live net list for settings UI
 
 const CLUSTER_PRESETS = [
   { name: 'W3LPL', host: 'w3lpl.net', port: 7373 },
@@ -306,6 +332,7 @@ const utcClockEl = document.getElementById('utc-clock');
 const sfiStatusEl = document.getElementById('sfi-status');
 const kStatusEl = document.getElementById('k-status');
 const aStatusEl = document.getElementById('a-status');
+const setColorblind = document.getElementById('set-colorblind');
 const setColorRows = document.getElementById('set-color-rows');
 const setEnableSolar = document.getElementById('set-enable-solar');
 const setEnableBandActivity = document.getElementById('set-enable-band-activity');
@@ -335,6 +362,13 @@ const qrzConfig = document.getElementById('qrz-config');
 const setQrzUsername = document.getElementById('set-qrz-username');
 const setQrzPassword = document.getElementById('set-qrz-password');
 const setQrzFullName = document.getElementById('set-qrz-full-name');
+const qrzLogbookSection = document.getElementById('qrz-logbook-section');
+const qrzSubStatus = document.getElementById('qrz-sub-status');
+const qrzRecheckBtn = document.getElementById('qrz-recheck-btn');
+const setQrzLogbook = document.getElementById('set-qrz-logbook');
+const qrzLogbookConfig = document.getElementById('qrz-logbook-config');
+const setQrzApiKey = document.getElementById('set-qrz-api-key');
+const qrzApiStatus = document.getElementById('qrz-api-status');
 const setSmartSdrSpots = document.getElementById('set-smartsdr-spots');
 const smartSdrConfig = document.getElementById('smartsdr-config');
 const setSmartSdrHost = document.getElementById('set-smartsdr-host');
@@ -361,6 +395,20 @@ const setCwSidetonePitch = document.getElementById('set-cw-sidetone-pitch');
 const setCwSidetoneVolume = document.getElementById('set-cw-sidetone-volume');
 const cwSidetoneVolumeLabel = document.getElementById('cw-sidetone-volume-label');
 const cwKeyerStatusEl = document.getElementById('cw-keyer-status');
+// ECHOCAT
+const setEnableRemote = document.getElementById('set-enable-remote');
+const remoteConfig = document.getElementById('remote-config');
+const setRemotePort = document.getElementById('set-remote-port');
+const setRemoteRequireToken = document.getElementById('set-remote-require-token');
+const remoteTokenRow = document.getElementById('remote-token-row');
+const setRemoteToken = document.getElementById('set-remote-token');
+const remoteRegenToken = document.getElementById('remote-regen-token');
+const rigRemoteAudioInput = document.getElementById('rig-remote-audio-input');
+const rigRemoteAudioOutput = document.getElementById('rig-remote-audio-output');
+const remoteAudioSummary = document.getElementById('remote-audio-summary');
+const setRemotePttTimeout = document.getElementById('set-remote-ptt-timeout');
+const remoteUrlDisplay = document.getElementById('remote-url-display');
+const remoteTxIndicator = document.getElementById('remote-tx-indicator');
 const logDialog = document.getElementById('log-dialog');
 const logCallsign = document.getElementById('log-callsign');
 const logOpName = document.getElementById('log-op-name');
@@ -421,7 +469,11 @@ function applyRstMode() {
   document.querySelectorAll('.rst-split-mode').forEach(el => el.classList.toggle('hidden', !n1mmRst));
   document.querySelectorAll('.rst-n1mm-mode').forEach(el => el.classList.toggle('hidden', n1mmRst));
 }
-const logRefDisplay = document.getElementById('log-ref-display');
+const logTypePicker = document.getElementById('log-type-picker');
+const logRefInputSection = document.getElementById('log-ref-input-section');
+const logRefInput = document.getElementById('log-ref-input');
+const logRefName = document.getElementById('log-ref-name');
+let logSelectedType = '';
 const logComment = document.getElementById('log-comment');
 const logSaveBtn = document.getElementById('log-save');
 const logCancelBtn = document.getElementById('log-cancel');
@@ -499,7 +551,12 @@ async function openCatPopover(anchor) {
     rigEl.appendChild(info);
     rigEl.addEventListener('click', async () => {
       window.api.connectCat(rig.catTarget);
-      await window.api.saveSettings({ activeRigId: rig.id, catTarget: rig.catTarget });
+      await window.api.saveSettings({
+        activeRigId: rig.id,
+        catTarget: rig.catTarget,
+        remoteAudioInput: rig.remoteAudioInput || '',
+        remoteAudioOutput: rig.remoteAudioOutput || '',
+      });
       activeRigName = rig.name || '';
       closeCatPopover();
     });
@@ -573,6 +630,7 @@ async function loadPrefs() {
     updateTitleBar();
   }
   applyTheme(settings.lightMode === true);
+  applyColorblindMode(settings.colorblindMode === true);
   grid = settings.grid || '';
   distUnit = settings.distUnit || 'mi';
   scanDwell = parseInt(settings.scanDwell, 10) || 7;
@@ -588,6 +646,7 @@ async function loadPrefs() {
   updateDxCommandBar();
   enableRbn = settings.enableRbn === true; // default false
   enablePskr = settings.enablePskr === true; // default false
+  enableDxe = settings.enableDxe !== false; // default true
   enableSolar = settings.enableSolar === true;   // default false
   // Color rows — default true (on)
   spotsTable.classList.toggle('no-source-tint', settings.colorRows === false);
@@ -627,6 +686,7 @@ async function loadPrefs() {
     });
   }
   updateRbnButton();
+  clusterTerminalBtn.classList.toggle('hidden', !settings.enableClusterTerminal);
   updateDxccButton();
   // Activator mode restore
   if (settings.appMode === 'activator') {
@@ -1020,12 +1080,14 @@ async function openRigEditor(mode, rigId) {
     if (rig) {
       setRigName.value = rig.name || '';
       await populateRadioSection(rig.catTarget);
+      await populateRigAudioDevices(rig.remoteAudioInput, rig.remoteAudioOutput);
     }
   } else {
     rigEditorTitle.textContent = 'Add Rig';
     setRigName.value = '';
     setRadioType('flex');
     updateRadioSubPanels();
+    await populateRigAudioDevices('', '');
   }
 
   rigEditor.classList.remove('hidden');
@@ -1061,17 +1123,24 @@ rigSaveBtn.addEventListener('click', async () => {
   const name = setRigName.value.trim() || 'Unnamed Rig';
   const catTarget = buildCatTargetFromForm();
 
+  const rigAudioIn = rigRemoteAudioInput.value || '';
+  const rigAudioOut = rigRemoteAudioOutput.value || '';
+
   if (rigEditorMode === 'edit' && editingRigId) {
     const rig = currentRigs.find(r => r.id === editingRigId);
     if (rig) {
       rig.name = name;
       rig.catTarget = catTarget;
+      rig.remoteAudioInput = rigAudioIn;
+      rig.remoteAudioOutput = rigAudioOut;
     }
   } else {
     const newRig = {
       id: 'rig_' + Date.now(),
       name,
       catTarget,
+      remoteAudioInput: rigAudioIn,
+      remoteAudioOutput: rigAudioOut,
     };
     currentRigs.push(newRig);
   }
@@ -1156,7 +1225,7 @@ rbnAgeUnitSelect.addEventListener('change', rerenderRbn);
 const DXCC_MODE_GROUPS = {
   phone:   new Set(['SSB', 'AM', 'FM', 'USB', 'LSB']),
   cw:      new Set(['CW']),
-  digital: new Set(['FT8', 'FT4', 'RTTY', 'PSK31', 'JT65', 'JT9', 'DATA', 'OLIVIA', 'MFSK'])
+  digital: new Set(['FT8', 'FT4', 'FT2', 'RTTY', 'PSK31', 'JT65', 'JT9', 'DATA', 'OLIVIA', 'MFSK'])
 };
 const DXCC_CHALLENGE_BANDS = ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m']; // excludes 60m per ARRL rules
 
@@ -1198,7 +1267,7 @@ function updateWsjtxStatusVisibility() {
 }
 
 function updateSettingsConnBar() {
-  const anyVisible = enableCluster || enableRbn || enablePskr;
+  const anyVisible = enableCluster || enableRbn || enablePskr || enableRemote;
   connBar.classList.toggle('hidden', !anyVisible);
   connCluster.classList.toggle('hidden', !enableCluster);
   connCluster.classList.toggle('connected', clusterConnected);
@@ -1212,6 +1281,8 @@ function updateSettingsConnBar() {
   connRbn.classList.toggle('connected', rbnConnected);
   connPskr.classList.toggle('hidden', !enablePskr);
   connPskr.classList.toggle('connected', pskrConnected);
+  connRemote.classList.toggle('hidden', !enableRemote);
+  connRemote.classList.toggle('connected', remoteConnected);
 }
 
 function updateRbnButton() {
@@ -1347,7 +1418,81 @@ radioTypeBtns.forEach((btn) => {
 // QRZ checkbox toggles QRZ config visibility
 setEnableQrz.addEventListener('change', () => {
   qrzConfig.classList.toggle('hidden', !setEnableQrz.checked);
+  updateQrzLogbookVisibility();
 });
+
+// QRZ Logbook section visibility — show when QRZ enabled AND credentials entered
+function updateQrzLogbookVisibility() {
+  const show = setEnableQrz.checked && setQrzUsername.value.trim() && setQrzPassword.value;
+  qrzLogbookSection.classList.toggle('hidden', !show);
+  if (!show) {
+    setQrzLogbook.checked = false;
+    setQrzLogbook.disabled = true;
+    qrzLogbookConfig.classList.add('hidden');
+  }
+}
+
+// Recheck subscription button
+qrzRecheckBtn.addEventListener('click', async () => {
+  qrzSubStatus.textContent = 'Checking...';
+  qrzSubStatus.style.color = '';
+  qrzRecheckBtn.disabled = true;
+  try {
+    const result = await window.api.qrzCheckSub(true);
+    if (result.error) {
+      qrzSubStatus.textContent = result.error;
+      qrzSubStatus.style.color = '#e94560';
+      setQrzLogbook.disabled = true;
+    } else if (result.subscriber) {
+      qrzSubStatus.textContent = `XML Subscriber \u2014 expires ${result.expiry}`;
+      qrzSubStatus.style.color = '#4ecca3';
+      setQrzLogbook.disabled = false;
+    } else {
+      const msg = result.expiry && result.expiry !== 'non-subscriber'
+        ? `QRZ XML subscription expired (${result.expiry})`
+        : 'No active QRZ XML subscription';
+      qrzSubStatus.textContent = msg;
+      qrzSubStatus.style.color = '#e94560';
+      setQrzLogbook.disabled = true;
+      setQrzLogbook.checked = false;
+      qrzLogbookConfig.classList.add('hidden');
+    }
+  } catch {
+    qrzSubStatus.textContent = 'Check failed';
+    qrzSubStatus.style.color = '#e94560';
+  }
+  qrzRecheckBtn.disabled = false;
+});
+
+// Toggle QRZ Logbook config visibility
+setQrzLogbook.addEventListener('change', () => {
+  qrzLogbookConfig.classList.toggle('hidden', !setQrzLogbook.checked);
+});
+
+// Verify API key on blur
+setQrzApiKey.addEventListener('blur', async () => {
+  const key = setQrzApiKey.value.trim();
+  if (!key) { qrzApiStatus.textContent = ''; return; }
+  qrzApiStatus.textContent = 'Verifying...';
+  qrzApiStatus.style.color = '';
+  try {
+    const result = await window.api.qrzVerifyApiKey(key);
+    if (result.ok) {
+      qrzApiStatus.textContent = 'API key valid';
+      qrzApiStatus.style.color = '#4ecca3';
+    } else {
+      qrzApiStatus.textContent = result.reason || result.message || 'Invalid key';
+      qrzApiStatus.style.color = '#e94560';
+    }
+  } catch {
+    qrzApiStatus.textContent = 'Verification failed';
+    qrzApiStatus.style.color = '#e94560';
+  }
+});
+
+// Update logbook section when credentials change
+setQrzUsername.addEventListener('input', updateQrzLogbookVisibility);
+setQrzPassword.addEventListener('input', updateQrzLogbookVisibility);
 
 setEnableCluster.addEventListener('change', () => {
   clusterConfig.classList.toggle('hidden', !setEnableCluster.checked);
@@ -1409,6 +1554,171 @@ function renderClusterNodeList(nodes) {
     clusterNodeList.appendChild(item);
   }
 }
+
+// --- Net reminder list rendering ---
+let editingNetId = null;
+
+function renderNetList(nets) {
+  netReminderList.innerHTML = '';
+  for (const net of nets) {
+    const item = document.createElement('div');
+    item.className = 'net-item';
+    item.dataset.id = net.id;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = net.enabled;
+    cb.addEventListener('change', () => { net.enabled = cb.checked; });
+
+    const info = document.createElement('div');
+    info.className = 'net-item-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'net-item-name';
+    nameEl.textContent = net.name;
+    const detailEl = document.createElement('div');
+    detailEl.className = 'net-item-detail';
+    const schedStr = net.schedule?.type === 'weekly'
+      ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].filter((_,i) => (net.schedule.days || []).includes(i)).join(', ')
+      : net.schedule?.type === 'dates'
+        ? (net.schedule.dates || []).join(', ')
+        : 'Daily';
+    detailEl.textContent = `${net.frequency} kHz ${net.mode} \u2022 ${net.startTime} ${net.timeZone === 'utc' ? 'UTC' : 'Local'} \u2022 ${schedStr}`;
+    info.appendChild(nameEl);
+    info.appendChild(detailEl);
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'node-item-btn';
+    editBtn.textContent = '\u270E';
+    editBtn.title = 'Edit net';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openNetEditor('edit', net.id);
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'node-item-btn node-delete-btn';
+    delBtn.textContent = '\u2715';
+    delBtn.title = 'Remove net';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentNetReminders = currentNetReminders.filter(n => n.id !== net.id);
+      renderNetList(currentNetReminders);
+    });
+
+    item.appendChild(cb);
+    item.appendChild(info);
+    item.appendChild(editBtn);
+    item.appendChild(delBtn);
+    netReminderList.appendChild(item);
+  }
+}
+
+function openNetEditor(mode, netId) {
+  editingNetId = netId || null;
+  if (mode === 'edit') {
+    netEditorTitle.textContent = 'Edit Net';
+    const net = currentNetReminders.find(n => n.id === netId);
+    if (net) {
+      setNetName.value = net.name || '';
+      setNetFreq.value = net.frequency || '';
+      setNetMode.value = net.mode || 'SSB';
+      setNetTime.value = net.startTime || '17:00';
+      setNetTz.value = net.timeZone || 'local';
+      setNetDuration.value = net.duration || 60;
+      setNetLead.value = net.leadTime != null ? net.leadTime : 15;
+      const schedType = net.schedule?.type || 'daily';
+      document.querySelector(`input[name="net-schedule"][value="${schedType}"]`).checked = true;
+      updateNetScheduleUI(schedType);
+      if (schedType === 'weekly') {
+        netWeeklyDays.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.checked = (net.schedule.days || []).includes(parseInt(cb.value));
+        });
+      }
+      if (schedType === 'dates') {
+        setNetDates.value = (net.schedule.dates || []).join(', ');
+      }
+    }
+  } else {
+    netEditorTitle.textContent = 'Add Net';
+    setNetName.value = '';
+    setNetFreq.value = '';
+    setNetMode.value = 'SSB';
+    setNetTime.value = '17:00';
+    setNetTz.value = 'local';
+    setNetDuration.value = 60;
+    setNetLead.value = 15;
+    document.querySelector('input[name="net-schedule"][value="daily"]').checked = true;
+    updateNetScheduleUI('daily');
+    netWeeklyDays.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    setNetDates.value = '';
+  }
+  netEditor.classList.remove('hidden');
+  netAddBtn.classList.add('hidden');
+  setNetName.focus();
+}
+
+function updateNetScheduleUI(type) {
+  netWeeklyDays.classList.toggle('hidden', type !== 'weekly');
+  netSpecificDates.classList.toggle('hidden', type !== 'dates');
+}
+
+document.querySelectorAll('input[name="net-schedule"]').forEach(r => {
+  r.addEventListener('change', () => updateNetScheduleUI(r.value));
+});
+
+netAddBtn.addEventListener('click', () => openNetEditor('add'));
+
+netCancelBtn.addEventListener('click', () => {
+  netEditor.classList.add('hidden');
+  netAddBtn.classList.remove('hidden');
+  editingNetId = null;
+});
+
+netSaveBtn.addEventListener('click', () => {
+  const name = setNetName.value.trim();
+  const freq = parseInt(setNetFreq.value, 10);
+  if (!name || !freq) { alert('Name and frequency are required.'); return; }
+
+  const schedType = document.querySelector('input[name="net-schedule"]:checked').value;
+  const schedule = { type: schedType };
+  if (schedType === 'weekly') {
+    schedule.days = [];
+    netWeeklyDays.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+      schedule.days.push(parseInt(cb.value));
+    });
+  }
+  if (schedType === 'dates') {
+    schedule.dates = setNetDates.value.split(',').map(d => d.trim()).filter(Boolean);
+  }
+
+  const netObj = {
+    id: editingNetId || Date.now().toString(36),
+    name,
+    frequency: freq,
+    mode: setNetMode.value,
+    startTime: setNetTime.value || '17:00',
+    timeZone: setNetTz.value || 'local',
+    duration: parseInt(setNetDuration.value, 10) || 60,
+    leadTime: parseInt(setNetLead.value, 10) || 0,
+    schedule,
+    enabled: true,
+  };
+
+  if (editingNetId) {
+    const idx = currentNetReminders.findIndex(n => n.id === editingNetId);
+    if (idx !== -1) {
+      netObj.enabled = currentNetReminders[idx].enabled;
+      currentNetReminders[idx] = netObj;
+    }
+  } else {
+    currentNetReminders.push(netObj);
+  }
+
+  renderNetList(currentNetReminders);
+  netEditor.classList.add('hidden');
+  netAddBtn.classList.remove('hidden');
+  editingNetId = null;
+});
 
 // Populate preset dropdown
 function populateClusterPresets() {
@@ -1500,6 +1810,67 @@ setTciSpots.addEventListener('change', () => {
   tciConfig.classList.toggle('hidden', !setTciSpots.checked);
 });
 
+// ECHOCAT checkbox toggles config visibility
+setEnableRemote.addEventListener('change', async () => {
+  remoteConfig.classList.toggle('hidden', !setEnableRemote.checked);
+  if (setEnableRemote.checked) {
+    await populateRemoteURLs();
+  }
+});
+
+setRemoteRequireToken.addEventListener('change', () => {
+  remoteTokenRow.classList.toggle('hidden', !setRemoteRequireToken.checked);
+});
+
+remoteRegenToken.addEventListener('click', () => {
+  const arr = new Uint8Array(3);
+  crypto.getRandomValues(arr);
+  setRemoteToken.value = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+});
+
+async function populateRigAudioDevices(restoreIn, restoreOut) {
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter(d => d.kind === 'audioinput');
+    const outputs = devices.filter(d => d.kind === 'audiooutput');
+    rigRemoteAudioInput.innerHTML = '<option value="">-- system default --</option>' +
+      inputs.map(d => `<option value="${d.deviceId}">${d.label || d.deviceId.slice(0, 20)}</option>`).join('');
+    rigRemoteAudioOutput.innerHTML = '<option value="">-- system default --</option>' +
+      outputs.map(d => `<option value="${d.deviceId}">${d.label || d.deviceId.slice(0, 20)}</option>`).join('');
+    if (restoreIn) rigRemoteAudioInput.value = restoreIn;
+    if (restoreOut) rigRemoteAudioOutput.value = restoreOut;
+  } catch (e) {
+    console.warn('Could not enumerate audio devices:', e.message);
+  }
+}
+
+async function updateRemoteAudioSummary(audioInId, audioOutId) {
+  if (!remoteAudioSummary) return;
+  if (!audioInId && !audioOutId) {
+    remoteAudioSummary.textContent = 'not configured \u2014 set in My Rigs';
+    return;
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inLabel = audioInId ? (devices.find(d => d.deviceId === audioInId)?.label || audioInId.slice(0, 16)) : 'default';
+    const outLabel = audioOutId ? (devices.find(d => d.deviceId === audioOutId)?.label || audioOutId.slice(0, 16)) : 'default';
+    remoteAudioSummary.textContent = `${inLabel} / ${outLabel}`;
+  } catch {
+    remoteAudioSummary.textContent = audioInId || audioOutId ? 'configured' : 'not configured \u2014 set in My Rigs';
+  }
+}
+
+async function populateRemoteURLs() {
+  try {
+    const ips = await window.api.getLocalIPs();
+    const port = setRemotePort.value || 7300;
+    remoteUrlDisplay.innerHTML = ips.map(ip =>
+      `<div>${ip.tailscale ? '<strong style="color:#4ecca3;">(Tailscale)</strong> ' : ''}https://${ip.address}:${port}</div>`
+    ).join('');
+  } catch {}
+}
+
 // CW Keyer checkbox toggles config visibility + auto-connect MIDI
 setEnableCwKeyer.addEventListener('change', () => {
   cwKeyerConfig.classList.toggle('hidden', !setEnableCwKeyer.checked);
@@ -1526,7 +1897,8 @@ const LOGBOOK_DEFAULTS = {
     help: 'In Log4OM 2: Settings > Program Configuration > Software Integration > UDP Inbound tab. Click the green "+" button to add a new entry. Set Type to "ADIF-MESSAGE" and Port to "2237". Click "Save and apply". Leave Host at 127.0.0.1 in POTACAT. Log4OM must be running to receive QSOs. Only live-logged QSOs are forwarded — importing logs into POTACAT will not create duplicates.',
   },
   dxkeeper: { port: 52001, help: 'In DXKeeper: Configuration > Defaults tab > Network Service panel. The default base port is 52000 (DXKeeper listens on base + 1 = 52001). DXKeeper must be running to receive QSOs. QSOs will be logged with missing fields auto-deduced from callbook/entity databases.' },
-  n3fjp: { port: 1100, help: 'In N3FJP: Settings > Application Program Interface > check "TCP API Enabled". Set the port to 1100 (default). N3FJP must be running to receive QSOs.' },
+  hamrs: { port: 2333, help: 'In HamRS: enable WSJT-X integration in Settings. HamRS listens on UDP port 2333 for ADIF data. Leave Host at 127.0.0.1 if HamRS is running on the same computer. HamRS must be running to receive QSOs.' },
+  n3fjp: { port: 1100, help: 'In N3FJP: Settings > Application Program Interface > check "TCP API Enabled". Set the port to 1100 (default). N3FJP must be running to receive QSOs. When using with WSJT-X, open WSJT-X first, then POTACAT, then N3FJP.' },
   hrd: { port: 2333, help: 'In HRD Logbook: Tools > Configure > QSO Forwarding. Under UDP Receive, check "Receive QSO notifications using UDP9/ADIF from other logging programs (eg. WSJT-X)". Set the receive port to 2333 and select your target database. POTACAT and WSJT-X can both send to this port simultaneously.' },
 };
 
@@ -1573,7 +1945,7 @@ adifImportBtn.addEventListener('click', async () => {
       adifImportResult.textContent = '';
     } else if (result.success) {
       adifImportResult.textContent = `${result.imported} QSOs imported`;
-      adifImportResult.style.color = '#4ecca3';
+      adifImportResult.style.color = SOURCE_COLORS_ACTIVE.pota;
     } else {
       adifImportResult.textContent = 'Import failed';
       adifImportResult.style.color = '#e94560';
@@ -1734,6 +2106,8 @@ function getFiltered() {
   const continents = getDropdownValues(continentFilterEl);
   const maxAgeSecs = maxAgeMin * 60;
   return allSpots.filter((s) => {
+    // Net spots always pass through all filters
+    if (s.source === 'net') return true;
     const sourceOff =
       (s.source === 'pota' && !enablePota) ||
       (s.source === 'sota' && !enableSota) ||
@@ -1765,9 +2139,13 @@ function getFiltered() {
 // --- Sorting ---
 function sortSpots(spots) {
   return spots.slice().sort((a, b) => {
-    // Pin DX expeditions to the top
-    const aExp = expeditionCallsigns.has(a.callsign.toUpperCase()) ? 1 : 0;
-    const bExp = expeditionCallsigns.has(b.callsign.toUpperCase()) ? 1 : 0;
+    // Pin net spots above everything
+    const aNet = a.source === 'net' ? 1 : 0;
+    const bNet = b.source === 'net' ? 1 : 0;
+    if (aNet !== bNet) return bNet - aNet;
+    // Pin DX expeditions to the top (only when DXE display enabled)
+    const aExp = enableDxe && expeditionCallsigns.has(a.callsign.toUpperCase()) ? 1 : 0;
+    const bExp = enableDxe && expeditionCallsigns.has(b.callsign.toUpperCase()) ? 1 : 0;
     if (aExp !== bExp) return bExp - aExp;
 
     let va, vb;
@@ -2150,89 +2528,86 @@ L.Icon.Default.mergeOptions({
   shadowUrl: '../node_modules/leaflet/dist/images/marker-shadow.png',
 });
 
-// Orange teardrop pin for SOTA spots (same shape as default Leaflet marker)
-const sotaIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#f0a500" stroke="#c47f00" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
+// --- Colorblind-safe dual palettes ---
+const SOURCE_COLORS_NORMAL = {
+  pota: '#4ecca3', sota: '#f0a500', wwff: '#26a69a',
+  llota: '#42a5f5', dxc: '#e040fb', rbn: '#00bcd4', pskr: '#ff6b6b'
+};
+const SOURCE_COLORS_CB = {
+  pota: '#4fc3f7', sota: '#ffb300', wwff: '#29b6f6',
+  llota: '#42a5f5', dxc: '#e040fb', rbn: '#81d4fa', pskr: '#ffa726'
+};
+const SOURCE_STROKES_NORMAL = {
+  pota: '#3ba882', sota: '#c47f00', wwff: '#1b7a71',
+  llota: '#1e88e5', dxc: '#ab00d9', rbn: '#0097a7', pskr: '#d84343'
+};
+const SOURCE_STROKES_CB = {
+  pota: '#2196f3', sota: '#e6a200', wwff: '#0288d1',
+  llota: '#1e88e5', dxc: '#ab00d9', rbn: '#4fc3f7', pskr: '#e68a00'
+};
+const RBN_BAND_COLORS_NORMAL = {
+  '160m': '#ff4444', '80m': '#ff8c00', '60m': '#ffd700', '40m': '#4ecca3',
+  '30m': '#00cccc', '20m': '#4488ff', '17m': '#8844ff', '15m': '#cc44ff',
+  '12m': '#ff44cc', '10m': '#ff4488', '6m': '#e0e0e0', '2m': '#88ff88', '70cm': '#ffaa44',
+};
+const RBN_BAND_COLORS_CB = {
+  '160m': '#ffa726', '80m': '#ffca28', '60m': '#fff176', '40m': '#4fc3f7',
+  '30m': '#00cccc', '20m': '#4488ff', '17m': '#8844ff', '15m': '#cc44ff',
+  '12m': '#ff44cc', '10m': '#ff4488', '6m': '#e0e0e0', '2m': '#88ff88', '70cm': '#ffaa44',
+};
 
-// Cyan teardrop pin for RBN watchlist spots
-const rbnIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#00bcd4" stroke="#0097a7" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
+let SOURCE_COLORS_ACTIVE = { ...SOURCE_COLORS_NORMAL };
+let SOURCE_STROKES_ACTIVE = { ...SOURCE_STROKES_NORMAL };
+let RBN_BAND_COLORS_ACTIVE = { ...RBN_BAND_COLORS_NORMAL };
 
-// Teal teardrop pin for WWFF spots
-const wwffIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#26a69a" stroke="#1b7a71" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
+// --- Teardrop icon factory ---
+function makeTeardropIcon(fill, stroke) {
+  return L.divIcon({
+    className: '',
+    html: `<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg"><path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="${fill}" stroke="${stroke}" stroke-width="1"/><circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/></svg>`,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+  });
+}
 
-// Blue teardrop pin for LLOTA spots
-const llotaIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#42a5f5" stroke="#1e88e5" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
+let sourceIcons = {};
+function rebuildSourceIcons() {
+  for (const src of Object.keys(SOURCE_COLORS_ACTIVE)) {
+    sourceIcons[src] = makeTeardropIcon(SOURCE_COLORS_ACTIVE[src], SOURCE_STROKES_ACTIVE[src]);
+  }
+}
+rebuildSourceIcons(); // initial build with normal palette
 
-// Green teardrop pin for POTA spots
-const potaIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#4ecca3" stroke="#3ba882" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
-
-// Purple teardrop pin for DX Cluster spots
-const dxcIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#e040fb" stroke="#ab00d9" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
-
-// Coral teardrop pin for PSKReporter/FreeDV spots
-const pskrIcon = L.divIcon({
-  className: '',
-  html: '<svg width="25" height="41" viewBox="0 0 25 41" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M12.5 0C5.6 0 0 5.6 0 12.5C0 21.9 12.5 41 12.5 41S25 21.9 25 12.5C25 5.6 19.4 0 12.5 0Z" fill="#ff6b6b" stroke="#d84343" stroke-width="1"/>' +
-    '<circle cx="12.5" cy="12.5" r="5.5" fill="#fff" opacity="0.4"/>' +
-    '</svg>',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-});
+function applyColorblindMode(enabled) {
+  if (enabled) {
+    Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_CB);
+    Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_CB);
+    Object.assign(RBN_BAND_COLORS_ACTIVE, RBN_BAND_COLORS_CB);
+  } else {
+    Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_NORMAL);
+    Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_NORMAL);
+    Object.assign(RBN_BAND_COLORS_ACTIVE, RBN_BAND_COLORS_NORMAL);
+  }
+  rebuildSourceIcons();
+  // Update CSS variables
+  const root = document.documentElement;
+  root.style.setProperty('--accent-green', enabled ? '#4fc3f7' : '');
+  root.style.setProperty('--accent-green-btn', enabled ? '#4fc3f7' : '');
+  for (const [src, color] of Object.entries(SOURCE_COLORS_ACTIVE)) {
+    root.style.setProperty('--source-' + src, color);
+  }
+  // Update inline source label colors in Spots dropdown
+  const srcLabels = { pota: '#spots-pota', sota: '#spots-sota', wwff: '#spots-wwff',
+    llota: '#spots-llota', dxc: '#spots-cluster', rbn: '#spots-rbn', pskr: '#spots-pskr' };
+  for (const [src, sel] of Object.entries(srcLabels)) {
+    const span = document.querySelector(sel + ' + span') || document.querySelector(sel)?.parentElement?.querySelector('span');
+    if (span) span.style.color = SOURCE_COLORS_ACTIVE[src];
+  }
+  // Refresh map markers if map is visible
+  if (typeof renderMarkers === 'function') try { renderMarkers(); } catch {}
+  if (typeof renderRbnMarkers === 'function') try { renderRbnMarkers(); } catch {}
+}
 
 // Bright red teardrop pin with gold star for DX expeditions
 const expeditionIcon = L.divIcon({
@@ -2275,19 +2650,7 @@ let rbnHomeMarker = null;
 let rbnNightLayer = null;
 let rbnHomePos = null; // { lat, lon } for arc drawing
 
-const RBN_BAND_COLORS = {
-  '160m': '#ff4444',
-  '80m':  '#ff8c00',
-  '60m':  '#ffd700',
-  '40m':  '#4ecca3',
-  '30m':  '#00cccc',
-  '20m':  '#4488ff',
-  '17m':  '#8844ff',
-  '15m':  '#cc44ff',
-  '12m':  '#ff44cc',
-  '10m':  '#ff4488',
-  '6m':   '#e0e0e0',
-};
+// RBN_BAND_COLORS is now managed by RBN_BAND_COLORS_ACTIVE (see colorblind palettes above)
 
 // Compute intermediate points along a great circle arc (geodesic)
 function greatCircleArc(lat1, lon1, lat2, lon2, numPoints) {
@@ -2318,6 +2681,20 @@ function greatCircleArc(lat1, lon1, lat2, lon2, numPoints) {
     ]);
   }
   return points;
+}
+
+// Pick the copy of lon (lon, lon-360, lon+360) closest to refLon
+// Used to keep activation map bounds tight across the antimeridian
+function wrapLon(refLon, lon) {
+  let best = lon, bestDist = Math.abs(lon - refLon);
+  for (const offset of [-360, 360]) {
+    const wrapped = lon + offset;
+    if (Math.abs(wrapped - refLon) < bestDist) {
+      best = wrapped;
+      bestDist = Math.abs(wrapped - refLon);
+    }
+  }
+  return best;
 }
 
 // Default center: FN20jb (eastern PA) ≈ 40.35°N, 75.58°W
@@ -2464,13 +2841,7 @@ function clearTuneArc() {
 }
 
 function tuneArcColor(source) {
-  if (source === 'sota') return '#f0a500';
-  if (source === 'dxc') return '#e040fb';
-  if (source === 'rbn') return '#00bcd4';
-  if (source === 'wwff') return '#26a69a';
-  if (source === 'llota') return '#42a5f5';
-  if (source === 'pskr') return '#ff6b6b';
-  return '#4ecca3'; // pota / default
+  return SOURCE_COLORS_ACTIVE[source] || SOURCE_COLORS_ACTIVE.pota;
 }
 
 function showTuneArc(lat, lon, freq, source) {
@@ -2561,6 +2932,7 @@ const PRIVILEGE_RANGES = {
     [14000, 14150, 'cw_digi'], [14150, 14350, 'phone'], [18068, 18168, 'all'],
     [21000, 21200, 'cw_digi'], [21200, 21450, 'phone'], [24890, 24990, 'all'],
     [28000, 28300, 'cw_digi'], [28300, 29700, 'phone'], [50000, 54000, 'all'],
+    [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
   us_advanced: [
     [1800, 2000, 'all'], [3525, 3600, 'cw_digi'], [3700, 4000, 'phone'],
@@ -2568,6 +2940,7 @@ const PRIVILEGE_RANGES = {
     [14025, 14150, 'cw_digi'], [14175, 14350, 'phone'], [18068, 18168, 'all'],
     [21025, 21200, 'cw_digi'], [21225, 21450, 'phone'], [24890, 24990, 'all'],
     [28000, 28300, 'cw_digi'], [28300, 29700, 'phone'], [50000, 54000, 'all'],
+    [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
   us_general: [
     [1800, 2000, 'all'], [3525, 3600, 'cw_digi'], [3800, 4000, 'phone'],
@@ -2575,27 +2948,29 @@ const PRIVILEGE_RANGES = {
     [14025, 14150, 'cw_digi'], [14225, 14350, 'phone'], [18068, 18168, 'all'],
     [21025, 21200, 'cw_digi'], [21275, 21450, 'phone'], [24890, 24990, 'all'],
     [28000, 28300, 'cw_digi'], [28300, 29700, 'phone'], [50000, 54000, 'all'],
+    [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
   us_technician: [
     [3525, 3600, 'cw_digi'], [7025, 7125, 'cw_digi'], [21025, 21200, 'cw_digi'],
     [28000, 28300, 'cw_digi'], [28300, 28500, 'phone'], [50000, 54000, 'all'],
+    [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
   ca_basic: [
-    [50000, 54000, 'all'],
+    [50000, 54000, 'all'], [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
   ca_honours: [
     [1800, 2000, 'all'], [3500, 4000, 'all'], [7000, 7300, 'all'],
     [10100, 10150, 'all'], [14000, 14350, 'all'], [18068, 18168, 'all'],
     [21000, 21450, 'all'], [24890, 24990, 'all'], [28000, 29700, 'all'],
-    [50000, 54000, 'all'],
+    [50000, 54000, 'all'], [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
 };
 
 const SOURCE_LABELS = {
   pota: 'POTA', sota: 'SOTA', dxc: 'DX', rbn: 'RBN',
-  wwff: 'WWFF', llota: 'LLOTA', pskr: 'FreeDV',
+  wwff: 'WWFF', llota: 'LLOTA', pskr: 'FreeDV', net: 'NET',
 };
-const CW_DIGI_MODES = new Set(['CW', 'FT8', 'FT4', 'RTTY', 'DIGI', 'JS8', 'PSK31', 'PSK']);
+const CW_DIGI_MODES = new Set(['CW', 'FT8', 'FT4', 'FT2', 'RTTY', 'DIGI', 'JS8', 'PSK31', 'PSK']);
 const PHONE_MODES = new Set(['SSB', 'USB', 'LSB', 'FM', 'AM']);
 
 function isOutOfPrivilege(freqKhz, mode, cls) {
@@ -2661,17 +3036,19 @@ function updateMapMarkers(filtered) {
     const watched = watchlist.has(s.callsign.toUpperCase());
 
     const sourceLabel = (s.source || 'pota').toUpperCase();
-    const sourceColor = s.source === 'sota' ? '#f0a500' : s.source === 'dxc' ? '#e040fb' : s.source === 'rbn' ? '#00bcd4' : s.source === 'wwff' ? '#26a69a' : s.source === 'llota' ? '#42a5f5' : s.source === 'pskr' ? '#ff6b6b' : '#4ecca3';
+    const sourceColor = SOURCE_COLORS_ACTIVE[s.source] || SOURCE_COLORS_ACTIVE.pota;
     const logBtnHtml = enableLogging
       ? ` <button class="log-popup-btn" data-call="${s.callsign}" data-freq="${s.frequency}" data-mode="${s.mode}" data-ref="${s.reference || ''}" data-name="${(s.parkName || '').replace(/"/g, '&quot;')}" data-source="${s.source || ''}" data-wwff-ref="${s.wwffReference || ''}" data-wwff-name="${(s.wwffParkName || '').replace(/"/g, '&quot;')}">Log</button>`
       : '';
     const mapNewPark = workedParksSet.size > 0 && (s.source === 'pota' || s.source === 'wwff') && s.reference && !workedParksSet.has(s.reference);
-    const newBadge = mapNewPark ? ' <span style="background:#4ecca3;color:#000;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;">NEW</span>' : '';
-    const expeditionBadge = expeditionCallsigns.has(s.callsign.toUpperCase()) ? ' <span style="background:#ff1744;color:#fff;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;">DXP</span>' : '';
+    const newBadge = mapNewPark ? ` <span style="background:${SOURCE_COLORS_ACTIVE.pota};color:#000;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;">NEW</span>` : '';
+    const expMeta = expeditionMeta.get(s.callsign.toUpperCase());
+    const expTitle = expMeta ? `DX Expedition: ${expMeta.entity}` : 'DX Expedition';
+    const expeditionBadge = enableDxe && expeditionCallsigns.has(s.callsign.toUpperCase()) ? ` <span style="background:#ff1744;color:#fff;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;" title="${expTitle}">DXP</span>` : '';
     const mapEvent = getEventForCallsign(s.callsign);
     const eventBadgeHtml = mapEvent ? ` <span style="background:${mapEvent.badgeColor || '#ff6b00'};color:#fff;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;">${mapEvent.badge || 'EVT'}</span>` : '';
-    const wwffBadge = s.wwffReference ? ` <span style="background:#26a69a;color:#000;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;">WWFF</span>` : '';
-    const wwffRefLine = s.wwffReference ? `<br><b>${s.wwffReference}</b> ${s.wwffParkName || ''} <span style="color:#26a69a;font-size:11px;">[WWFF]</span>` : '';
+    const wwffBadge = s.wwffReference ? ` <span style="background:${SOURCE_COLORS_ACTIVE.wwff};color:#000;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;">WWFF</span>` : '';
+    const wwffRefLine = s.wwffReference ? `<br><b>${s.wwffReference}</b> ${s.wwffParkName || ''} <span style="color:${SOURCE_COLORS_ACTIVE.wwff};font-size:11px;">[WWFF]</span>` : '';
     const qrzOp = qrzData.get(s.callsign.toUpperCase().split('/')[0]);
     const opName = qrzDisplayName(qrzOp);
     const opLine = opName ? `<span style="color:#b0bec5;font-size:11px;">${opName}</span><br>` : '';
@@ -2686,14 +3063,8 @@ function updateMapMarkers(filtered) {
     // Pin color matches source: POTA green, SOTA orange, DXC purple, etc.
     const oop = isOutOfPrivilege(parseFloat(s.frequency), s.mode, licenseClass);
     const worked = workedQsos.has(s.callsign.toUpperCase());
-    const isExpedition = expeditionCallsigns.has(s.callsign.toUpperCase());
-    const sourceIcon = s.source === 'sota' ? sotaIcon
-      : s.source === 'rbn' ? rbnIcon
-      : s.source === 'wwff' ? wwffIcon
-      : s.source === 'llota' ? llotaIcon
-      : s.source === 'dxc' ? dxcIcon
-      : s.source === 'pskr' ? pskrIcon
-      : potaIcon;
+    const isExpedition = enableDxe && expeditionCallsigns.has(s.callsign.toUpperCase());
+    const sourceIcon = sourceIcons[s.source] || sourceIcons.pota;
     const markerOptions = isExpedition
       ? { icon: expeditionIcon, zIndexOffset: 500 }
       : oop
@@ -2754,7 +3125,7 @@ function bindPopupClickHandlers(mapInstance) {
 // --- Scan ---
 function getScanList() {
   const filtered = sortSpots(getFiltered());
-  return filtered.filter((s) => !scanSkipped.has(s.frequency) && !isWorkedSpot(s));
+  return filtered.filter((s) => s.source !== 'net' && !scanSkipped.has(s.frequency) && !isWorkedSpot(s));
 }
 
 function startScan() {
@@ -2904,19 +3275,19 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   // Ctrl+A — Prevent select-all
-  if (e.key === 'a' && (e.ctrlKey || e.metaKey) && !e.target.matches('input, select, textarea')) {
+  if (e.key.toLowerCase() === 'a' && (e.ctrlKey || e.metaKey) && !e.target.matches('input, select, textarea')) {
     e.preventDefault();
     return;
   }
   // Ctrl+M — Multi-park dialog (activator mode)
-  if (e.key === 'm' && (e.ctrlKey || e.metaKey) && appMode === 'activator') {
+  if (e.key.toLowerCase() === 'm' && (e.ctrlKey || e.metaKey) && appMode === 'activator') {
     e.preventDefault();
     const context = document.activeElement === document.getElementById('activator-hunter-park') ? 'hunter' : 'my';
     openMultiparkDialog(context);
     return;
   }
   // Alt+R — Reload last entry (activator mode)
-  if (e.key === 'r' && e.altKey && appMode === 'activator' && activationActive && activatorContacts.length > 0) {
+  if (e.key.toLowerCase() === 'r' && e.altKey && appMode === 'activator' && activationActive && activatorContacts.length > 0) {
     e.preventDefault();
     const last = activatorContacts[activatorContacts.length - 1];
     activatorCallsignInput.value = last.callsign;
@@ -2926,13 +3297,13 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   // Ctrl+R / Cmd+R — Quick re-spot
-  if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
+  if (e.key.toLowerCase() === 'r' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     openQuickRespot();
     return;
   }
   // Ctrl+L / Cmd+L — Quick Log (unspotted QSO)
-  if (e.key === 'l' && (e.ctrlKey || e.metaKey)) {
+  if (e.key.toLowerCase() === 'l' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     openQuickLog();
     return;
@@ -2960,10 +3331,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // --- Quick Re-spot (Ctrl+R) ---
-const SOURCE_COLORS = {
-  pota: '#4ecca3', sota: '#f0a500', wwff: '#26a69a',
-  llota: '#42a5f5', dxc: '#e040fb', rbn: '#00bcd4', pskr: '#ff6b6b'
-};
+// SOURCE_COLORS is now managed by SOURCE_COLORS_ACTIVE (see colorblind palettes above)
 const RESPOT_NAMES = { pota: 'POTA', wwff: 'WWFF', llota: 'LLOTA', dxc: 'DX Cluster' };
 
 function getRespotTargets(s) {
@@ -3019,8 +3387,8 @@ async function openQuickRespot() {
   const bar = document.getElementById('respot-network-bar');
   const labels = targets.map(t => RESPOT_NAMES[t]);
   bar.textContent = (targets.includes('dxc') ? 'Spotting to ' : 'Re-spotting to ') + labels.join(' & ');
-  bar.style.borderColor = SOURCE_COLORS[targets[0]];
-  bar.style.color = SOURCE_COLORS[targets[0]];
+  bar.style.borderColor = SOURCE_COLORS_ACTIVE[targets[0]];
+  bar.style.color = SOURCE_COLORS_ACTIVE[targets[0]];
   dlg.dataset.targets = JSON.stringify(targets);
 
   // Comment template — pick based on network type
@@ -3179,6 +3547,112 @@ document.getElementById('dx-command-send').addEventListener('click', sendDxComma
   });
 });
 
+// --- Log Type Picker ---
+const LOG_TYPE_SOURCE_MAP = { pota: 'pota', sota: 'sota', wwff: 'wwff', llota: 'llota', dx: 'dxc' };
+const LOG_TYPE_PLACEHOLDERS = { pota: 'e.g. US-1234 or US-1234, US-5678', sota: 'e.g. W6/CT-001', wwff: 'e.g. KFF-1234 or KFF-1234, KFF-5678', llota: 'e.g. US-0001 or US-0001, US-0002' };
+
+function selectLogType(type) {
+  logSelectedType = type;
+  logTypePicker.querySelectorAll('.log-type-chip').forEach(chip => {
+    const ct = chip.dataset.type;
+    const isActive = ct === type;
+    chip.classList.toggle('active', isActive);
+    if (isActive) {
+      const color = ct === 'dx' ? SOURCE_COLORS_ACTIVE.dxc : SOURCE_COLORS_ACTIVE[ct] || '#888';
+      chip.style.borderColor = color;
+      chip.style.color = color;
+    } else {
+      chip.style.borderColor = '';
+      chip.style.color = '';
+    }
+  });
+  // Show/hide reference input (not for DX or no selection)
+  const showRef = type && type !== 'dx';
+  logRefInputSection.classList.toggle('hidden', !showRef);
+  if (showRef) {
+    logRefInput.placeholder = LOG_TYPE_PLACEHOLDERS[type] || '';
+  }
+  if (!showRef) {
+    logRefInput.value = '';
+    logRefName.textContent = '';
+  }
+  updateLogRespot();
+}
+
+function updateLogRespot() {
+  const respotSection = document.getElementById('log-respot-section');
+  const respotCheckbox = document.getElementById('log-respot');
+  const respotLabel = document.getElementById('log-respot-label');
+  const respotComment = document.getElementById('log-respot-comment');
+  const respotCommentLabel = document.getElementById('log-respot-comment-label');
+  const ref = logRefInput.value.trim().toUpperCase();
+  const targets = [];
+  if (!myCallsign) { /* no respot without callsign */ }
+  else if (logSelectedType === 'pota' && ref) {
+    targets.push('pota');
+    // Check for dual-park WWFF
+    if (currentLogSpot && currentLogSpot.wwffReference) targets.push('wwff');
+  } else if (logSelectedType === 'wwff' && ref) {
+    targets.push('wwff');
+  } else if (logSelectedType === 'llota' && ref) {
+    targets.push('llota');
+  } else if (logSelectedType === 'dx' && clusterConnected) {
+    targets.push('dxc');
+  }
+
+  if (targets.length) {
+    respotSection.classList.remove('hidden');
+    respotSection.dataset.targets = JSON.stringify(targets);
+    const labelNames = targets.map(t => RESPOT_NAMES[t]).join(' & ');
+    const verb = targets.includes('dxc') ? 'Spot on ' : 'Re-spot on ';
+    const inputEl = respotLabel.querySelector('input');
+    let labelTextNode = inputEl.nextSibling;
+    if (!labelTextNode || labelTextNode.nodeType !== 3) {
+      labelTextNode = document.createTextNode('');
+      respotLabel.appendChild(labelTextNode);
+    }
+    labelTextNode.textContent = ' ' + verb + labelNames;
+    respotLabel.style.color = SOURCE_COLORS_ACTIVE[targets[0]];
+    respotCheckbox.checked = respotDefault;
+    respotComment.value = targets.includes('dxc') ? dxRespotTemplate : respotTemplate;
+    respotCommentLabel.style.display = respotCheckbox.checked ? '' : 'none';
+    respotCheckbox.onchange = () => { respotCommentLabel.style.display = respotCheckbox.checked ? '' : 'none'; };
+  } else {
+    respotSection.classList.add('hidden');
+    respotSection.dataset.targets = '[]';
+    respotCheckbox.checked = false;
+  }
+}
+
+// Type chip click handlers
+logTypePicker.addEventListener('click', (e) => {
+  const chip = e.target.closest('.log-type-chip');
+  if (!chip) return;
+  const type = chip.dataset.type;
+  selectLogType(logSelectedType === type ? '' : type);
+});
+
+// Debounced reference lookup — supports comma-separated refs
+let logRefLookupTimer = null;
+logRefInput.addEventListener('input', () => {
+  clearTimeout(logRefLookupTimer);
+  const raw = logRefInput.value.trim().toUpperCase();
+  if (raw.length < 3) { logRefName.textContent = ''; updateLogRespot(); return; }
+  logRefLookupTimer = setTimeout(async () => {
+    const refs = raw.split(',').map(r => r.trim()).filter(Boolean);
+    const names = [];
+    for (const ref of refs) {
+      if (ref.length < 3) continue;
+      try {
+        const park = await window.api.getPark(ref);
+        if (park && park.name) names.push(`${ref}: ${park.name}`);
+      } catch { /* skip */ }
+    }
+    logRefName.textContent = names.join('\n');
+    updateLogRespot();
+  }, 400);
+});
+
 // --- Quick Log (Ctrl+L) ---
 let quickLogLookupTimer = null;
 
@@ -3203,7 +3677,7 @@ function openQuickLog() {
   logCallsign.value = '';
   logCallsign.readOnly = false;
   logOpName.value = '';
-  logRefDisplay.classList.add('hidden');
+  selectLogType('');
   logCallsign.focus();
 }
 
@@ -3233,6 +3707,15 @@ logCallsign.addEventListener('input', () => {
 // --- QSO Log Pop-out (F2) ---
 window.api.onQsoPopoutStatus((open) => {
   qsoPopoutOpen = open;
+});
+
+// --- Cluster Terminal Pop-out ---
+window.api.onClusterPopoutStatus((open) => {
+  clusterPopoutOpen = open;
+});
+
+clusterTerminalBtn.addEventListener('click', () => {
+  window.api.clusterPopoutOpen();
 });
 
 // --- Spots Pop-out ---
@@ -3484,7 +3967,8 @@ function enrichSpotsForPopout(filtered) {
     ...s,
     isWorked: workedQsos.has(s.callsign.toUpperCase()),
     isWorkedToday: workedQsos.has(s.callsign.toUpperCase()) && isWorkedSpot(s),
-    isExpedition: expeditionCallsigns.has(s.callsign.toUpperCase()),
+    isExpedition: enableDxe && expeditionCallsigns.has(s.callsign.toUpperCase()),
+    expeditionEntity: (expeditionMeta.get(s.callsign.toUpperCase()) || {}).entity || '',
     isNewPark: workedParksSet.size > 0 && (s.source === 'pota' || s.source === 'wwff') && s.reference && !workedParksSet.has(s.reference),
     isOop: isOutOfPrivilege(parseFloat(s.frequency), s.mode, licenseClass),
     isWatched: watchlist.has(s.callsign.toUpperCase()),
@@ -3543,7 +4027,7 @@ splitSplitterEl.addEventListener('mousedown', (e) => {
 });
 
 // --- DXCC Matrix Rendering ---
-const DXCC_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'];
+const DXCC_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m', '70cm'];
 
 function isEntityConfirmedOnBand(ent, band, modeFilter) {
   const modes = ent.confirmed[band];
@@ -3689,7 +4173,8 @@ function render() {
       if (s.source === 'wwff') tr.classList.add('spot-wwff');
       if (s.source === 'llota') tr.classList.add('spot-llota');
       if (s.source === 'pskr') tr.classList.add('spot-pskr');
-      if (expeditionCallsigns.has(s.callsign.toUpperCase())) tr.classList.add('spot-expedition');
+      if (s.source === 'net') tr.classList.add('spot-net');
+      if (enableDxe && expeditionCallsigns.has(s.callsign.toUpperCase())) tr.classList.add('spot-expedition');
       if (s.comments && /POTA.?CAT/i.test(s.comments)) tr.classList.add('potacat-respot');
 
       // License privilege check
@@ -3741,18 +4226,20 @@ function render() {
       // Build all cells into a map keyed by data-col, then append in colOrder
       const cellMap = new Map();
 
-      // Log button cell
+      // Log button cell (hidden for net spots)
       const logTd = document.createElement('td');
       logTd.className = 'log-cell log-col';
       logTd.setAttribute('data-col', 'log');
-      const logButton = document.createElement('button');
-      logButton.className = 'log-btn';
-      logButton.textContent = isCompact ? 'L' : 'Log';
-      logButton.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openLogPopup(s);
-      });
-      logTd.appendChild(logButton);
+      if (s.source !== 'net') {
+        const logButton = document.createElement('button');
+        logButton.className = 'log-btn';
+        logButton.textContent = isCompact ? 'L' : 'Log';
+        logButton.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openLogPopup(s);
+        });
+        logTd.appendChild(logButton);
+      }
       cellMap.set('log', logTd);
 
       // Callsign cell — clickable link to QRZ
@@ -3793,12 +4280,22 @@ function render() {
         paw.textContent = '\uD83D\uDC3E';
         callTd.appendChild(paw);
       }
-      if (expeditionCallsigns.has(s.callsign.toUpperCase())) {
+      if (enableDxe && expeditionCallsigns.has(s.callsign.toUpperCase())) {
         const dxp = document.createElement('span');
         dxp.className = 'expedition-badge';
-        dxp.title = 'DX Expedition (Club Log)';
+        const meta = expeditionMeta.get(s.callsign.toUpperCase());
+        dxp.title = meta
+          ? `DX Expedition: ${meta.entity}${meta.startDate ? ` (${meta.startDate} – ${meta.endDate})` : ''}`
+          : 'DX Expedition (Club Log)';
         dxp.textContent = 'DXP';
         callTd.appendChild(dxp);
+      }
+      if (s.source === 'net') {
+        const netBadge = document.createElement('span');
+        netBadge.className = 'net-badge';
+        netBadge.title = 'Scheduled Net';
+        netBadge.textContent = 'NET';
+        callTd.appendChild(netBadge);
       }
       // Event badge (e.g. "250" for America 250 WAS)
       const matchedEvent = getEventForCallsign(s.callsign);
@@ -3853,8 +4350,8 @@ function render() {
         { val: (s.lat != null && s.lon != null) ? latLonToGridLocal(s.lat, s.lon).slice(0, 4) : '', col: 'grid' },
         { val: formatDistance(s.distance), col: 'distance' },
         { val: formatBearing(s.bearing), cls: 'bearing-col', col: 'bearing' },
-        { val: formatAge(s.spotTime), col: 'spotTime' },
-        { val: s.comments || '', col: 'comments' },
+        { val: s.source === 'net' ? (s.comments || '') : formatAge(s.spotTime), col: 'spotTime' },
+        { val: s.source === 'net' ? '' : (s.comments || ''), col: 'comments' },
       ];
 
       for (const cell of cells) {
@@ -3866,13 +4363,13 @@ function render() {
         if (cell.newPark) {
           const nb = document.createElement('span');
           nb.textContent = 'NEW';
-          nb.style.cssText = 'background:#4ecca3;color:#000;font-size:9px;font-weight:bold;padding:1px 3px;border-radius:3px;margin-left:4px;';
+          nb.style.cssText = `background:${SOURCE_COLORS_ACTIVE.pota};color:#000;font-size:9px;font-weight:bold;padding:1px 3px;border-radius:3px;margin-left:4px;`;
           td.appendChild(nb);
         }
         if (cell.wwff) {
           const badge = document.createElement('span');
           badge.textContent = 'WWFF';
-          badge.style.cssText = 'background:#26a69a;color:#000;font-size:9px;font-weight:bold;padding:1px 3px;border-radius:3px;margin-left:4px;';
+          badge.style.cssText = `background:${SOURCE_COLORS_ACTIVE.wwff};color:#000;font-size:9px;font-weight:bold;padding:1px 3px;border-radius:3px;margin-left:4px;`;
           td.appendChild(badge);
         }
         cellMap.set(cell.col, td);
@@ -3948,14 +4445,15 @@ function formatAge(isoStr) {
 }
 
 // --- QSO Logging ---
-const CW_DIGI_MODES_SET = new Set(['CW', 'FT8', 'FT4', 'RTTY', 'DIGI', 'JS8', 'PSK31', 'PSK']);
+const CW_DIGI_MODES_SET = new Set(['CW', 'FT8', 'FT4', 'FT2', 'RTTY', 'DIGI', 'JS8', 'PSK31', 'PSK']);
 
 // Band lookup for ADIF (frequency in kHz → band string)
 const BAND_RANGES = [
   [1800, 2000, '160m'], [3500, 4000, '80m'], [5330, 5410, '60m'],
   [7000, 7300, '40m'], [10100, 10150, '30m'], [14000, 14350, '20m'],
   [18068, 18168, '17m'], [21000, 21450, '15m'], [24890, 24990, '12m'],
-  [28000, 29700, '10m'], [50000, 54000, '6m'],
+  [28000, 29700, '10m'], [50000, 54000, '6m'], [144000, 148000, '2m'],
+  [420000, 450000, '70cm'],
 ];
 
 function freqKhzToBand(khz) {
@@ -3967,6 +4465,14 @@ function freqKhzToBand(khz) {
 }
 
 let currentLogSpot = null;
+
+/** Parse comma-separated park refs from the reference input.
+ *  Returns { primary, additional } where additional is the 2nd+ refs. */
+function parseRefParks() {
+  const raw = logRefInput.value.trim().toUpperCase();
+  const refs = raw.split(',').map(r => r.trim()).filter(Boolean);
+  return { primary: refs[0] || '', additional: refs.slice(1) };
+}
 
 function openLogPopup(spot) {
   currentLogSpot = spot;
@@ -4005,49 +4511,18 @@ function openLogPopup(spot) {
   if (n1mmSentEl) n1mmSentEl.maxLength = rstMaxLen;
   if (n1mmRcvdEl) n1mmRcvdEl.maxLength = rstMaxLen;
 
-  // Show park/summit reference if applicable
-  if (spot.reference) {
-    const sig = spot.source === 'sota' ? 'SOTA' : spot.source === 'pota' ? 'POTA' : spot.source === 'wwff' ? 'WWFF' : spot.source === 'llota' ? 'LLOTA' : '';
-    logRefDisplay.textContent = sig ? `${sig}: ${spot.reference}` : spot.reference;
-    if (spot.parkName) logRefDisplay.textContent += ` — ${spot.parkName}`;
-    if (spot.wwffReference) logRefDisplay.textContent += `\nWWFF: ${spot.wwffReference}` + (spot.wwffParkName ? ` — ${spot.wwffParkName}` : '');
-    logRefDisplay.classList.remove('hidden');
-  } else {
-    logRefDisplay.classList.add('hidden');
+  // Type picker: map spot source to chip type
+  const sourceToType = { pota: 'pota', sota: 'sota', wwff: 'wwff', llota: 'llota', dxc: 'dx' };
+  const mappedType = sourceToType[spot.source] || '';
+  // Pre-fill reference before selectLogType so respot can see it
+  logRefInput.value = spot.reference || '';
+  logRefName.textContent = spot.parkName || '';
+  if (spot.wwffReference) {
+    logRefName.textContent += (logRefName.textContent ? '\n' : '') + 'WWFF: ' + spot.wwffReference + (spot.wwffParkName ? ' — ' + spot.wwffParkName : '');
   }
+  selectLogType(mappedType);
 
   logComment.value = '';
-
-  // Re-spot section: single checkbox, auto-determined by spot source
-  const respotSection = document.getElementById('log-respot-section');
-  const respotCheckbox = document.getElementById('log-respot');
-  const respotLabel = document.getElementById('log-respot-label');
-  const respotComment = document.getElementById('log-respot-comment');
-  const respotCommentLabel = document.getElementById('log-respot-comment-label');
-  const targets = myCallsign ? getRespotTargets(spot) : [];
-  if (targets.length) {
-    respotSection.classList.remove('hidden');
-    respotSection.dataset.targets = JSON.stringify(targets);
-    const labelNames = targets.map(t => RESPOT_NAMES[t]).join(' & ');
-    const verb = targets.includes('dxc') ? 'Spot on ' : 'Re-spot on ';
-    // Update checkbox label text — find the text node after the <input>
-    const inputEl = respotLabel.querySelector('input');
-    let labelTextNode = inputEl.nextSibling;
-    if (!labelTextNode || labelTextNode.nodeType !== 3) {
-      labelTextNode = document.createTextNode('');
-      respotLabel.appendChild(labelTextNode);
-    }
-    labelTextNode.textContent = ' ' + verb + labelNames;
-    respotLabel.style.color = SOURCE_COLORS[targets[0]];
-    respotCheckbox.checked = respotDefault;
-    respotComment.value = targets.includes('dxc') ? dxRespotTemplate : respotTemplate;
-    respotCommentLabel.style.display = respotCheckbox.checked ? '' : 'none';
-    respotCheckbox.onchange = () => { respotCommentLabel.style.display = respotCheckbox.checked ? '' : 'none'; };
-  } else {
-    respotSection.classList.add('hidden');
-    respotSection.dataset.targets = '[]';
-    respotCheckbox.checked = false;
-  }
 
   logDialog.showModal();
   // Focus RST Sent so user can immediately type signal report
@@ -4170,18 +4645,20 @@ logSaveBtn.addEventListener('click', async () => {
   const timeOn = time.replace(':', '');     // HHMM
   const band = freqKhzToBand(frequency);
 
-  // Determine SIG/SIG_INFO and program-specific ref fields from spot
+  // Determine SIG/SIG_INFO from type picker + reference input
+  // Supports comma-separated refs for two-fer/three-fer (e.g. US-1234, US-5678)
   let sig = '';
   let sigInfo = '';
   let potaRef = '';
   let sotaRef = '';
   let wwffRef = '';
-  if (currentLogSpot && currentLogSpot.reference) {
-    if (currentLogSpot.source === 'pota') { sig = 'POTA'; potaRef = currentLogSpot.reference; }
-    else if (currentLogSpot.source === 'sota') { sig = 'SOTA'; sotaRef = currentLogSpot.reference; }
-    else if (currentLogSpot.source === 'wwff') { sig = 'WWFF'; wwffRef = currentLogSpot.reference; }
-    else if (currentLogSpot.source === 'llota') sig = 'LLOTA';
-    sigInfo = currentLogSpot.reference;
+  const { primary: typedRef, additional: addlParks } = parseRefParks();
+  if (logSelectedType && typedRef) {
+    if (logSelectedType === 'pota') { sig = 'POTA'; potaRef = typedRef; }
+    else if (logSelectedType === 'sota') { sig = 'SOTA'; sotaRef = typedRef; }
+    else if (logSelectedType === 'wwff') { sig = 'WWFF'; wwffRef = typedRef; }
+    else if (logSelectedType === 'llota') sig = 'LLOTA';
+    sigInfo = typedRef;
   }
   // Dual-park: POTA spot that's also a WWFF park
   if (currentLogSpot && currentLogSpot.wwffReference) {
@@ -4212,7 +4689,7 @@ logSaveBtn.addEventListener('click', async () => {
   }
 
   // Determine WWFF reference for respot
-  const respotWwffRef = currentLogSpot ? (currentLogSpot.wwffReference || (currentLogSpot.source === 'wwff' ? currentLogSpot.reference : '')) : '';
+  const respotWwffRef = (currentLogSpot && currentLogSpot.wwffReference) ? currentLogSpot.wwffReference : (logSelectedType === 'wwff' ? typedRef : '');
   const commentText = respotComment.value.trim().replace(/\{rst\}/gi, getRstDigits('rst-sent-digits', '59')).replace(/\{QTH\}/gi, grid).replace(/\{mycallsign\}/gi, myCallsign);
 
   const rstSent = getRstDigits('rst-sent-digits', '59');
@@ -4224,6 +4701,20 @@ logSaveBtn.addEventListener('click', async () => {
   const origText = logSaveBtn.textContent;
   logSaveBtn.textContent = 'Saving\u2026';
   try {
+    // For POTA/WWFF spots, look up the park's actual location for state/grid/country
+    let parkLocState = '', parkLocGrid = '', parkLocCountry = '';
+    if (sig === 'POTA' && potaRef) {
+      try {
+        const parkData = await window.api.getPark(potaRef);
+        if (parkData) {
+          // locationDesc is e.g. "US-ME", "VE-ON" — extract state portion after dash
+          const locParts = (parkData.locationDesc || '').split('-');
+          if (locParts.length >= 2) parkLocState = locParts.slice(1).join('-');
+          parkLocGrid = parkData.grid || '';
+        }
+      } catch {}
+    }
+
     let lastResult = null;
     for (let ci = 0; ci < callsigns.length; ci++) {
       const cs = callsigns[ci];
@@ -4245,9 +4736,11 @@ logSaveBtn.addEventListener('click', async () => {
         sotaRef,
         wwffRef,
         name: logQrzInfo ? [cleanQrzName(logQrzInfo.nickname) || cleanQrzName(logQrzInfo.fname), cleanQrzName(logQrzInfo.name)].filter(Boolean).join(' ') : '',
-        state: logQrzInfo ? logQrzInfo.state : '',
-        county: logQrzInfo && logQrzInfo.state && logQrzInfo.county ? `${logQrzInfo.state},${logQrzInfo.county}` : '',
-        gridsquare: logQrzInfo ? logQrzInfo.grid : '',
+        // For park/summit activators, use park location instead of QRZ home QTH
+        // For POTA activators, use the park's state/grid instead of QRZ home QTH
+        state: parkLocState || (!sig && logQrzInfo ? logQrzInfo.state : ''),
+        county: !parkLocState && !sig && logQrzInfo && logQrzInfo.state && logQrzInfo.county ? `${logQrzInfo.state},${logQrzInfo.county}` : '',
+        gridsquare: parkLocGrid || (logQrzInfo ? logQrzInfo.grid : ''),
         country: logQrzInfo ? logQrzInfo.country : '',
         comment: commentBase,
         // Only respot on the first callsign
@@ -4255,13 +4748,34 @@ logSaveBtn.addEventListener('click', async () => {
         wwffRespot: ci === 0 && wantsWwffRespot,
         wwffReference: ci === 0 && wantsWwffRespot ? respotWwffRef : '',
         llotaRespot: ci === 0 && wantsLlotaRespot,
-        llotaReference: ci === 0 && wantsLlotaRespot && currentLogSpot && currentLogSpot.source === 'llota' ? currentLogSpot.reference : '',
+        llotaReference: ci === 0 && wantsLlotaRespot && logSelectedType === 'llota' ? typedRef : '',
         dxcRespot: ci === 0 && wantsDxcRespot,
         respotComment: ci === 0 && (wantsRespot || wantsWwffRespot || wantsLlotaRespot || wantsDxcRespot) ? commentText : '',
       };
 
       lastResult = await window.api.saveQso(qsoData);
       if (!lastResult.success) break;
+
+      // Save additional park records (two-fer / three-fer) from comma-separated refs
+      for (const addlRef of addlParks) {
+        const addlComment = [logComment.value.trim(), `[${sig} ${addlRef}]`].filter(Boolean).join(' ');
+        const addlData = {
+          ...qsoData,
+          sigInfo: addlRef,
+          potaRef: sig === 'POTA' ? addlRef : qsoData.potaRef,
+          wwffRef: sig === 'WWFF' ? addlRef : qsoData.wwffRef,
+          comment: addlComment,
+          respot: false,
+          wwffRespot: false,
+          llotaRespot: false,
+          dxcRespot: false,
+          respotComment: '',
+          skipLogbookForward: true,
+        };
+        const addlResult = await window.api.saveQso(addlData);
+        if (!addlResult.success) { lastResult = addlResult; break; }
+      }
+      if (lastResult && !lastResult.success) break;
     }
 
     const displayCalls = callsigns.join(', ');
@@ -4400,6 +4914,7 @@ function syncSpotsPanel() {
   spotsCluster.checked = enableCluster;
   spotsRbn.checked = enableRbn;
   spotsPskr.checked = enablePskr;
+  spotsDxe.checked = enableDxe;
   spotsHideWorked.checked = hideWorked;
   spotsHideParks.checked = hideWorkedParks;
   spotsHideOob.checked = hideOutOfBand;
@@ -4417,6 +4932,7 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
   enableCluster = spotsCluster.checked;
   enableRbn = spotsRbn.checked;
   enablePskr = spotsPskr.checked;
+  enableDxe = spotsDxe.checked;
 
   // DX Cluster and RBN require a callsign
   if (enableCluster && !myCallsign) {
@@ -4454,7 +4970,7 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
   // Save and let main process handle connect/disconnect
   await window.api.saveSettings({
     enablePota, enableSota, enableWwff, enableLlota,
-    enableCluster, enableRbn, enablePskr,
+    enableCluster, enableRbn, enablePskr, enableDxe,
     hideWorked, hideWorkedParks, hideOutOfBand,
     enableDxcc,
   });
@@ -4486,6 +5002,10 @@ const quickLightMode = document.getElementById('quick-light-mode');
 const quickActivatorMode = document.getElementById('quick-activator-mode');
 const openSettingsBtn = document.getElementById('open-settings-btn');
 
+settingsDropdown.querySelector('.settings-dropdown-panel').addEventListener('click', (e) => {
+  e.stopPropagation();
+});
+
 settingsBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   document.querySelectorAll('.multi-dropdown.open').forEach((d) => {
@@ -4497,6 +5017,7 @@ settingsBtn.addEventListener('click', (e) => {
     // Sync switches to current state
     quickLightMode.checked = document.documentElement.getAttribute('data-theme') === 'light';
     quickActivatorMode.checked = appMode === 'activator';
+    refreshEchoCatInfo();
   }
 });
 
@@ -4508,6 +5029,7 @@ quickLightMode.addEventListener('change', async () => {
   if (qsoPopoutOpen) window.api.sendQsoPopoutTheme(light ? 'light' : 'dark');
   if (actmapPopoutOpen) window.api.actmapPopoutTheme(light ? 'light' : 'dark');
   if (spotsPopoutOpen) window.api.sendSpotsPopoutTheme(light ? 'light' : 'dark');
+  if (clusterPopoutOpen) window.api.sendClusterPopoutTheme(light ? 'light' : 'dark');
   await window.api.saveSettings({ lightMode: light });
 });
 
@@ -4523,6 +5045,71 @@ openSettingsBtn.addEventListener('click', () => {
   settingsDropdown.classList.remove('open');
   closeActivatorSettingsPanel();
   openSettingsDialog();
+});
+
+// ECHOCAT quick toggle
+const quickEchoCat = document.getElementById('quick-echo-cat');
+const echoCatInfo = document.getElementById('echo-cat-info');
+const echoCatUrl = document.getElementById('echo-cat-url');
+const echoCatToken = document.getElementById('echo-cat-token');
+const echoCatCopy = document.getElementById('echo-cat-copy');
+
+async function refreshEchoCatInfo() {
+  const s = await window.api.getSettings();
+  const on = s.enableRemote === true;
+  quickEchoCat.checked = on;
+  echoCatInfo.classList.toggle('hidden', !on);
+  if (on) {
+    const port = s.remotePort || 7300;
+    const token = s.remoteToken || '';
+    const ips = await window.api.getLocalIPs();
+    const best = ips.find(ip => ip.tailscale) || ips[0];
+    if (best) {
+      echoCatUrl.innerHTML = `<span class="echo-cat-ip">https://${best.address}:${port}</span>`;
+    } else {
+      echoCatUrl.textContent = 'No network found';
+    }
+    const requireToken = s.remoteRequireToken !== false;
+    const tokenRow = echoCatToken.closest('.echo-cat-token-row');
+    if (requireToken && token) {
+      echoCatToken.textContent = token;
+      if (tokenRow) tokenRow.classList.remove('hidden');
+    } else {
+      echoCatToken.textContent = '';
+      if (tokenRow) tokenRow.classList.add('hidden');
+    }
+  }
+}
+
+quickEchoCat.addEventListener('change', async () => {
+  const on = quickEchoCat.checked;
+  enableRemote = on;
+  setEnableRemote.checked = on;
+  remoteConfig.classList.toggle('hidden', !on);
+  echoCatInfo.classList.toggle('hidden', !on);
+  await window.api.saveSettings({ enableRemote: on });
+  if (on) {
+    await populateRemoteURLs();
+    await refreshEchoCatInfo();
+  }
+  updateSettingsConnBar();
+});
+
+echoCatCopy.addEventListener('click', async () => {
+  const s = await window.api.getSettings();
+  const port = s.remotePort || 7300;
+  const token = s.remoteToken || '';
+  const ips = await window.api.getLocalIPs();
+  const best = ips.find(ip => ip.tailscale) || ips[0];
+  const url = best ? `https://${best.address}:${port}` : '';
+  const requireToken = s.remoteRequireToken !== false;
+  const text = (requireToken && token) ? `${url}\nToken: ${token}` : url;
+  try {
+    await navigator.clipboard.writeText(text);
+    echoCatCopy.textContent = 'Copied!';
+    echoCatCopy.classList.add('copied');
+    setTimeout(() => { echoCatCopy.textContent = 'Copy'; echoCatCopy.classList.remove('copied'); }, 1500);
+  } catch {}
 });
 
 // Settings dialog
@@ -4561,6 +5148,33 @@ async function openSettingsDialog() {
   setQrzPassword.value = s.qrzPassword || '';
   setQrzFullName.checked = s.qrzFullName === true;
   qrzConfig.classList.toggle('hidden', !s.enableQrz);
+  // QRZ Logbook
+  setQrzLogbook.checked = s.qrzLogbook === true;
+  setQrzApiKey.value = s.qrzApiKey || '';
+  qrzLogbookConfig.classList.toggle('hidden', !s.qrzLogbook);
+  updateQrzLogbookVisibility();
+  // Auto-check subscription status on load if QRZ is enabled with credentials
+  if (s.enableQrz && s.qrzUsername && s.qrzPassword) {
+    window.api.qrzCheckSub().then(result => {
+      if (result.subscriber) {
+        qrzSubStatus.textContent = `XML Subscriber \u2014 expires ${result.expiry}`;
+        qrzSubStatus.style.color = '#4ecca3';
+        setQrzLogbook.disabled = false;
+      } else if (result.error) {
+        qrzSubStatus.textContent = result.error;
+        qrzSubStatus.style.color = '#e94560';
+      } else {
+        const msg = result.expiry && result.expiry !== 'non-subscriber'
+          ? `QRZ XML subscription expired (${result.expiry})`
+          : 'No active QRZ XML subscription';
+        qrzSubStatus.textContent = msg;
+        qrzSubStatus.style.color = '#e94560';
+        setQrzLogbook.disabled = true;
+        setQrzLogbook.checked = false;
+        qrzLogbookConfig.classList.add('hidden');
+      }
+    }).catch(() => {});
+  }
   setEnableCluster.checked = s.enableCluster === true;
   setShowBeacons.checked = s.showBeacons === true;
   setShowDxBar.checked = s.showDxBar === true;
@@ -4579,6 +5193,13 @@ async function openSettingsDialog() {
     currentClusterNodes = [{ id: Date.now().toString(36), name: preset ? preset.name : host, host, port, enabled: true, preset: preset ? preset.name : null }];
   }
   renderClusterNodeList(currentClusterNodes);
+  setEnableClusterTerminal.checked = s.enableClusterTerminal === true;
+  clusterTerminalBtn.classList.toggle('hidden', !s.enableClusterTerminal);
+  // Load net reminders
+  currentNetReminders = Array.isArray(s.netReminders) ? JSON.parse(JSON.stringify(s.netReminders)) : [];
+  renderNetList(currentNetReminders);
+  netEditor.classList.add('hidden');
+  netAddBtn.classList.remove('hidden');
   clusterConfig.classList.toggle('hidden', !s.enableCluster);
   rbnConfig.classList.toggle('hidden', !s.enableRbn);
   setEnableWsjtx.checked = s.enableWsjtx === true;
@@ -4603,6 +5224,7 @@ async function openSettingsDialog() {
   loggingConfig.classList.toggle('hidden', !s.enableLogging);
   logbookConfig.classList.toggle('hidden', !s.sendToLogbook);
   updateLogbookPortConfig();
+  setColorblind.checked = s.colorblindMode === true;
   setColorRows.checked = s.colorRows !== false; // default true
   setEnableSolar.checked = s.enableSolar === true;
   setEnableBandActivity.checked = s.enableBandActivity === true;
@@ -4641,6 +5263,21 @@ async function openSettingsDialog() {
       connectMidiDevice(setCwMidiDevice.value);
     });
   }
+  // ECHOCAT
+  enableRemote = s.enableRemote === true;
+  setEnableRemote.checked = enableRemote;
+  remoteConfig.classList.toggle('hidden', !enableRemote);
+  setRemotePort.value = s.remotePort || 7300;
+  const requireToken = s.remoteRequireToken !== false; // default true for existing users
+  setRemoteRequireToken.checked = requireToken;
+  remoteTokenRow.classList.toggle('hidden', !requireToken);
+  setRemoteToken.value = s.remoteToken || '';
+  setRemotePttTimeout.value = s.remotePttTimeout || 180;
+  if (enableRemote) {
+    populateRemoteURLs();
+  }
+  updateRemoteAudioSummary(s.remoteAudioInput, s.remoteAudioOutput);
+  updateSettingsConnBar();
   setDisableAutoUpdate.checked = s.disableAutoUpdate === true;
   setEnableTelemetry.checked = s.enableTelemetry === true;
   setLightMode.checked = s.lightMode === true;
@@ -4685,6 +5322,8 @@ settingsSave.addEventListener('click', async () => {
   const qrzUsername = setQrzUsername.value.trim().toUpperCase();
   const qrzPassword = setQrzPassword.value;
   const qrzFullNameEnabled = setQrzFullName.checked;
+  const qrzLogbookEnabled = setQrzLogbook.checked;
+  const qrzApiKeyVal = setQrzApiKey.value.trim();
   const myCallsign = setMyCallsign.value.trim().toUpperCase();
   let clusterEnabled = setEnableCluster.checked;
   let rbnEnabled = setEnableRbn.checked;
@@ -4706,10 +5345,13 @@ settingsSave.addEventListener('click', async () => {
   const showDxBarEnabled = setShowDxBar.checked;
   showDxBar = showDxBarEnabled;
   updateDxCommandBar();
+  const clusterTerminalEnabled = setEnableClusterTerminal.checked;
+  clusterTerminalBtn.classList.toggle('hidden', !clusterTerminalEnabled);
   const wsjtxEnabled = setEnableWsjtx.checked;
   const wsjtxPortVal = parseInt(setWsjtxPort.value, 10) || 2237;
   const wsjtxHighlightEnabled = setWsjtxHighlight.checked;
   const wsjtxAutoLogEnabled = setWsjtxAutoLog.checked;
+  const colorblindEnabled = setColorblind.checked;
   const colorRowsEnabled = setColorRows.checked;
   const solarEnabled = setEnableSolar.checked;
   const bandActivityEnabled = setEnableBandActivity.checked;
@@ -4737,6 +5379,13 @@ settingsSave.addEventListener('click', async () => {
   const tciHostVal = setTciHost.value.trim() || '127.0.0.1';
   const tciPortVal = parseInt(setTciPort.value, 10) || 50001;
   const tciMaxAgeVal = parseInt(setTciMaxAge.value, 10) || 0;
+  // ECHOCAT
+  const remoteEnabled = setEnableRemote.checked;
+  const remotePortVal = parseInt(setRemotePort.value, 10) || 7300;
+  const remoteRequireTokenVal = setRemoteRequireToken.checked;
+  const remoteTokenVal = setRemoteToken.value;
+  const remotePttTimeoutVal = parseInt(setRemotePttTimeout.value, 10) || 180;
+  // Audio comes from the active rig (resolved after selectedRig below)
   // CW Keyer
   const cwKeyerEnabled = setEnableCwKeyer.checked;
   const cwKeyerModeVal = setCwKeyerMode.value;
@@ -4790,6 +5439,8 @@ settingsSave.addEventListener('click', async () => {
     qrzUsername: qrzUsername,
     qrzPassword: qrzPassword,
     qrzFullName: qrzFullNameEnabled,
+    qrzLogbook: qrzLogbookEnabled,
+    qrzApiKey: qrzApiKeyVal,
     enableCluster: clusterEnabled,
     enableRbn: rbnEnabled,
     enableWsjtx: wsjtxEnabled,
@@ -4799,8 +5450,11 @@ settingsSave.addEventListener('click', async () => {
     wsjtxAutoLog: wsjtxAutoLogEnabled,
     myCallsign: myCallsign,
     clusterNodes: clusterNodes,
+    netReminders: currentNetReminders,
     showBeacons: showBeaconsEnabled,
     showDxBar: showDxBarEnabled,
+    enableClusterTerminal: clusterTerminalEnabled,
+    colorblindMode: colorblindEnabled,
     colorRows: colorRowsEnabled,
     enableSolar: solarEnabled,
     enableBandActivity: bandActivityEnabled,
@@ -4848,6 +5502,13 @@ settingsSave.addEventListener('click', async () => {
     cwSidetone: cwSidetoneVal,
     cwSidetonePitch: cwSidetonePitchVal,
     cwSidetoneVolume: cwSidetoneVolumeVal,
+    enableRemote: remoteEnabled,
+    remotePort: remotePortVal,
+    remoteRequireToken: remoteRequireTokenVal,
+    remoteToken: remoteTokenVal,
+    remotePttTimeout: remotePttTimeoutVal,
+    remoteAudioInput: selectedRig ? (selectedRig.remoteAudioInput || '') : '',
+    remoteAudioOutput: selectedRig ? (selectedRig.remoteAudioOutput || '') : '',
     appMode: document.querySelector('input[name="set-app-mode"]:checked')?.value || 'hunter',
   });
   grid = setGrid.value.trim();
@@ -4862,10 +5523,13 @@ settingsSave.addEventListener('click', async () => {
   enableCluster = clusterEnabled;
   enableRbn = rbnEnabled;
   enablePskr = pskrEnabled;
+  enableRemote = remoteEnabled;
   enableWsjtx = wsjtxEnabled;
   updateWsjtxStatusVisibility();
   updateRbnButton();
   spotsTable.classList.toggle('no-source-tint', !colorRowsEnabled);
+  applyColorblindMode(colorblindEnabled);
+  window.api.sendColorblindMode(colorblindEnabled);
   enableSolar = solarEnabled;
   updateSolarVisibility();
   enableBandActivity = bandActivityEnabled;
@@ -4891,6 +5555,7 @@ settingsSave.addEventListener('click', async () => {
   if (qsoPopoutOpen) window.api.sendQsoPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (actmapPopoutOpen) window.api.actmapPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (spotsPopoutOpen) window.api.sendSpotsPopoutTheme(lightModeEnabled ? 'light' : 'dark');
+  if (clusterPopoutOpen) window.api.sendClusterPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   enableDxcc = dxccEnabled;
   licenseClass = licenseClassVal;
   hideOutOfBand = hideOob;
@@ -5089,8 +5754,20 @@ window.api.onDonorCallsigns((list) => {
 });
 
 // --- DX Expedition callsigns listener ---
-window.api.onExpeditionCallsigns((list) => {
-  expeditionCallsigns = new Set(list.map(cs => cs.toUpperCase()));
+window.api.onExpeditionCallsigns((data) => {
+  if (Array.isArray(data)) {
+    // backward compat: plain array of callsigns
+    expeditionCallsigns = new Set(data.map(cs => cs.toUpperCase()));
+    expeditionMeta = new Map();
+  } else {
+    expeditionCallsigns = new Set((data.callsigns || []).map(cs => cs.toUpperCase()));
+    expeditionMeta = new Map();
+    if (data.metadata) {
+      for (const [cs, m] of Object.entries(data.metadata)) {
+        expeditionMeta.set(cs.toUpperCase(), m);
+      }
+    }
+  }
   render();
 });
 
@@ -5760,6 +6437,36 @@ window.api.onWsjtxQsoLogged((qso) => {
   showLogToast(`WSJT-X logged ${qso.dxCall} on ${freqMHz} MHz ${qso.mode}`);
 });
 
+// WSJT-X QSO logged while in activator mode — add to activator contact list
+window.api.onWsjtxActivatorQso((contact) => {
+  if (appMode !== 'activator' || !activationActive) return;
+  activatorContacts.push(contact);
+  renderActivatorLog();
+  updateActivatorCounter();
+  // Push to activation map pop-out
+  if (actmapPopoutOpen) {
+    window.api.actmapPopoutContact({
+      parkRefs: activatorParkRefs.map(p => p.ref),
+      contact,
+    });
+  }
+  // Fire-and-forget QRZ lookup for name + grid
+  window.api.qrzLookup(contact.callsign).then(info => {
+    if (info) {
+      contact.name = qrzDisplayName(info);
+      if (info.grid) contact.grid = info.grid;
+      renderActivatorLog();
+      if (actmapPopoutOpen && info.grid) {
+        window.api.actmapPopoutContact({
+          parkRefs: activatorParkRefs.map(p => p.ref),
+          contact,
+          update: true,
+        });
+      }
+    }
+  }).catch(() => {});
+});
+
 // --- Radio frequency tracking ---
 window.api.onCatFrequency((hz) => {
   const newKhz = Math.round(hz / 1000);
@@ -5841,7 +6548,7 @@ window.api.onSolarData(({ sfi, kIndex, aIndex }) => {
 });
 
 // --- Band Activity Heatmap ---
-const HEATMAP_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'];
+const HEATMAP_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m', '70cm'];
 const HEATMAP_CONTINENTS = ['EU', 'NA', 'SA', 'AS', 'AF', 'OC'];
 
 function updateBandActivityVisibility() {
@@ -6022,7 +6729,7 @@ function renderRbnMarkers() {
   if (rbnHomePos) {
     for (const s of filtered) {
       if (s.lat == null || s.lon == null) continue;
-      const color = RBN_BAND_COLORS[s.band] || '#ffffff';
+      const color = RBN_BAND_COLORS_ACTIVE[s.band] || '#ffffff';
       const arcPoints = greatCircleArc(rbnHomePos.lat, rbnHomePos.lon, s.lat, s.lon, 50);
       for (const offset of [-360, 0, 360]) {
         const offsetPoints = arcPoints.map(([lat, lon]) => [lat, lon + offset]);
@@ -6041,7 +6748,7 @@ function renderRbnMarkers() {
     if (s.lat == null || s.lon == null) continue;
     if (s.band) activeBands.add(s.band);
 
-    const color = RBN_BAND_COLORS[s.band] || '#ffffff';
+    const color = RBN_BAND_COLORS_ACTIVE[s.band] || '#ffffff';
     const distStr = s.distance != null ? formatDistance(s.distance) + ' ' + unit : '';
     const snrStr = s.snr != null ? s.snr + ' dB' : '';
     const wpmStr = s.wpm != null ? s.wpm + ' WPM' : '';
@@ -6073,14 +6780,14 @@ function renderRbnMarkers() {
 
 function renderRbnLegend(activeBands) {
   rbnLegendEl.innerHTML = '';
-  const sortedBands = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'];
+  const sortedBands = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m', '70cm'];
   for (const band of sortedBands) {
     if (!activeBands.has(band)) continue;
     const item = document.createElement('span');
     item.className = 'rbn-legend-item';
     const swatch = document.createElement('span');
     swatch.className = 'rbn-legend-swatch';
-    swatch.style.background = RBN_BAND_COLORS[band] || '#fff';
+    swatch.style.background = RBN_BAND_COLORS_ACTIVE[band] || '#fff';
     item.appendChild(swatch);
     item.appendChild(document.createTextNode(band));
     rbnLegendEl.appendChild(item);
@@ -6223,6 +6930,21 @@ window.api.onPskrStatus(({ connected, error, spotCount, nextPollAt, pollUpdate }
     if (connected && spotCount != null) showLogToast(`FreeDV: ${spotCount} spots (polling every 5 min)`, { duration: 4000 });
     if (error) showLogToast(error, { warn: true, duration: 5000 });
   }
+});
+
+// ECHOCAT status
+window.api.onRemoteStatus((s) => {
+  remoteConnected = s.connected;
+  updateSettingsConnBar();
+});
+
+window.api.onRemoteTxState((state) => {
+  if (remoteTxIndicator) remoteTxIndicator.classList.toggle('hidden', !state);
+});
+
+// Reload prefs when ECHOCAT changes settings remotely
+window.api.onReloadPrefs(() => {
+  loadPrefs();
 });
 
 // FreeDV tooltip — show countdown to next poll on hover
@@ -6919,8 +7641,11 @@ async function showWhatsNew(version) {
 }
 
 function formatReleaseNotes(md) {
-  // Strip everything from "## Install" or "## Checksums" onward
-  md = md.replace(/\n## (Install|Checksums)[\s\S]*/i, '').trim();
+  // Strip everything from download/install/checksum/smartscreen sections onward
+  md = md.replace(/\n---[\s\S]*/m, '').trim();
+  md = md.replace(/\n#{1,4} *(Install|Download|Checksum|SHA-?256|SmartScreen)[\s\S]*/i, '').trim();
+  // Strip any "Generated with" / Claude / Anthropic footer lines
+  md = md.replace(/^.*(?:generated with|claude|anthropic).*$/gim, '').trim();
 
   // Simple markdown → HTML for release notes
   return md
@@ -7489,7 +8214,7 @@ activatorLogBody.addEventListener('dblclick', (e) => {
     // Use a dropdown for mode
     const select = document.createElement('select');
     select.className = 'act-log-edit-select';
-    const modes = ['SSB', 'CW', 'FT8', 'FT4', 'FM', 'RTTY', 'PSK31', 'USB', 'LSB', 'AM'];
+    const modes = ['SSB', 'CW', 'FT8', 'FT4', 'FT2', 'FM', 'RTTY', 'PSK31', 'USB', 'LSB', 'AM'];
     for (const m of modes) {
       const opt = document.createElement('option');
       opt.value = m;
@@ -7743,6 +8468,7 @@ async function showPastActivations() {
         <div class="activator-history-actions">
           <button class="act-hist-export-btn" title="Export this activation as ADIF">Export ADIF</button>
           <button class="act-hist-map-btn" title="Show contacts on map">Map</button>
+          <button class="act-hist-share-btn" title="Save map as shareable image">Share Image</button>
           <button class="act-hist-delete-btn" title="Delete this activation">Delete</button>
         </div>
         <table class="act-hist-table">
@@ -7771,6 +8497,11 @@ async function showPastActivations() {
       detail.querySelector('.act-hist-map-btn').addEventListener('click', (e) => {
         e.stopPropagation();
         showActivationMap(act);
+      });
+      // Share Image button
+      detail.querySelector('.act-hist-share-btn').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await renderShareImage(act);
       });
       // Delete button (two-click confirmation)
       const deleteBtn = detail.querySelector('.act-hist-delete-btn');
@@ -7852,6 +8583,10 @@ let activationMap = null;
 let activationMapMarkers = [];
 
 async function showActivationMap(act) {
+  // Hide spots table if visible — map needs the full view
+  if (activatorSpotsVisible) toggleActivatorSpots();
+  if (activatorRbnVisible) toggleActivatorRbn();
+
   const mapPanel = document.getElementById('activation-map-panel');
   const mapTitle = document.getElementById('activation-map-title');
   mapPanel.classList.remove('hidden');
@@ -7900,6 +8635,7 @@ async function showActivationMap(act) {
   // Contact markers — one per QSO, positioned via QRZ grid (precise)
   // or cty.dat (country/call-area fallback), jittered to avoid stacking
   const bounds = [];
+  const refLon = parkLon ?? -98.5; // reference for antimeridian wrapping
   if (parkLat != null && parkLon != null) bounds.push([parkLat, parkLon]);
   const usedPositions = []; // track placed positions for jitter
   for (let i = 0; i < act.contacts.length; i++) {
@@ -7908,7 +8644,7 @@ async function showActivationMap(act) {
     const gridPos = c.grid ? gridToLatLonLocal(c.grid) : null;
     const loc = gridPos || locations[c.callsign];
     if (!loc) continue;
-    let cLat = loc.lat, cLon = loc.lon;
+    let cLat = loc.lat, cLon = wrapLon(refLon, loc.lon);
     const overlap = usedPositions.filter(p => Math.abs(p[0] - cLat) < 0.01 && Math.abs(p[1] - cLon) < 0.01).length;
     if (overlap > 0) {
       // Spread in a small circle around the base point using golden angle
@@ -8307,6 +9043,337 @@ if (activatorExportBtn) {
   });
 }
 
+/**
+ * Render a 1080x1080 social-sharable activation image.
+ * @param {object} [pastAct] — Past activation object. If omitted, uses live activation state.
+ */
+async function renderShareImage(pastAct) {
+  // Show loading overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:rgba(10,10,24,0.85);';
+  overlay.innerHTML = '<style>@keyframes _shareSpin{to{transform:rotate(360deg)}}</style><div style="text-align:center;color:#fff;font-family:Segoe UI,sans-serif;"><div style="width:36px;height:36px;border:3px solid rgba(255,255,255,0.2);border-top-color:#4ecca3;border-radius:50%;animation:_shareSpin 0.8s linear infinite;margin:0 auto 16px;"></div><div style="font-size:16px;">Building image\u2026</div></div>';
+  document.body.appendChild(overlay);
+  try {
+  // Determine data source: past activation or live
+  const isPast = !!pastAct;
+  let shareCallsign, shareRefs, shareParkName, shareContacts, shareParkRef;
+
+  if (isPast) {
+    shareCallsign = myCallsign || '';
+    shareRefs = [pastAct.parkRef].filter(Boolean);
+    shareContacts = pastAct.contacts || [];
+    shareParkRef = pastAct.parkRef || '';
+    // Look up park name from DB
+    try {
+      const parkData = await window.api.getPark(pastAct.parkRef);
+      shareParkName = parkData?.name || '';
+    } catch { shareParkName = ''; }
+  } else {
+    shareCallsign = myCallsign || '';
+    shareRefs = activatorParkRefs.map(p => p.ref).filter(Boolean);
+    shareParkName = primaryParkName();
+    shareContacts = activatorContacts;
+    shareParkRef = primaryParkRef();
+  }
+
+  if (!shareContacts.length) {
+    alert('No contacts to share.');
+    return;
+  }
+
+  // --- Render a dedicated square map fitted to park + contacts ---
+  // Create an offscreen container for a square Leaflet map
+  // 9:16 portrait container for social sharing (1080x1920)
+  const W = 1080, H = 1920;
+  // Map container must match 9:16 aspect so cover-crop doesn't cut sides
+  const mapH = Math.min(window.innerHeight - 20, H);
+  const mapW = Math.round(mapH * (W / H));
+  const mapContainer = document.createElement('div');
+  mapContainer.style.cssText = `position:fixed;left:0;top:0;width:${mapW}px;height:${mapH}px;z-index:9999;`;
+  document.body.appendChild(mapContainer);
+
+  const shareMap = L.map(mapContainer, {
+    zoomControl: false, attributionControl: false, worldCopyJump: true,
+  });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, className: 'dark-tiles',
+  }).addTo(shareMap);
+
+  // Resolve park location
+  let parkLat = null, parkLon = null;
+  try {
+    const parkData = await window.api.getPark(shareParkRef);
+    if (parkData?.latitude && parkData?.longitude) {
+      parkLat = parseFloat(parkData.latitude);
+      parkLon = parseFloat(parkData.longitude);
+    }
+  } catch {}
+
+  // Park marker
+  if (parkLat != null) {
+    const parkIcon = L.divIcon({
+      className: '',
+      html: `<div style="background:${SOURCE_COLORS_ACTIVE.pota};width:18px;height:18px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 8px rgba(78,204,163,0.6);"></div>`,
+      iconSize: [18, 18], iconAnchor: [9, 9],
+    });
+    L.marker([parkLat, parkLon], { icon: parkIcon, zIndexOffset: 1000 }).addTo(shareMap);
+  }
+
+  // Resolve contact locations
+  const callsigns = [...new Set(shareContacts.map(c => c.callsign).filter(Boolean))];
+  let locations = {};
+  try { locations = await window.api.resolveCallsignLocations(callsigns); } catch {}
+
+  // Haversine distance in miles
+  const _hav = (lat1, lon1, lat2, lon2) => {
+    const R = 3959; // Earth radius in miles
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const bounds = [];
+  const shareRefLon = parkLon ?? -98.5;
+  if (parkLat != null) bounds.push([parkLat, parkLon]);
+  const usedPositions = [];
+  let furthestCall = null, furthestDist = 0;
+
+  for (const c of shareContacts) {
+    const gridPos = c.grid ? gridToLatLonLocal(c.grid) : null;
+    const loc = gridPos || locations[c.callsign];
+    if (!loc) continue;
+    let cLat = loc.lat, cLon = wrapLon(shareRefLon, loc.lon);
+
+    // Track furthest QSO from park
+    if (parkLat != null) {
+      const d = _hav(parkLat, parkLon, cLat, cLon);
+      if (d > furthestDist) { furthestDist = d; furthestCall = c.callsign; }
+    }
+    // Jitter overlapping positions
+    const overlap = usedPositions.filter(p => Math.abs(p[0] - cLat) < 0.01 && Math.abs(p[1] - cLon) < 0.01).length;
+    if (overlap > 0) {
+      const angle = (overlap * 137.5) * Math.PI / 180;
+      const r = 0.8 + overlap * 0.3;
+      cLat += r * Math.cos(angle);
+      cLon += r * Math.sin(angle);
+    }
+    usedPositions.push([cLat, cLon]);
+
+    L.circleMarker([cLat, cLon], {
+      radius: 7, fillColor: '#4fc3f7', color: '#fff', weight: 1.5, fillOpacity: 0.85,
+    }).addTo(shareMap);
+    bounds.push([cLat, cLon]);
+
+    // Arc from park to contact
+    if (parkLat != null) {
+      const arcPts = greatCircleArc(parkLat, parkLon, cLat, cLon, 50);
+      L.polyline(arcPts, { color: '#4fc3f7', weight: 1.5, opacity: 0.5, dashArray: '6,4' }).addTo(shareMap);
+    }
+  }
+
+  // Fit bounds: zoom as close as possible while keeping all markers visible.
+  // 20px edge padding (scaled to map container), plus extra for text overlays.
+  // Text overlays: top ~25% of image, bottom ~18% — convert to map container px.
+  const edgePx = Math.round(20 * (mapW / W));   // 20px at final 1080w
+  const textTop = Math.round(mapH * 0.25);      // top text overlay zone
+  const textBot = Math.round(mapH * 0.18);      // bottom branding zone
+  if (bounds.length > 1) {
+    shareMap.fitBounds(bounds, {
+      paddingTopLeft: [edgePx, textTop + edgePx],
+      paddingBottomRight: [edgePx, textBot + edgePx],
+    });
+  } else if (parkLat != null) {
+    shareMap.setView([parkLat, parkLon], 5);
+  } else {
+    shareMap.setView([39.8, -98.5], 4);
+  }
+
+  // Wait for tiles to load
+  await new Promise(resolve => {
+    let resolved = false;
+    const done = () => { if (!resolved) { resolved = true; resolve(); } };
+    shareMap.once('idle', done);
+    setTimeout(done, 4000); // max 4s
+  });
+  // Extra buffer for tile rendering
+  await new Promise(r => setTimeout(r, 500));
+
+  // Hide overlay during capture so it doesn't darken the map
+  overlay.style.display = 'none';
+  await new Promise(r => setTimeout(r, 50)); // let repaint
+  const rect = mapContainer.getBoundingClientRect();
+  const capture = await window.api.captureMainWindowRect({
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+  });
+
+  // Clean up offscreen map (overlay stays hidden — save dialog comes next)
+  shareMap.remove();
+  document.body.removeChild(mapContainer);
+
+  if (!capture || !capture.success || !capture.dataUrl) {
+    alert('Could not capture map: ' + (capture?.error || 'unknown error'));
+    return;
+  }
+
+  // Load the captured map into an Image
+  const mapImg = new Image();
+  await new Promise((resolve, reject) => {
+    mapImg.onload = resolve;
+    mapImg.onerror = () => reject(new Error('Failed to decode map image'));
+    mapImg.src = capture.dataUrl;
+  });
+
+  // Load the POTACAT icon
+  const iconImg = new Image();
+  await new Promise((resolve) => {
+    iconImg.onload = resolve;
+    iconImg.onerror = resolve; // proceed even if icon fails
+    iconImg.src = '../assets/icon-256.png';
+  });
+
+  // --- Canvas layout: 1080x1920 (9:16 portrait) ---
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Draw map as background, cover-crop to fill 1080x1920
+  const mw = mapImg.naturalWidth, mh = mapImg.naturalHeight;
+  const canvasAspect = W / H;
+  const imgAspect = mw / mh;
+  let sx = 0, sy = 0, sw = mw, sh = mh;
+  if (imgAspect > canvasAspect) {
+    // Image is wider — crop sides
+    sw = Math.round(mh * canvasAspect);
+    sx = Math.round((mw - sw) / 2);
+  } else {
+    // Image is taller — crop top/bottom
+    sh = Math.round(mw / canvasAspect);
+    sy = Math.round((mh - sh) / 2);
+  }
+  ctx.drawImage(mapImg, sx, sy, sw, sh, 0, 0, W, H);
+
+  // Gradient overlays for text readability
+  // Top: ~400px gradient for callsign/park/QSO text
+  const topGrad = ctx.createLinearGradient(0, 0, 0, 480);
+  topGrad.addColorStop(0, 'rgba(10, 10, 24, 0.94)');
+  topGrad.addColorStop(0.55, 'rgba(10, 10, 24, 0.7)');
+  topGrad.addColorStop(1, 'rgba(10, 10, 24, 0)');
+  ctx.fillStyle = topGrad;
+  ctx.fillRect(0, 0, W, 480);
+
+  // Bottom: ~350px gradient for branding (above IG/FB comment zones)
+  const botGrad = ctx.createLinearGradient(0, H - 350, 0, H);
+  botGrad.addColorStop(0, 'rgba(10, 10, 24, 0)');
+  botGrad.addColorStop(0.4, 'rgba(10, 10, 24, 0.7)');
+  botGrad.addColorStop(1, 'rgba(10, 10, 24, 0.94)');
+  ctx.fillStyle = botGrad;
+  ctx.fillRect(0, H - 350, W, 350);
+
+  // --- Top text (safe zone: 80px margins, start at y=120) ---
+  const safeX = 80;
+  let textY = 184;
+
+  // Callsign (large bold)
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 64px "Segoe UI", sans-serif';
+  ctx.textBaseline = 'top';
+  ctx.fillText(shareCallsign || 'ACTIVATOR', safeX, textY);
+  textY += 84;
+
+  // "Activated US-1234" or multi-park
+  const parkLine = shareRefs.length > 0
+    ? 'Activated ' + shareRefs.join(', ')
+    : 'Activation';
+  ctx.fillStyle = SOURCE_COLORS_ACTIVE.pota;
+  ctx.font = 'bold 44px "Segoe UI", sans-serif';
+  ctx.fillText(parkLine, safeX, textY);
+  textY += 60;
+
+  // Park name
+  if (shareParkName && shareParkName.length <= 50) {
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = '32px "Segoe UI", sans-serif';
+    ctx.fillText(shareParkName, safeX, textY);
+    textY += 46;
+  }
+
+  // QSO count and modes
+  const modes = [...new Set(shareContacts.map(c => c.mode).filter(Boolean))];
+  const qsoCount = shareContacts.length;
+  const modeLine = modes.length > 0 ? ' on ' + modes.join(', ') : '';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '38px "Segoe UI", sans-serif';
+  ctx.fillText(`${qsoCount} QSO${qsoCount !== 1 ? 's' : ''}${modeLine}`, safeX, textY);
+  textY += 52;
+
+  // Furthest QSO line
+  if (furthestCall && furthestDist > 0) {
+    const distVal = distUnit === 'km' ? Math.round(furthestDist * MI_TO_KM) : Math.round(furthestDist);
+    const distLabel = distUnit === 'km' ? 'km' : 'mi';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '32px "Segoe UI", sans-serif';
+    ctx.fillText(`Furthest QSO: ${furthestCall} \u2014 ${distVal.toLocaleString()} ${distLabel}`, safeX, textY);
+  }
+
+  // --- Bottom branding (above IG/FB safe zone, ~270px from bottom) ---
+  const brandY = H - 270;
+  const iconSize = 48;
+  if (iconImg.naturalWidth > 0) {
+    ctx.drawImage(iconImg, safeX, brandY - iconSize + 8, iconSize, iconSize);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '26px "Segoe UI", sans-serif';
+  ctx.textBaseline = 'bottom';
+  const brandX = iconImg.naturalWidth > 0 ? safeX + iconSize + 14 : safeX;
+  const trackedText = 'Tracked with ';
+  const trackedWidth = ctx.measureText(trackedText).width;
+  ctx.fillText(trackedText, brandX, brandY - 4);
+  ctx.fillStyle = '#4fc3f7';
+  ctx.font = 'bold 26px "Segoe UI", sans-serif';
+  ctx.fillText('POTACAT', brandX + trackedWidth, brandY - 4);
+
+  // Date stamp (bottom right, same line as branding)
+  let dateLabel;
+  if (isPast && pastAct.date) {
+    const y = pastAct.date.substring(0, 4), m = pastAct.date.substring(4, 6), d = pastAct.date.substring(6, 8);
+    dateLabel = new Date(`${y}-${m}-${d}`).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  } else {
+    dateLabel = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '22px "Segoe UI", sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(dateLabel, W - 80, brandY - 4);
+  ctx.textAlign = 'left';
+
+  // Convert to JPG and save
+  const jpgDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const jpgBase64 = jpgDataUrl.split(',')[1];
+  const result = await window.api.saveShareImage({
+    jpgBase64,
+    parkRef: shareParkRef,
+    callsign: shareCallsign,
+  });
+  if (result && result.success) {
+    showLogToast(`Share image saved to ${result.path.split(/[\\/]/).pop()}`);
+  }
+  } catch (err) {
+    console.error('Share image error:', err);
+    alert('Error creating share image: ' + (err?.message || String(err)));
+  } finally {
+    overlay.remove();
+  }
+}
+
+
+
 // Back to Hunter button
 if (activatorBackBtn) {
   activatorBackBtn.addEventListener('click', () => {
@@ -8346,6 +9413,7 @@ function updateActivatorModeFromCat(mode) {
   else if (m === 'FM') activatorModeSelect.value = 'FM';
   else if (m === 'FT8') activatorModeSelect.value = 'FT8';
   else if (m === 'FT4') activatorModeSelect.value = 'FT4';
+  else if (m === 'FT2') activatorModeSelect.value = 'FT2';
   else if (m === 'RTTY') activatorModeSelect.value = 'RTTY';
 }
 
@@ -8417,6 +9485,7 @@ function freqToBandActivator(khz) {
   if (khz >= 28000 && khz <= 29700) return '10m';
   if (khz >= 50000 && khz <= 54000) return '6m';
   if (khz >= 144000 && khz <= 148000) return '2m';
+  if (khz >= 420000 && khz <= 450000) return '70cm';
   return '';
 }
 

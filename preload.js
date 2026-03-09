@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('api', {
   onCatMode: (cb) => ipcRenderer.on('cat-mode', (_e, mode) => cb(mode)),
   onCatPower: (cb) => ipcRenderer.on('cat-power', (_e, watts) => cb(watts)),
   qrzLookup: (callsign) => ipcRenderer.invoke('qrz-lookup', callsign),
+  qrzCheckSub: (force) => ipcRenderer.invoke('qrz-check-sub', force),
+  qrzVerifyApiKey: (key) => ipcRenderer.invoke('qrz-verify-api-key', key),
   getReleaseNotes: (version) => ipcRenderer.invoke('get-release-notes', version),
   importAdif: () => ipcRenderer.invoke('import-adif'),
   parseAdif: () => ipcRenderer.invoke('parse-adif'),
@@ -47,6 +49,7 @@ contextBridge.exposeInMainWorld('api', {
   onWsjtxDecode: (cb) => ipcRenderer.on('wsjtx-decode', (_e, d) => cb(d)),
   onWsjtxClear: (cb) => ipcRenderer.on('wsjtx-clear', () => cb()),
   onWsjtxQsoLogged: (cb) => ipcRenderer.on('wsjtx-qso-logged', (_e, q) => cb(q)),
+  onWsjtxActivatorQso: (cb) => ipcRenderer.on('wsjtx-activator-qso', (_e, c) => cb(c)),
   wsjtxReply: (decode) => ipcRenderer.send('wsjtx-reply', decode),
   wsjtxHaltTx: () => ipcRenderer.send('wsjtx-halt-tx'),
   saveQso: (qsoData) => ipcRenderer.invoke('save-qso', qsoData),
@@ -82,6 +85,7 @@ contextBridge.exposeInMainWorld('api', {
   sendPopoutTuneArc: (data) => ipcRenderer.send('popout-map-tune-arc', data),
   sendPopoutHome: (data) => ipcRenderer.send('popout-map-home', data),
   sendPopoutTheme: (theme) => ipcRenderer.send('popout-map-theme', theme),
+  sendColorblindMode: (enabled) => ipcRenderer.send('colorblind-mode', enabled),
   onPopoutMapStatus: (cb) => ipcRenderer.on('popout-map-status', (_e, open) => cb(open)),
   onPopoutOpenLog: (cb) => ipcRenderer.on('popout-open-log', (_e, spot) => cb(spot)),
   // Pop-out QSO log
@@ -94,6 +98,11 @@ contextBridge.exposeInMainWorld('api', {
   spotsPopoutClose: () => ipcRenderer.send('spots-popout-close'),
   sendSpotsPopoutTheme: (theme) => ipcRenderer.send('spots-popout-theme', theme),
   onSpotsPopoutStatus: (cb) => ipcRenderer.on('spots-popout-status', (_e, open) => cb(open)),
+  // DX Cluster terminal pop-out
+  clusterPopoutOpen: () => ipcRenderer.send('cluster-popout-open'),
+  clusterPopoutClose: () => ipcRenderer.send('cluster-popout-close'),
+  sendClusterPopoutTheme: (theme) => ipcRenderer.send('cluster-popout-theme', theme),
+  onClusterPopoutStatus: (cb) => ipcRenderer.on('cluster-popout-status', (_e, open) => cb(open)),
   // Activation map pop-out
   actmapPopoutOpen: () => ipcRenderer.send('actmap-popout-open'),
   actmapPopoutData: (data) => ipcRenderer.send('actmap-popout-data', data),
@@ -115,10 +124,18 @@ contextBridge.exposeInMainWorld('api', {
   getPastActivations: () => ipcRenderer.invoke('get-past-activations'),
   deleteActivation: (parkRef, date) => ipcRenderer.invoke('delete-activation', parkRef, date),
   resolveCallsignLocations: (callsigns) => ipcRenderer.invoke('resolve-callsign-locations', callsigns),
+  captureActmapPopout: () => ipcRenderer.invoke('capture-actmap-popout'),
+  captureMainWindowRect: (rect) => ipcRenderer.invoke('capture-main-window-rect', rect),
+  saveShareImage: (data) => ipcRenderer.invoke('save-share-image', data),
   // Zoom
   setZoom: (factor) => webFrame.setZoomFactor(factor),
   getZoom: () => webFrame.getZoomFactor(),
   onCwKey: (cb) => ipcRenderer.on('cw-key', (_e, data) => cb(data)),
   onCwKeyerStatus: (cb) => ipcRenderer.on('cw-keyer-status', (_e, s) => cb(s)),
   onCwText: (cb) => ipcRenderer.on('cw-text', (_e, data) => cb(data)),
+  // Remote Access
+  getLocalIPs: () => ipcRenderer.invoke('get-local-ips'),
+  onRemoteTxState: (cb) => ipcRenderer.on('remote-tx-state', (_e, state) => cb(state)),
+  onRemoteStatus: (cb) => ipcRenderer.on('remote-status', (_e, s) => cb(s)),
+  onReloadPrefs: (cb) => ipcRenderer.on('reload-prefs', () => cb()),
 });

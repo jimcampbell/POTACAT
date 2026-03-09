@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="format-detection" content="telephone=no">
+  <title>ECHOCAT</title>
+  <!-- leaflet-css -->
+  <link rel="stylesheet" href="remote.css">
+  <script>if(localStorage.getItem('echocat-theme')==='light'){document.documentElement.setAttribute('data-theme','light');document.querySelector('meta[name="theme-color"]').content='#e8eaed'}</script>
+</head>
+<body>
+
+  <!-- Connection screen -->
+  <div id="connect-screen">
+    <div class="connect-box">
+      <h1 class="connect-title">ECHOCAT</h1>
+      <p class="connect-subtitle">Remote Radio</p>
+      <input type="text" id="token-input" placeholder="Access Token" maxlength="10"
+             autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+      <button id="connect-btn" type="button">Connect</button>
+      <div id="connect-error" class="hidden"></div>
+      <p class="connect-help">
+        Use <b>https://</b> to connect.<br>
+        First visit: tap <b>Advanced</b> → <b>Proceed</b> to accept the certificate.
+      </p>
+    </div>
+  </div>
+
+  <!-- Main UI (hidden until authenticated) -->
+  <div id="main-ui" class="hidden">
+
+    <!-- Status bar -->
+    <div id="status-bar">
+      <div class="status-left">
+        <span id="freq-display">---.---.---</span>
+        <span id="mode-badge">---</span>
+        <div id="freq-edit" class="hidden">
+          <input type="number" id="freq-input" inputmode="decimal" placeholder="kHz" step="any">
+          <button id="freq-go" type="button">Go</button>
+        </div>
+      </div>
+      <div class="status-right">
+        <button type="button" id="scan-btn" class="scan-status-btn" title="Scan spots">Scan</button>
+        <span id="cat-dot" class="cat-dot disconnected" title="Radio disconnected"></span>
+        <span id="audio-dot" class="audio-dot hidden" title="Audio"></span>
+        <span id="latency">--ms</span>
+        <button type="button" id="rig-ctrl-toggle" class="rig-ctrl-toggle" title="Rig Controls">&#x2699;</button>
+      </div>
+    </div>
+
+    <!-- Mode picker popup -->
+    <div id="mode-picker" class="hidden">
+      <button class="mp-btn" data-mode="USB">USB</button>
+      <button class="mp-btn" data-mode="LSB">LSB</button>
+      <button class="mp-btn" data-mode="CW">CW</button>
+      <button class="mp-btn" data-mode="FT8">FT8</button>
+      <button class="mp-btn" data-mode="FT4">FT4</button>
+      <button class="mp-btn" data-mode="FM">FM</button>
+      <button class="mp-btn" data-mode="AM">AM</button>
+      <button class="mp-btn" data-mode="RTTY">RTTY</button>
+    </div>
+
+    <!-- Settings overlay (replaces inline rig controls strip) -->
+    <div id="settings-overlay" class="hidden">
+      <div class="so-header">
+        <span class="so-title">Settings</span>
+        <button type="button" id="so-close" class="so-close">&times;</button>
+      </div>
+      <div class="so-body">
+
+        <!-- Rig selector -->
+        <div id="so-rig-row" class="so-row hidden">
+          <label class="so-label">Rig</label>
+          <select id="rig-select" class="so-select"></select>
+        </div>
+
+        <!-- Radio controls section -->
+        <div class="so-section-label">Radio</div>
+        <div id="so-filter-row" class="so-row">
+          <label class="so-label">Filter</label>
+          <div class="so-controls">
+            <button type="button" class="rc-btn" id="rc-bw-dn">&#x25C0;</button>
+            <span id="rc-bw-label" class="rc-bw-label">--</span>
+            <button type="button" class="rc-btn" id="rc-bw-up">&#x25B6;</button>
+          </div>
+        </div>
+        <div class="so-row so-toggles">
+          <div id="rc-nb" class="so-toggle-group">
+            <button type="button" class="rc-btn rc-toggle" id="rc-nb-btn">NB</button>
+          </div>
+          <div id="rc-atu" class="so-toggle-group hidden">
+            <button type="button" class="rc-btn rc-toggle" id="rc-atu-btn">ATU</button>
+          </div>
+          <div id="rc-vfo" class="so-toggle-group">
+            <button type="button" class="rc-btn rc-vfo" id="rc-vfo-a">A</button>
+            <button type="button" class="rc-btn rc-vfo" id="rc-vfo-b">B</button>
+            <button type="button" class="rc-btn" id="rc-vfo-swap">A&#x21C4;B</button>
+          </div>
+        </div>
+        <div id="so-rfgain-row" class="so-row hidden">
+          <label class="so-label">RF Gain</label>
+          <div class="so-slider-wrap">
+            <input type="range" id="rc-rfgain-slider" class="so-slider" min="0" max="100" value="50">
+            <span id="rc-rfgain-val" class="so-slider-val">50</span>
+          </div>
+        </div>
+        <div id="so-txpower-row" class="so-row hidden">
+          <label class="so-label">TX Power</label>
+          <div class="so-slider-wrap">
+            <input type="range" id="rc-txpower-slider" class="so-slider" min="0" max="100" value="100">
+            <span id="rc-txpower-val" class="so-slider-val">100</span>
+          </div>
+        </div>
+
+        <!-- App settings section -->
+        <div class="so-section-label">Spots</div>
+        <div class="so-row">
+          <label class="so-label">Scan Dwell</label>
+          <div class="so-stepper">
+            <button type="button" class="so-step-btn" id="so-dwell-dn">&minus;</button>
+            <span id="so-dwell-val" class="so-step-val">7s</span>
+            <button type="button" class="so-step-btn" id="so-dwell-up">+</button>
+          </div>
+        </div>
+        <div class="so-row">
+          <label class="so-label">Refresh Rate</label>
+          <div class="so-stepper">
+            <button type="button" class="so-step-btn" id="so-refresh-dn">&minus;</button>
+            <span id="so-refresh-val" class="so-step-val">30s</span>
+            <button type="button" class="so-step-btn" id="so-refresh-up">+</button>
+          </div>
+        </div>
+        <div class="so-row">
+          <label class="so-label">Max Spot Age</label>
+          <div class="so-stepper">
+            <button type="button" class="so-step-btn" id="so-maxage-dn">&minus;</button>
+            <span id="so-maxage-val" class="so-step-val">5m</span>
+            <button type="button" class="so-step-btn" id="so-maxage-up">+</button>
+          </div>
+        </div>
+        <div class="so-section-label">Display</div>
+        <div class="so-row">
+          <label class="so-label">Distance</label>
+          <div class="so-controls">
+            <button type="button" class="rc-btn rc-toggle" id="so-dist-mi">mi</button>
+            <button type="button" class="rc-btn rc-toggle active" id="so-dist-km">km</button>
+          </div>
+        </div>
+        <div class="so-row">
+          <label class="so-label">Theme</label>
+          <div class="so-controls">
+            <button type="button" class="rc-btn rc-toggle active" id="so-theme-dark">Dark</button>
+            <button type="button" class="rc-btn rc-toggle" id="so-theme-light">Light</button>
+          </div>
+        </div>
+
+        <div class="so-footer">
+          <div class="so-footer-by">Casey Stanton, K3SBP</div>
+          <div class="so-footer-links">
+            <a href="https://discord.gg/JjdKSshej" target="_blank" rel="noopener">Discord</a>
+            <span class="so-footer-dot">&middot;</span>
+            <a href="https://buymeacoffee.com/potacat" target="_blank" rel="noopener">Buy Me a Coffee</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TX indicator banner -->
+    <div id="tx-banner" class="hidden">TRANSMITTING</div>
+
+    <!-- Active activation banner (shown during activation) -->
+    <div id="activation-banner" class="hidden">
+      <div class="activation-banner-left">
+        <span id="activation-ref" class="activation-ref"></span>
+        <span id="activation-name" class="activation-name"></span>
+      </div>
+      <div class="activation-banner-right">
+        <span id="activation-timer" class="activation-timer">0:00</span>
+        <button type="button" id="end-activation-btn" class="end-activation-btn">End</button>
+      </div>
+    </div>
+
+    <!-- Tab bar -->
+    <div id="tab-bar" class="hidden">
+      <button class="tab active" data-tab="spots">Spots</button>
+      <button class="tab" data-tab="map">Map</button>
+      <button class="tab" data-tab="log">Log</button>
+      <button class="tab" data-tab="logbook">Logbook</button>
+      <button class="tab" data-tab="activate">Activate <span id="tab-activate-badge" class="tab-badge hidden">0</span></button>
+    </div>
+
+    <!-- Filter toolbar -->
+    <div id="filter-toolbar" class="hidden">
+      <!-- Band multi-select dropdown -->
+      <div class="rc-dropdown" id="rc-band-filter">
+        <button class="rc-dropdown-btn" type="button">Band: <span class="rc-dd-text">All</span></button>
+        <div class="rc-dropdown-menu">
+          <label class="rc-dropdown-item"><input type="checkbox" value="all" checked> All</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="160m"> 160m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="80m"> 80m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="60m"> 60m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="40m"> 40m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="30m"> 30m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="20m"> 20m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="17m"> 17m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="15m"> 15m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="12m"> 12m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="10m"> 10m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="6m"> 6m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="2m"> 2m</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="70cm"> 70cm</label>
+        </div>
+      </div>
+
+      <!-- Region multi-select dropdown -->
+      <div class="rc-dropdown" id="rc-region-filter">
+        <button class="rc-dropdown-btn" type="button">Region: <span class="rc-dd-text">All</span></button>
+        <div class="rc-dropdown-menu">
+          <label class="rc-dropdown-item"><input type="checkbox" value="all" checked> All</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="AF"> Africa</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="AS"> Asia</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="EU"> Europe</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="NA"> N. America</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="OC"> Oceania</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="SA"> S. America</label>
+        </div>
+      </div>
+
+      <!-- Spots dropdown panel -->
+      <div class="rc-dropdown" id="rc-spots-dropdown">
+        <button class="rc-dropdown-btn" type="button">Spots</button>
+        <div class="rc-spots-panel">
+          <label class="rc-spots-toggle"><input type="checkbox" data-src="pota" checked> <span style="color:var(--pota)">POTA</span></label>
+          <label class="rc-spots-toggle"><input type="checkbox" data-src="sota"> <span style="color:var(--sota)">SOTA</span></label>
+          <label class="rc-spots-toggle"><input type="checkbox" data-src="wwff"> <span style="color:var(--wwff)">WWFF</span></label>
+          <label class="rc-spots-toggle"><input type="checkbox" data-src="llota"> <span style="color:var(--llota)">LLOTA</span></label>
+          <label class="rc-spots-toggle"><input type="checkbox" data-src="dxc"> <span style="color:var(--dxc)">DX Cluster</span></label>
+          <div class="rc-spots-divider"></div>
+          <label class="rc-spots-toggle rc-new-only-row" style="display:none"><input type="checkbox" id="rc-new-only"> <span style="color:#66ff99">NEW parks only</span></label>
+          <label class="rc-spots-toggle rc-hide-worked-row" style="display:none"><input type="checkbox" id="rc-hide-worked"> Hide worked</label>
+        </div>
+      </div>
+
+      <!-- Sort dropdown -->
+      <select id="sort-select" class="rc-sort-select">
+        <option value="age">Newest</option>
+        <option value="freq">Frequency</option>
+        <option value="dist">Nearest</option>
+      </select>
+
+      <!-- Refresh rate chip -->
+      <button id="refresh-rate-btn" type="button" class="refresh-chip" title="Spot refresh rate">30s</button>
+    </div>
+
+    <!-- Spot list -->
+    <div id="spot-list"></div>
+
+    <!-- Spot map -->
+    <div id="spot-map" class="hidden"></div>
+
+    <!-- Log tab view (standalone logging form) -->
+    <div id="log-tab-view" class="hidden">
+      <div class="log-tab-content">
+        <div id="lt-type-picker" class="log-type-row">
+          <button type="button" class="lt-type-chip active" data-type="dx" style="--type-color:var(--dxc)">General</button>
+          <button type="button" class="lt-type-chip" data-type="pota" style="--type-color:var(--pota)">POTA</button>
+          <button type="button" class="lt-type-chip" data-type="sota" style="--type-color:var(--sota)">SOTA</button>
+          <button type="button" class="lt-type-chip" data-type="wwff" style="--type-color:#26a69a">WWFF</button>
+          <button type="button" class="lt-type-chip" data-type="llota" style="--type-color:#42a5f5">LLOTA</button>
+        </div>
+        <div class="log-field">
+          <label for="lt-call">Callsign</label>
+          <input type="text" id="lt-call" autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <div id="lt-call-info" class="ql-call-info hidden"></div>
+          <div id="lt-call-hint" class="ops-hint hidden">Comma-separated for multi-op (e.g. K0OTC, KO6M)</div>
+        </div>
+        <div id="lt-ref-section" class="log-field hidden">
+          <label for="lt-ref-input">Reference</label>
+          <input type="text" id="lt-ref-input" placeholder="e.g. US-1234 or US-1234, US-5678"
+                 autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <div id="lt-ref-name" class="log-ref-name"></div>
+        </div>
+        <div class="log-row">
+          <div class="log-field log-field-half">
+            <label for="lt-freq">Freq kHz</label>
+            <input type="text" id="lt-freq" inputmode="decimal">
+          </div>
+          <div class="log-field log-field-half">
+            <label for="lt-mode">Mode</label>
+            <select id="lt-mode">
+              <option value="SSB">SSB</option>
+              <option value="CW">CW</option>
+              <option value="FT8">FT8</option>
+              <option value="FT4">FT4</option>
+              <option value="FT2">FT2</option>
+              <option value="FM">FM</option>
+              <option value="RTTY">RTTY</option>
+              <option value="AM">AM</option>
+            </select>
+          </div>
+        </div>
+        <div class="log-row">
+          <div class="log-field log-field-half">
+            <label for="lt-rst-sent">RST Sent</label>
+            <input type="text" id="lt-rst-sent" inputmode="numeric" maxlength="3">
+          </div>
+          <div class="log-field log-field-half">
+            <label for="lt-rst-rcvd">RST Rcvd</label>
+            <input type="text" id="lt-rst-rcvd" inputmode="numeric" maxlength="3">
+          </div>
+        </div>
+        <div class="log-field">
+          <input type="text" id="lt-notes" placeholder="Optional notes" autocorrect="off" spellcheck="false">
+        </div>
+        <div id="lt-respot-section" class="hidden">
+          <label class="log-respot-toggle" id="lt-respot-label">
+            <input type="checkbox" id="lt-respot-cb"> Re-spot on POTA
+          </label>
+          <div id="lt-respot-comment-wrap" class="hidden">
+            <input type="text" id="lt-respot-comment" placeholder="Comment">
+          </div>
+        </div>
+        <button type="button" id="lt-save" class="lt-save-btn">Save QSO</button>
+      </div>
+    </div>
+
+    <!-- Activator log view (hidden by default) -->
+    <div id="log-view" class="hidden">
+
+      <!-- Start activation screen (shown when no activation running) -->
+      <div id="activation-setup">
+        <div class="setup-header">Start Activation</div>
+
+        <!-- Activation type chooser -->
+        <div class="setup-type-row">
+          <button class="setup-type-btn active" data-type="pota" style="--type-color:#4ecca3">POTA</button>
+          <button class="setup-type-btn" data-type="sota" style="--type-color:#f0a500">SOTA</button>
+          <button class="setup-type-btn" data-type="other" style="--type-color:#4fc3f7">Other</button>
+        </div>
+
+        <!-- Reference input with autocomplete -->
+        <div class="setup-ref-wrap">
+          <label id="setup-ref-label" class="setup-label">Park Reference</label>
+          <input type="text" id="setup-ref-input" placeholder="US-1234"
+                 autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <div id="setup-ref-dropdown" class="setup-dropdown hidden"></div>
+          <div id="setup-ref-name" class="setup-ref-name"></div>
+        </div>
+
+        <button type="button" id="start-activation-btn" class="start-activation-btn" disabled>Start Activation</button>
+      </div>
+
+      <!-- Past activations list -->
+      <div id="past-activations" class="hidden">
+        <div class="pa-header">Past Activations</div>
+        <div id="pa-list"></div>
+      </div>
+
+      <!-- Quick-log form (shown during activation) -->
+      <div id="quick-log-form" class="hidden">
+        <div class="ql-row">
+          <input type="text" id="ql-call" placeholder="Callsign" autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <button type="button" id="ql-log-btn" class="ql-log-btn">LOG</button>
+        </div>
+        <div id="ql-call-info" class="ql-call-info hidden"></div>
+        <div class="ql-row ql-row-small">
+          <input type="text" id="ql-freq" inputmode="decimal" placeholder="kHz" class="ql-freq">
+          <select id="ql-mode" class="ql-mode">
+            <option value="SSB">SSB</option>
+            <option value="CW">CW</option>
+            <option value="FT8">FT8</option>
+            <option value="FT4">FT4</option>
+            <option value="FT2">FT2</option>
+            <option value="FM">FM</option>
+            <option value="RTTY">RTTY</option>
+            <option value="AM">AM</option>
+          </select>
+          <input type="text" id="ql-rst-sent" inputmode="numeric" maxlength="3" placeholder="S" class="ql-rst" value="59">
+          <input type="text" id="ql-rst-rcvd" inputmode="numeric" maxlength="3" placeholder="R" class="ql-rst" value="59">
+        </div>
+        <input type="text" id="ql-notes" placeholder="Notes" class="ql-notes" autocorrect="off" spellcheck="false">
+      </div>
+
+      <!-- Contact list -->
+      <div id="contact-list"></div>
+
+      <!-- Log footer -->
+      <div id="log-footer" class="hidden">
+        <span id="log-footer-count">0 QSOs</span>
+        <span id="log-footer-queued" class="hidden">0 queued</span>
+        <button type="button" id="export-adif-btn" class="export-adif-btn">Export ADIF</button>
+      </div>
+    </div>
+
+    <!-- Logbook view -->
+    <div id="logbook-view" class="hidden">
+      <div class="lb-toolbar">
+        <input type="text" id="lb-search" placeholder="Search callsign, park, notes...">
+        <span id="lb-count" class="lb-count"></span>
+      </div>
+      <div id="lb-list" class="lb-list"></div>
+    </div>
+
+    <!-- Bottom controls -->
+    <div id="bottom-bar">
+      <button id="audio-btn" type="button" class="audio-button">
+        <span class="audio-icon">&#x1F50A;</span>
+        <span class="audio-label">Audio</span>
+      </button>
+      <button id="speaker-btn" type="button" class="speaker-button hidden" title="Speaker">
+        <span class="speaker-icon">&#x1F4E2;</span>
+        <span class="speaker-label">Speaker</span>
+      </button>
+      <button id="ptt-btn" type="button" class="ptt-button">PTT</button>
+      <button id="estop-btn" type="button" class="estop-button">STOP</button>
+    </div>
+
+    <!-- Log QSO sheet -->
+    <div id="log-sheet-backdrop" class="hidden"></div>
+    <div id="log-sheet" class="hidden">
+      <div class="log-sheet-handle"></div>
+      <h2 class="log-sheet-title">Log QSO</h2>
+      <form id="log-form" autocomplete="off">
+        <div id="log-type-picker" class="log-type-row">
+          <button type="button" class="log-type-chip" data-type="dx" style="--type-color:var(--dxc)">General</button>
+          <button type="button" class="log-type-chip" data-type="pota" style="--type-color:var(--pota)">POTA</button>
+          <button type="button" class="log-type-chip" data-type="sota" style="--type-color:var(--sota)">SOTA</button>
+          <button type="button" class="log-type-chip" data-type="wwff" style="--type-color:#26a69a">WWFF</button>
+          <button type="button" class="log-type-chip" data-type="llota" style="--type-color:#42a5f5">LLOTA</button>
+        </div>
+        <div class="log-field">
+          <label for="log-call">Callsign</label>
+          <input type="text" id="log-call" autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <div id="log-call-info" class="ql-call-info hidden"></div>
+        </div>
+        <div id="log-ref-section" class="log-field hidden">
+          <label for="log-ref-input">Reference</label>
+          <input type="text" id="log-ref-input" placeholder="e.g. US-1234 or US-1234, US-5678"
+                 autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <div id="log-ref-name" class="log-ref-name"></div>
+        </div>
+        <div class="log-row">
+          <div class="log-field log-field-half">
+            <label for="log-freq">Freq kHz</label>
+            <input type="text" id="log-freq" inputmode="decimal">
+          </div>
+          <div class="log-field log-field-half">
+            <label for="log-mode">Mode</label>
+            <select id="log-mode">
+              <option value="SSB">SSB</option>
+              <option value="CW">CW</option>
+              <option value="FT8">FT8</option>
+              <option value="FT4">FT4</option>
+              <option value="FT2">FT2</option>
+              <option value="FM">FM</option>
+              <option value="RTTY">RTTY</option>
+              <option value="AM">AM</option>
+            </select>
+          </div>
+        </div>
+        <div class="log-row">
+          <div class="log-field log-field-half">
+            <label for="log-rst-sent">RST Sent</label>
+            <input type="text" id="log-rst-sent" inputmode="numeric" maxlength="3">
+          </div>
+          <div class="log-field log-field-half">
+            <label for="log-rst-rcvd">RST Rcvd</label>
+            <input type="text" id="log-rst-rcvd" inputmode="numeric" maxlength="3">
+          </div>
+        </div>
+        <div class="log-field">
+          <input type="text" id="log-notes" placeholder="Optional notes" autocorrect="off" spellcheck="false">
+        </div>
+        <div id="log-respot-section" class="hidden">
+          <label class="log-respot-toggle" id="log-respot-label">
+            <input type="checkbox" id="log-respot-cb"> Re-spot on POTA
+          </label>
+          <div id="log-respot-comment-wrap" class="hidden">
+            <input type="text" id="log-respot-comment" placeholder="Comment">
+          </div>
+        </div>
+        <input type="hidden" id="log-sig">
+        <input type="hidden" id="log-sig-info">
+        <div class="log-buttons">
+          <button type="button" id="log-cancel" class="log-btn-cancel">Cancel</button>
+          <button type="submit" id="log-save" class="log-btn-save">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Log toast -->
+    <div id="log-toast" class="log-toast hidden"></div>
+
+    <!-- Video element for receiving radio RX audio — iOS treats <video> as normal
+         media playback, bypassing Safari's audio processing (AGC/noise suppression/
+         volume limiting) that <audio> elements get with WebRTC streams -->
+    <video id="remote-audio" autoplay playsinline style="display:none;"></video>
+
+    <!-- Activation map overlay -->
+    <div id="act-map-overlay" class="hidden">
+      <div class="act-map-bar">
+        <button type="button" id="act-map-back" class="act-map-back">&larr; Back</button>
+        <span id="act-map-title" class="act-map-title"></span>
+        <span id="act-map-count" class="act-map-count"></span>
+      </div>
+      <div id="act-map" class="act-map-container"></div>
+    </div>
+
+    <!-- Welcome tip -->
+    <div id="welcome-overlay" class="hidden">
+      <div class="welcome-card">
+        <h2 class="welcome-title">ECHOCAT</h2>
+        <p class="welcome-text">To connect to your radio's audio, press the <b>Audio</b> button, wait a few moments, then press it again to fully connect.</p>
+        <p class="welcome-text">When connected, the button will say <b>Live</b>.</p>
+        <label class="welcome-check"><input type="checkbox" id="welcome-hide"> Don't show this again</label>
+        <button type="button" id="welcome-ok" class="welcome-ok">Got it</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- leaflet-js -->
+  <script src="remote.js"></script>
+</body>
+</html>

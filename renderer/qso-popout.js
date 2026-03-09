@@ -1,12 +1,15 @@
 /* POTACAT — QSO Log Pop-out Window */
 'use strict';
 
+let accentGreen = '#4ecca3'; // updated by colorblind mode
+
 // --- Band lookup (duplicated from app.js — no Node in renderer) ---
 const BAND_RANGES = [
   [1800, 2000, '160m'], [3500, 4000, '80m'], [5330, 5410, '60m'],
   [7000, 7300, '40m'], [10100, 10150, '30m'], [14000, 14350, '20m'],
   [18068, 18168, '17m'], [21000, 21450, '15m'], [24890, 24990, '12m'],
-  [28000, 29700, '10m'], [50000, 54000, '6m'],
+  [28000, 29700, '10m'], [50000, 54000, '6m'], [144000, 148000, '2m'],
+  [420000, 450000, '70cm'],
 ];
 function freqKhzToBand(khz) {
   const f = parseFloat(khz);
@@ -470,7 +473,7 @@ function updateMap() {
     // World wrapping offsets
     for (const offset of [-360, 0, 360]) {
       const marker = L.circleMarker([lat, lon + offset], {
-        radius: 5, fillColor: '#4ecca3', color: '#4ecca3', fillOpacity: 0.8, weight: 1,
+        radius: 5, fillColor: accentGreen, color: accentGreen, fillOpacity: 0.8, weight: 1,
       }).bindPopup(popup);
       marker.on('mouseover', () => showArcsForCall(call, lat, lon));
       marker.on('mouseout', () => clearHoverArcs());
@@ -556,6 +559,25 @@ tbody.addEventListener('click', async (e) => {
   }
 });
 
+// --- Import ADIF ---
+document.getElementById('qso-import').addEventListener('click', async () => {
+  try {
+    const result = await window.api.importAdif();
+    if (!result) return; // cancelled
+    if (result.success) {
+      allQsos = await window.api.getAllQsos();
+      await resolveAllCallsigns();
+      await resolveAllParkLocations();
+      render();
+      toast(`Imported ${result.imported} QSOs (${result.unique} calls)`);
+    } else {
+      toast('Import failed: ' + (result.error || 'unknown error'));
+    }
+  } catch (err) {
+    toast('Import failed: ' + err.message);
+  }
+});
+
 // --- Export ADIF ---
 document.getElementById('qso-export').addEventListener('click', async () => {
   if (!filtered.length) { toast('No QSOs to export'); return; }
@@ -622,9 +644,20 @@ window.api.onQsoDeleted(async () => {
   render();
 });
 
+window.api.onRefresh(async () => {
+  allQsos = await window.api.getAllQsos();
+  await resolveAllCallsigns();
+  await resolveAllParkLocations();
+  render();
+});
+
 // --- Theme ---
 window.api.onTheme((theme) => {
   document.documentElement.setAttribute('data-theme', theme);
+});
+
+window.api.onColorblindMode((enabled) => {
+  accentGreen = enabled ? '#4fc3f7' : '#4ecca3';
 });
 
 // --- Log path ---
@@ -667,6 +700,7 @@ async function resolveAllParkLocations() {
   if (settings.lightMode) {
     document.documentElement.setAttribute('data-theme', 'light');
   }
+  if (settings.colorblindMode) accentGreen = '#4fc3f7';
   homeGrid = settings.grid || '';
 
   allQsos = await window.api.getAllQsos();

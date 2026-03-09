@@ -32,12 +32,29 @@ window.api.onTheme(theme => {
   else document.documentElement.removeAttribute('data-theme');
 });
 
+const CB_SOURCE_COLORS = {
+  pota: '#4fc3f7', sota: '#ffb300', wwff: '#29b6f6',
+  llota: '#42a5f5', dxc: '#e040fb', rbn: '#81d4fa', pskr: '#ffa726'
+};
+function applyColorblindVars(enabled) {
+  const root = document.documentElement;
+  if (enabled) {
+    for (const [src, color] of Object.entries(CB_SOURCE_COLORS)) root.style.setProperty('--source-' + src, color);
+  } else {
+    for (const src of Object.keys(CB_SOURCE_COLORS)) root.style.removeProperty('--source-' + src);
+  }
+}
+window.api.onColorblindMode(applyColorblindVars);
+// Apply on init
+window.api.getSettings().then(s => { if (s.colorblindMode) applyColorblindVars(true); });
+
 // --- Frequency to band mapping ---
 const BAND_EDGES = [
   [1800, 2000, '160m'], [3500, 4000, '80m'], [5330, 5410, '60m'],
   [7000, 7300, '40m'], [10100, 10150, '30m'], [14000, 14350, '20m'],
   [18068, 18168, '17m'], [21000, 21450, '15m'], [24890, 24990, '12m'],
-  [28000, 29700, '10m'], [50000, 54000, '6m'],
+  [28000, 29700, '10m'], [50000, 54000, '6m'], [144000, 148000, '2m'],
+  [420000, 450000, '70cm'],
 ];
 
 function freqToBand(freqKhz) {

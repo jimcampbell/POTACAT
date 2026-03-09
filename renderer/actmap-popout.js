@@ -1,5 +1,7 @@
 /* actmap-popout.js — Pop-out activation map showing park + logged contacts */
 
+let accentGreen = '#4ecca3'; // updated by colorblind mode
+
 // --- Titlebar ---
 if (window.api.platform === 'darwin') {
   document.body.classList.add('platform-darwin');
@@ -36,6 +38,18 @@ function greatCircleArc(lat1, lon1, lat2, lon2, numPoints) {
     ]);
   }
   return points;
+}
+
+function wrapLon(refLon, lon) {
+  let best = lon, bestDist = Math.abs(lon - refLon);
+  for (const offset of [-360, 360]) {
+    const wrapped = lon + offset;
+    if (Math.abs(wrapped - refLon) < bestDist) {
+      best = wrapped;
+      bestDist = Math.abs(wrapped - refLon);
+    }
+  }
+  return best;
 }
 
 function drawArc(map, lat1, lon1, lat2, lon2) {
@@ -113,7 +127,7 @@ function setParkMarker(lat, lon, ref, count) {
   parkLon = lon;
   const parkIcon = L.divIcon({
     className: '',
-    html: '<div style="background:#4ecca3;width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 6px rgba(78,204,163,0.6);"></div>',
+    html: `<div style="background:${accentGreen};width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 6px rgba(78,204,163,0.6);"></div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   });
@@ -125,8 +139,10 @@ function setParkMarker(lat, lon, ref, count) {
 // --- Contact Marker ---
 
 function addContactMarker(callsign, lat, lon, timeUtc, freqDisplay, mode, name) {
+  // Wrap longitude relative to park to avoid antimeridian zoom-out
+  const refLon = parkLon ?? -98.5;
   // Jitter: golden angle distribution for overlapping cty.dat positions
-  let cLat = lat, cLon = lon;
+  let cLat = lat, cLon = wrapLon(refLon, lon);
   const overlap = usedPositions.filter(p => Math.abs(p[0] - lat) < 0.01 && Math.abs(p[1] - lon) < 0.01).length;
   if (overlap > 0) {
     const angle = (overlap * 137.5) * Math.PI / 180;
@@ -199,6 +215,7 @@ async function handleActivationData(data) {
   }
 
   const bounds = [];
+  const bRefLon = pLon ?? -98.5;
   if (pLat != null && pLon != null) bounds.push([pLat, pLon]);
 
   for (const c of contacts) {
@@ -207,7 +224,7 @@ async function handleActivationData(data) {
     const loc = gridPos || locations[c.callsign];
     if (!loc) continue;
     addContactMarker(c.callsign, loc.lat, loc.lon, c.timeUtc, c.freqDisplay, c.mode, c.name);
-    bounds.push([loc.lat, loc.lon]);
+    bounds.push([loc.lat, wrapLon(bRefLon, loc.lon)]);
   }
 
   if (bounds.length > 1) {
@@ -282,6 +299,10 @@ window.api.onTheme((theme) => {
   }
 });
 
+window.api.onColorblindMode((enabled) => {
+  accentGreen = enabled ? '#4fc3f7' : '#4ecca3';
+});
+
 // --- Init ---
 
 async function init() {
@@ -290,6 +311,7 @@ async function init() {
     if (settings.lightMode) {
       document.documentElement.setAttribute('data-theme', 'light');
     }
+    if (settings.colorblindMode) accentGreen = '#4fc3f7';
     initMap();
   } catch {
     initMap();

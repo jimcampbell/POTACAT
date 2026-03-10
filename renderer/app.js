@@ -313,6 +313,31 @@ const rbnDistHeader = document.getElementById('rbn-dist-header');
 const rbnBandFilterEl = document.getElementById('rbn-band-filter');
 const rbnMaxAgeInput = document.getElementById('rbn-max-age');
 const rbnAgeUnitSelect = document.getElementById('rbn-age-unit');
+
+// JTCAT DOM refs
+const viewJtcatBtn = document.getElementById('view-jtcat-btn');
+const jtcatView = document.getElementById('jtcat-view');
+const jtcatModeSelect = document.getElementById('jtcat-mode');
+const jtcatCycleIndicator = document.getElementById('jtcat-cycle-indicator');
+const jtcatCountdown = document.getElementById('jtcat-countdown');
+const jtcatSyncStatus = document.getElementById('jtcat-sync-status');
+const jtcatWaterfall = document.getElementById('jtcat-waterfall');
+const jtcatBandActivity = document.getElementById('jtcat-band-activity');
+const jtcatRxActivity = document.getElementById('jtcat-rx-activity');
+const jtcatRxFreqLabel = document.getElementById('jtcat-rx-freq-label');
+const jtcatTxFreqInput = document.getElementById('jtcat-tx-freq');
+const jtcatRxFreqInput = document.getElementById('jtcat-rx-freq');
+const jtcatEnableTxBtn = document.getElementById('jtcat-enable-tx');
+const jtcatHaltTxBtn = document.getElementById('jtcat-halt-tx');
+const jtcatLogQsoBtn = document.getElementById('jtcat-log-qso');
+const jtcatTxMsgText = document.getElementById('jtcat-tx-msg-text');
+const jtcatTxSlotSelect = document.getElementById('jtcat-tx-slot');
+let jtcatRunning = false;
+let jtcatCountdownTimer = null;
+let jtcatDecodes = [];
+let jtcatRxFreq = 1500;
+let jtcatTxFreq = 1500;
+let jtcatCurrentBand = '20m';
 const setPotaParksPath = document.getElementById('set-pota-parks-path');
 const potaParksBrowseBtn = document.getElementById('pota-parks-browse-btn');
 const potaParksClearBtn = document.getElementById('pota-parks-clear-btn');
@@ -753,6 +778,9 @@ async function loadPrefs() {
     if (viewState) {
       if (viewState.sortCol) { sortCol = viewState.sortCol; }
       if (typeof viewState.sortAsc === 'boolean') { sortAsc = viewState.sortAsc; }
+      if (viewState.lastView === 'jtcat') {
+        setView('jtcat');
+      } else
       if (viewState.lastView === 'rbn' && enableRbn) {
         setView('rbn');
       } else if (viewState.lastView === 'dxcc' && enableDxcc) {
@@ -3836,7 +3864,7 @@ window.api.onActmapPopoutStatus((open) => {
 
 function setView(view) {
   // Called for exclusive views (rbn, dxcc) or to force a specific state
-  if (view === 'rbn' || view === 'dxcc') {
+  if (view === 'rbn' || view === 'dxcc' || view === 'jtcat') {
     currentView = view;
     showTable = false;
     showMap = false;
@@ -3856,11 +3884,24 @@ function updateViewLayout() {
   // Hide exclusive views
   dxccView.classList.add('hidden');
   rbnView.classList.add('hidden');
+  jtcatView.classList.add('hidden');
 
   // Deactivate all view buttons
   viewTableBtn.classList.remove('active');
   viewMapBtn.classList.remove('active');
   viewRbnBtn.classList.remove('active');
+  viewJtcatBtn.classList.remove('active');
+
+
+  if (currentView === 'jtcat') {
+    splitContainerEl.classList.add('hidden');
+    jtcatView.classList.remove('hidden');
+    viewJtcatBtn.classList.add('active');
+    if (!jtcatRunning) startJtcatView();
+    updateParksStatsOverlay();
+    saveViewState();
+    return;
+  }
 
   if (currentView === 'dxcc') {
     splitContainerEl.classList.add('hidden');
@@ -3938,8 +3979,9 @@ function saveViewState() {
 }
 
 viewTableBtn.addEventListener('click', () => {
-  if (currentView === 'rbn' || currentView === 'dxcc') {
+  if (currentView === 'rbn' || currentView === 'dxcc' || currentView === 'jtcat') {
     // Switching from exclusive view → table only
+    if (currentView === 'jtcat') stopJtcatView();
     currentView = 'table';
     showTable = true;
     showMap = false;
@@ -3968,8 +4010,9 @@ viewMapBtn.addEventListener('click', () => {
     window.api.popoutMapOpen(); // focuses existing window
     return;
   }
-  if (currentView === 'rbn' || currentView === 'dxcc') {
+  if (currentView === 'rbn' || currentView === 'dxcc' || currentView === 'jtcat') {
     // Switching from exclusive view → map only
+    if (currentView === 'jtcat') stopJtcatView();
     currentView = 'map';
     showTable = false;
     showMap = true;
@@ -3993,6 +4036,14 @@ viewMapBtn.addEventListener('click', () => {
 });
 
 viewRbnBtn.addEventListener('click', () => setView('rbn'));
+viewJtcatBtn.addEventListener('click', () => {
+  if (currentView === 'jtcat') {
+    stopJtcatView();
+    setView('table');
+  } else {
+    setView('jtcat');
+  }
+});
 dxccBoardBtn.addEventListener('click', () => {
   if (!enableDxcc) {
     enableDxcc = true;
@@ -9846,6 +9897,309 @@ window.api.getActiveEvents().then((events) => {
 applyColOrder();
 initColumnResizing();
 initColumnDragging();
+
+
+// ===== JTCAT (FT8/FT4 Digital Modes) =====
+
+var jtcatAudioCtx = null;
+var jtcatAudioStream = null;
+var jtcatAudioProcessor = null;
+var jtcatAnalyser = null;
+
+async function startJtcatAudio() {
+  try {
+    var s = await window.api.getSettings();
+    var audioConstraints = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: { ideal: 12000 }
+    };
+    // Use the same audio input device as ECHOCAT (remoteAudioInput)
+    if (s.remoteAudioInput) {
+      audioConstraints.deviceId = { exact: s.remoteAudioInput };
+    }
+    try {
+      jtcatAudioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    } catch (e) {
+      // Fall back to default device if configured one fails
+      console.warn('[JTCAT] Configured audio input not found, using default:', e.message);
+      delete audioConstraints.deviceId;
+      jtcatAudioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    }
+    jtcatAudioCtx = new AudioContext({ sampleRate: 12000 });
+    var source = jtcatAudioCtx.createMediaStreamSource(jtcatAudioStream);
+
+    // AnalyserNode for waterfall FFT (2048-point → 1024 frequency bins covering 0–6000 Hz)
+    jtcatAnalyser = jtcatAudioCtx.createAnalyser();
+    jtcatAnalyser.fftSize = 2048;
+    jtcatAnalyser.smoothingTimeConstant = 0.3;
+    source.connect(jtcatAnalyser);
+
+    // ScriptProcessorNode: 4096 samples at 12kHz = ~341ms per callback
+    jtcatAudioProcessor = jtcatAudioCtx.createScriptProcessor(4096, 1, 1);
+    jtcatAudioProcessor.onaudioprocess = function(e) {
+      var samples = e.inputBuffer.getChannelData(0);
+      // Send copy of buffer to main process for FT8 decode
+      window.api.jtcatAudio(Array.from(samples));
+    };
+    source.connect(jtcatAudioProcessor);
+    jtcatAudioProcessor.connect(jtcatAudioCtx.destination);
+
+    // Start waterfall rendering loop
+    jtcatWaterfallLoop();
+
+    console.log('[JTCAT] Audio capture started, device:', s.remoteAudioInput || 'default', 'sample rate:', jtcatAudioCtx.sampleRate);
+  } catch (err) {
+    console.error('[JTCAT] Audio capture failed:', err.message || err);
+  }
+}
+
+function stopJtcatAudio() {
+  if (waterfallAnimFrame) {
+    cancelAnimationFrame(waterfallAnimFrame);
+    waterfallAnimFrame = null;
+  }
+  jtcatAnalyser = null;
+  if (jtcatAudioProcessor) {
+    jtcatAudioProcessor.disconnect();
+    jtcatAudioProcessor = null;
+  }
+  if (jtcatAudioCtx) {
+    jtcatAudioCtx.close().catch(function() {});
+    jtcatAudioCtx = null;
+  }
+  if (jtcatAudioStream) {
+    jtcatAudioStream.getTracks().forEach(function(t) { t.stop(); });
+    jtcatAudioStream = null;
+  }
+}
+
+function startJtcatView() {
+  if (jtcatRunning) return;
+  jtcatRunning = true;
+  window.api.jtcatStart(jtcatModeSelect.value);
+  startJtcatCountdown();
+  startJtcatAudio();
+}
+
+function stopJtcatView() {
+  if (!jtcatRunning) return;
+  jtcatRunning = false;
+  window.api.jtcatStop();
+  stopJtcatAudio();
+  if (jtcatCountdownTimer) {
+    clearInterval(jtcatCountdownTimer);
+    jtcatCountdownTimer = null;
+  }
+  jtcatCountdown.textContent = '\u2014';
+  jtcatCycleIndicator.textContent = '\u2014';
+  jtcatSyncStatus.textContent = 'Sync: \u2014';
+}
+
+function startJtcatCountdown() {
+  if (jtcatCountdownTimer) clearInterval(jtcatCountdownTimer);
+  jtcatCountdownTimer = setInterval(() => {
+    if (!jtcatRunning) return;
+    const now = Date.now();
+    const mode = jtcatModeSelect.value;
+    const cycleMs = (mode === 'FT4' ? 7.5 : 15) * 1000;
+    const msInto = now % cycleMs;
+    const remaining = Math.ceil((cycleMs - msInto) / 1000);
+    jtcatCountdown.textContent = remaining + 's';
+    const cycleSec = mode === 'FT4' ? 7.5 : 15;
+    const slot = Math.floor(now / 1000 / cycleSec) % 2 === 0 ? 'Even' : 'Odd';
+    jtcatCycleIndicator.textContent = slot;
+    jtcatCycleIndicator.className = 'jtcat-cycle ' + (slot === 'Even' ? 'jtcat-slot-even' : 'jtcat-slot-odd');
+  }, 200);
+}
+
+// Band buttons
+document.querySelectorAll('.jtcat-band-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var freq = parseInt(btn.dataset.freq, 10);
+    var band = btn.dataset.band;
+    window.api.tune(freq, jtcatModeSelect.value);
+    jtcatCurrentBand = band;
+    document.querySelectorAll('.jtcat-band-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+  });
+});
+
+// Mode select
+jtcatModeSelect.addEventListener('change', function() {
+  if (jtcatRunning) window.api.jtcatSetMode(jtcatModeSelect.value);
+  jtcatDecodes = [];
+  renderJtcatDecodes();
+});
+
+// TX/RX freq inputs
+jtcatTxFreqInput.addEventListener('change', function() {
+  jtcatTxFreq = parseInt(jtcatTxFreqInput.value, 10) || 1500;
+  if (jtcatRunning) window.api.jtcatSetTxFreq(jtcatTxFreq);
+});
+jtcatRxFreqInput.addEventListener('change', function() {
+  jtcatRxFreq = parseInt(jtcatRxFreqInput.value, 10) || 1500;
+  jtcatRxFreqLabel.textContent = jtcatRxFreq + ' Hz';
+  if (jtcatRunning) window.api.jtcatSetRxFreq(jtcatRxFreq);
+});
+
+// Enable TX / Halt TX
+jtcatEnableTxBtn.addEventListener('click', function() {
+  var enabled = jtcatEnableTxBtn.classList.toggle('active');
+  jtcatEnableTxBtn.textContent = enabled ? 'TX Enabled' : 'Enable TX';
+  window.api.jtcatEnableTx(enabled);
+});
+jtcatHaltTxBtn.addEventListener('click', function() {
+  jtcatEnableTxBtn.classList.remove('active');
+  jtcatEnableTxBtn.textContent = 'Enable TX';
+  window.api.jtcatHaltTx();
+});
+
+function renderJtcatDecodes() {
+  if (jtcatDecodes.length === 0) {
+    jtcatBandActivity.innerHTML = '<div class="jtcat-empty">Waiting for decodes...</div>';
+  } else {
+    jtcatBandActivity.innerHTML = jtcatDecodes.map(function(d) {
+      var cls = getJtcatDecodeClass(d);
+      return '<div class="jtcat-decode-row ' + cls + '" data-df="' + d.df + '">' + formatJtcatDecode(d) + '</div>';
+    }).join('');
+  }
+  var rxNear = jtcatDecodes.filter(function(d) { return Math.abs(d.df - jtcatRxFreq) <= 50; });
+  if (rxNear.length === 0) {
+    jtcatRxActivity.innerHTML = '<div class="jtcat-empty">\u2014</div>';
+  } else {
+    jtcatRxActivity.innerHTML = rxNear.map(function(d) {
+      var cls = getJtcatDecodeClass(d);
+      return '<div class="jtcat-decode-row ' + cls + '" data-df="' + d.df + '">' + formatJtcatDecode(d) + '</div>';
+    }).join('');
+  }
+  jtcatBandActivity.querySelectorAll('.jtcat-decode-row').forEach(function(row) {
+    row.addEventListener('click', function() {
+      var df = parseInt(row.dataset.df, 10);
+      jtcatRxFreq = df;
+      jtcatRxFreqInput.value = df;
+      jtcatRxFreqLabel.textContent = df + ' Hz';
+      if (jtcatRunning) window.api.jtcatSetRxFreq(df);
+      renderJtcatDecodes();
+    });
+  });
+}
+
+function formatJtcatDecode(d) {
+  var db = String(d.db).padStart(3, ' ');
+  var dt = d.dt >= 0 ? '+' + d.dt.toFixed(1) : d.dt.toFixed(1);
+  var df = String(d.df).padStart(4, ' ');
+  var text = (d.text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return '<span class="jtcat-db">' + db + '</span> <span class="jtcat-dt">' + dt + '</span> <span class="jtcat-df">' + df + '</span> <span class="jtcat-msg">' + text + '</span>';
+}
+
+function getJtcatDecodeClass(d) {
+  var text = d.text || '';
+  if (text.startsWith('CQ ')) return 'jtcat-cq';
+  var myCallEl = document.getElementById('set-my-callsign');
+  var myCall = myCallEl ? myCallEl.value : '';
+  if (myCall && text.indexOf(' ' + myCall.toUpperCase().trim() + ' ') >= 0) return 'jtcat-directed';
+  return '';
+}
+
+// Waterfall rendering
+var waterfallCtx = jtcatWaterfall.getContext('2d');
+var waterfallAnimFrame = null;
+
+function jtcatWaterfallLoop() {
+  if (!jtcatRunning || !jtcatAnalyser) return;
+
+  var freqData = new Uint8Array(jtcatAnalyser.frequencyBinCount);
+  jtcatAnalyser.getByteFrequencyData(freqData);
+
+  // AnalyserNode at 12kHz with fftSize=2048 gives 1024 bins covering 0–6000 Hz.
+  // FT8 passband is 0–3000 Hz = first half of bins (512 bins).
+  var passbandBins = Math.floor(freqData.length / 2); // 0–3000 Hz
+
+  var w = jtcatWaterfall.width;
+  var h = jtcatWaterfall.height;
+
+  // Scroll existing image down by 1 pixel
+  var imgData = waterfallCtx.getImageData(0, 0, w, h - 1);
+  waterfallCtx.putImageData(imgData, 0, 1);
+
+  // Draw new line at top row
+  var lineData = waterfallCtx.createImageData(w, 1);
+  for (var x = 0; x < w; x++) {
+    var binIdx = Math.floor(x * passbandBins / w);
+    var val = freqData[binIdx]; // 0–255
+
+    // Color map: dark blue → cyan → yellow → red → white
+    var norm = val / 255;
+    var r, g, b;
+    if (norm < 0.2) {
+      // Black to dark blue
+      r = 0;
+      g = 0;
+      b = Math.floor(norm * 5 * 140);
+    } else if (norm < 0.4) {
+      // Dark blue to cyan
+      var t = (norm - 0.2) * 5;
+      r = 0;
+      g = Math.floor(t * 255);
+      b = 140 + Math.floor(t * 115);
+    } else if (norm < 0.6) {
+      // Cyan to yellow
+      var t = (norm - 0.4) * 5;
+      r = Math.floor(t * 255);
+      g = 255;
+      b = Math.floor((1 - t) * 255);
+    } else if (norm < 0.8) {
+      // Yellow to red
+      var t = (norm - 0.6) * 5;
+      r = 255;
+      g = Math.floor((1 - t) * 255);
+      b = 0;
+    } else {
+      // Red to white
+      var t = (norm - 0.8) * 5;
+      r = 255;
+      g = Math.floor(t * 255);
+      b = Math.floor(t * 255);
+    }
+
+    var i = x * 4;
+    lineData.data[i] = r;
+    lineData.data[i + 1] = g;
+    lineData.data[i + 2] = b;
+    lineData.data[i + 3] = 255;
+  }
+  waterfallCtx.putImageData(lineData, 0, 0);
+
+  waterfallAnimFrame = requestAnimationFrame(jtcatWaterfallLoop);
+}
+
+// JTCAT IPC listeners
+window.api.onJtcatDecode(function(data) {
+  jtcatDecodes = data.results || [];
+  jtcatSyncStatus.textContent = 'Sync: OK';
+  jtcatSyncStatus.classList.add('jtcat-synced');
+  renderJtcatDecodes();
+});
+
+window.api.onJtcatCycle(function(data) {
+  jtcatCycleIndicator.textContent = data.slot === 'even' ? 'Even' : 'Odd';
+  jtcatCycleIndicator.className = 'jtcat-cycle ' + (data.slot === 'even' ? 'jtcat-slot-even' : 'jtcat-slot-odd');
+});
+
+// Spectrum/waterfall is rendered directly from AnalyserNode in jtcatWaterfallLoop()
+
+window.api.onJtcatStatus(function(data) {
+  if (data.state === 'running') {
+    jtcatSyncStatus.textContent = 'Sync: OK';
+    jtcatSyncStatus.classList.add('jtcat-synced');
+  } else if (data.state === 'stopped') {
+    jtcatSyncStatus.textContent = 'Sync: \u2014';
+    jtcatSyncStatus.classList.remove('jtcat-synced');
+  }
+});
 
 // Sticky table header via JS transform on each th
 // (CSS position:sticky and transform on <thead> are unreliable in Chromium table rendering)

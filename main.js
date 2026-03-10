@@ -23,6 +23,7 @@ const { IambicKeyer } = require('./lib/keyer');
 const { parsePotaParksCSV } = require('./lib/pota-parks');
 const { WsjtxClient, encodeHeartbeat, encodeLoggedAdif, encodeQsoLogged } = require('./lib/wsjtx');
 const { PskrClient } = require('./lib/pskreporter');
+const { Ft8Engine } = require('./lib/ft8-engine');
 const { RemoteServer } = require('./lib/remote-server');
 const { fetchSpots: fetchWwffSpots } = require('./lib/wwff');
 const { fetchSpots: fetchLlotaSpots } = require('./lib/llota');
@@ -1407,6 +1408,49 @@ function updateWsjtxHighlights() {
   const fgColor = { r: 0, g: 0, b: 0 };
   for (const call of activators) {
     wsjtx.highlightCallsign(call, bgColor, fgColor);
+  }
+}
+
+// --- JTCAT (FT8/FT4 native decode engine) ---
+let ft8Engine = null;
+
+function startJtcat(mode) {
+  stopJtcat();
+  ft8Engine = new Ft8Engine();
+  ft8Engine.setMode(mode || 'FT8');
+
+  ft8Engine.on('decode', (data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-decode', data);
+    }
+  });
+
+  ft8Engine.on('cycle', (data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-cycle', data);
+    }
+  });
+
+  ft8Engine.on('status', (data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-status', data);
+    }
+  });
+
+  ft8Engine.on('error', (err) => {
+    console.error('[JTCAT] Engine error:', err.message);
+  });
+
+  ft8Engine.start();
+  console.log('[JTCAT] Engine started, mode:', mode || 'FT8');
+}
+
+function stopJtcat() {
+  if (ft8Engine) {
+    ft8Engine.stop();
+    ft8Engine.removeAllListeners();
+    ft8Engine = null;
+    console.log('[JTCAT] Engine stopped');
   }
 }
 
@@ -5514,6 +5558,18 @@ app.whenReady().then(() => {
     }
   });
 
+  // --- JTCAT IPC ---
+  ipcMain.on('jtcat-start', (_e, mode) => startJtcat(mode));
+  ipcMain.on('jtcat-stop', () => stopJtcat());
+  ipcMain.on('jtcat-set-mode', (_e, mode) => { if (ft8Engine) ft8Engine.setMode(mode); });
+  ipcMain.on('jtcat-set-tx-freq', (_e, hz) => { if (ft8Engine) ft8Engine.setTxFreq(hz); });
+  ipcMain.on('jtcat-set-rx-freq', (_e, hz) => { if (ft8Engine) ft8Engine.setRxFreq(hz); });
+  ipcMain.on('jtcat-enable-tx', (_e, enabled) => { if (ft8Engine) ft8Engine._txEnabled = enabled; });
+  ipcMain.on('jtcat-halt-tx', () => { if (ft8Engine) ft8Engine._txEnabled = false; });
+  ipcMain.on('jtcat-audio', (_e, buf) => {
+    if (ft8Engine) ft8Engine.feedAudio(new Float32Array(buf));
+  });
+
   // --- QRZ single callsign lookup (for Quick Log) ---
   ipcMain.handle('qrz-lookup', async (_e, callsign) => {
     if (!qrz.configured || !settings.enableQrz) return null;
@@ -5942,6 +5998,7 @@ function gracefulCleanup() {
   try { disconnectTci(); } catch {}
   try { disconnectRemote(); } catch {}
   try { disconnectKeyer(); } catch {}
+  try { stopJtcat(); } catch {}
   try { hamrsBridge.stop(); } catch {}
   killRigctld();
 }

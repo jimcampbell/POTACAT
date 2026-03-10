@@ -4117,3 +4117,268 @@ body.activator-rbn-on #rbn-view {
 /* Settings radio labels */
 .radio-label { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 
+/* =============================================
+   JTCAT — FT8/FT4 Digital Modes View
+   ============================================= */
+
+#jtcat-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.jtcat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.jtcat-band-buttons {
+  display: flex;
+  gap: 2px;
+}
+
+.jtcat-band-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-primary);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.jtcat-band-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.jtcat-band-btn.active {
+  background: var(--accent-blue);
+  color: #000;
+  border-color: var(--accent-blue);
+  font-weight: bold;
+}
+
+.jtcat-mode-select select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  padding: 3px 6px;
+  font-size: 12px;
+  border-radius: 3px;
+}
+
+.jtcat-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.jtcat-cycle {
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: bold;
+}
+.jtcat-cycle.jtcat-slot-even { color: #4fc3f7; }
+.jtcat-cycle.jtcat-slot-odd { color: #f0a500; }
+
+.jtcat-countdown {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--text-primary);
+  min-width: 24px;
+  text-align: center;
+}
+
+.jtcat-sync { color: var(--text-tertiary); }
+.jtcat-sync.jtcat-synced { color: var(--accent-green); }
+
+/* Main content area: waterfall + decode panels */
+.jtcat-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Waterfall pane */
+.jtcat-waterfall-pane {
+  width: 300px;
+  min-width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  border-right: 1px solid var(--border-primary);
+}
+
+#jtcat-waterfall {
+  flex: 1;
+  width: 100%;
+  image-rendering: pixelated;
+}
+
+.jtcat-freq-labels {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 4px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+}
+
+/* Decode panels */
+.jtcat-decode-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.jtcat-decode-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.jtcat-decode-section:first-child {
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.jtcat-decode-header {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+.jtcat-decode-header span {
+  font-weight: normal;
+  color: var(--accent-blue);
+  font-family: monospace;
+}
+
+.jtcat-decode-list {
+  flex: 1;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 2px 0;
+  background: var(--bg-primary);
+}
+
+.jtcat-decode-row {
+  padding: 1px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+}
+.jtcat-decode-row:hover { background: var(--bg-hover); }
+
+.jtcat-decode-row .jtcat-db { color: var(--text-secondary); min-width: 32px; text-align: right; }
+.jtcat-decode-row .jtcat-dt { color: var(--text-dim); min-width: 36px; text-align: right; }
+.jtcat-decode-row .jtcat-df { color: var(--accent-blue); min-width: 44px; text-align: right; }
+.jtcat-decode-row .jtcat-msg { color: var(--text-primary); }
+
+/* CQ calls highlighted green */
+.jtcat-decode-row.jtcat-cq .jtcat-msg { color: var(--accent-green); }
+/* Calls directed to me highlighted red */
+.jtcat-decode-row.jtcat-directed .jtcat-msg { color: var(--accent-red); font-weight: bold; }
+/* POTA activators get a badge */
+.jtcat-decode-row .jtcat-pota-badge {
+  background: var(--source-pota);
+  color: #000;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-weight: bold;
+  margin-left: 4px;
+}
+
+.jtcat-empty {
+  padding: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-family: sans-serif;
+  font-size: 12px;
+}
+
+/* Bottom controls bar */
+.jtcat-controls {
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.jtcat-tx-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.jtcat-tx-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.jtcat-tx-label input {
+  width: 55px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  padding: 2px 4px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+.jtcat-tx-label span { color: var(--text-dim); font-size: 10px; }
+
+.jtcat-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.jtcat-btn:hover { background: var(--bg-hover); }
+.jtcat-btn.active { background: var(--accent-green); color: #000; border-color: var(--accent-green); }
+
+.jtcat-halt-btn { color: var(--accent-red); border-color: var(--accent-red); }
+.jtcat-halt-btn:hover { background: var(--accent-red); color: #fff; }
+
+.jtcat-tx-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.jtcat-tx-msg-label { color: var(--text-tertiary); font-weight: bold; }
+#jtcat-tx-msg-text { color: var(--accent-blue); font-family: monospace; font-size: 12px; }
+.jtcat-tx-slot-label { color: var(--text-tertiary); margin-left: auto; }
+.jtcat-tx-message select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  padding: 2px 4px;
+  font-size: 11px;
+  border-radius: 3px;
+}
+

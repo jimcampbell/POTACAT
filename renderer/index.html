@@ -147,6 +147,7 @@
         <button id="popout-map-btn" class="view-btn popout-btn" title="Pop-out map window">&#x2197;</button>
         <button id="view-rbn-btn" class="view-btn hidden" title="Reverse Beacon Network">RBN</button>
         <button id="cluster-terminal-btn" class="view-btn hidden" title="DX Cluster Terminal">Terminal</button>
+        <button id="view-jtcat-btn" class="view-btn" title="JTCAT — FT8/FT4 Digital Modes">JTCAT</button>
       </div>
     </div>
     <div class="status-bar">
@@ -371,6 +372,88 @@
         </div>
       </div>
     </div>
+    <!-- JTCAT View (FT8/FT4 Digital Modes) -->
+    <div id="jtcat-view" class="hidden">
+      <div class="jtcat-toolbar">
+        <div class="jtcat-band-buttons">
+          <button class="jtcat-band-btn" data-band="160m" data-freq="1840">160</button>
+          <button class="jtcat-band-btn" data-band="80m" data-freq="3573">80</button>
+          <button class="jtcat-band-btn" data-band="60m" data-freq="5357">60</button>
+          <button class="jtcat-band-btn" data-band="40m" data-freq="7074">40</button>
+          <button class="jtcat-band-btn" data-band="30m" data-freq="10136">30</button>
+          <button class="jtcat-band-btn active" data-band="20m" data-freq="14074">20</button>
+          <button class="jtcat-band-btn" data-band="17m" data-freq="18100">17</button>
+          <button class="jtcat-band-btn" data-band="15m" data-freq="21074">15</button>
+          <button class="jtcat-band-btn" data-band="12m" data-freq="24915">12</button>
+          <button class="jtcat-band-btn" data-band="10m" data-freq="28074">10</button>
+          <button class="jtcat-band-btn" data-band="6m" data-freq="50313">6</button>
+        </div>
+        <div class="jtcat-mode-select">
+          <select id="jtcat-mode">
+            <option value="FT8">FT8</option>
+            <option value="FT4">FT4</option>
+          </select>
+        </div>
+        <div class="jtcat-status">
+          <span id="jtcat-cycle-indicator" class="jtcat-cycle">&mdash;</span>
+          <span id="jtcat-countdown" class="jtcat-countdown">&mdash;</span>
+          <span id="jtcat-sync-status" class="jtcat-sync">Sync: &mdash;</span>
+        </div>
+      </div>
+
+      <div class="jtcat-main">
+        <!-- Waterfall (left) -->
+        <div class="jtcat-waterfall-pane">
+          <canvas id="jtcat-waterfall" width="400" height="500"></canvas>
+          <div class="jtcat-freq-labels">
+            <span>0</span><span>500</span><span>1000</span><span>1500</span><span>2000</span><span>2500</span><span>3000</span>
+          </div>
+        </div>
+
+        <!-- Decode panels (right) -->
+        <div class="jtcat-decode-pane">
+          <div class="jtcat-decode-section">
+            <div class="jtcat-decode-header">Band Activity</div>
+            <div id="jtcat-band-activity" class="jtcat-decode-list">
+              <div class="jtcat-empty">Waiting for decodes...</div>
+            </div>
+          </div>
+          <div class="jtcat-decode-section">
+            <div class="jtcat-decode-header">RX Frequency <span id="jtcat-rx-freq-label">1500 Hz</span></div>
+            <div id="jtcat-rx-activity" class="jtcat-decode-list">
+              <div class="jtcat-empty">&mdash;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="jtcat-controls">
+        <div class="jtcat-tx-controls">
+          <label class="jtcat-tx-label">TX Freq:
+            <input type="number" id="jtcat-tx-freq" value="1500" min="100" max="3000" step="10">
+            <span>Hz</span>
+          </label>
+          <label class="jtcat-tx-label">RX Freq:
+            <input type="number" id="jtcat-rx-freq" value="1500" min="100" max="3000" step="10">
+            <span>Hz</span>
+          </label>
+          <button id="jtcat-enable-tx" class="jtcat-btn">Enable TX</button>
+          <button id="jtcat-halt-tx" class="jtcat-btn jtcat-halt-btn">Halt TX</button>
+          <button id="jtcat-log-qso" class="jtcat-btn">Log QSO</button>
+        </div>
+        <div class="jtcat-tx-message">
+          <span class="jtcat-tx-msg-label">TX:</span>
+          <span id="jtcat-tx-msg-text">&mdash;</span>
+          <span class="jtcat-tx-slot-label">Slot:</span>
+          <select id="jtcat-tx-slot">
+            <option value="auto">Auto</option>
+            <option value="even">Even</option>
+            <option value="odd">Odd</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <div id="parks-stats-overlay" class="hidden">
       <div class="parks-stats-header">
         <span>POTA Stats</span>
@@ -1128,7 +1211,7 @@
       <button id="settings-cancel">Cancel</button>
     </div>
     <div class="settings-footer">
-      <div class="settings-version">v1.0.0 &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
+      <div class="settings-version">v1.0.1 &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
       <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
       <div class="settings-links">
         <a href="#" id="discord-link">Discord</a>

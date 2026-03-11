@@ -1403,7 +1403,17 @@ function saveFilters() {
 function restoreFilters() {
   try {
     const data = JSON.parse(localStorage.getItem(FILTERS_KEY));
-    if (!data) return;
+    if (!data) {
+      // First run — ensure filters default to "All" (override any HTML-hardcoded checks)
+      [bandFilterEl, modeFilterEl, continentFilterEl].forEach((container) => {
+        container.querySelector('input[value="all"]').checked = true;
+        const radioCb = container.querySelector('input[value="radio"]');
+        if (radioCb) radioCb.checked = false;
+        container.querySelectorAll('input:not([value="all"]):not([value="radio"])').forEach((cb) => { cb.checked = false; });
+        if (container._updateText) container._updateText();
+      });
+      return;
+    }
 
     // Restore band checkboxes
     if (data.bandRadio) {

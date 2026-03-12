@@ -18,8 +18,11 @@
   let pc = null;
   let localAudioStream = null;
   let audioEnabled = false;
-  let remoteAudio = null; // <audio> element for playback
-  let speakerMode = false;
+  let remoteAudio = null; // <video> element for playback
+  let audioCtx = null;   // Web Audio context for gain boost
+  let gainNode = null;   // GainNode for volume amplification
+  let volBoostLevel = 0; // 0=1x, 1=2x, 2=3x
+  const VOL_STEPS = [1, 2, 3];
 
   // Scan
   let scanning = false;
@@ -63,7 +66,7 @@
   const logCancelBtn = document.getElementById('log-cancel');
   const logToast = document.getElementById('log-toast');
   const rigSelect = document.getElementById('rig-select');
-  const speakerBtn = document.getElementById('speaker-btn');
+  const volBoostBtn = document.getElementById('vol-boost-btn');
   const scanBtn = document.getElementById('scan-btn');
   const refreshRateBtn = document.getElementById('refresh-rate-btn');
   const filterToolbar = document.getElementById('filter-toolbar');
@@ -1012,6 +1015,18 @@
   pttBtn.addEventListener('mouseup', (e) => { e.preventDefault(); pttStop(); });
   pttBtn.addEventListener('mouseleave', (e) => { if (pttDown) pttStop(); });
 
+  // Spacebar PTT (iPad keyboard)
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !e.repeat && !isInputFocused()) { e.preventDefault(); pttStart(); }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' && !isInputFocused()) { e.preventDefault(); pttStop(); }
+  });
+  function isInputFocused() {
+    const el = document.activeElement;
+    return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+  }
+
   estopBtn.addEventListener('click', () => {
     pttDown = false;
     pttBtn.classList.remove('active');
@@ -1022,6 +1037,25 @@
       ws.send(JSON.stringify({ type: 'estop' }));
     }
   });
+
+  // --- Bluetooth earbud PTT (Media Session API) ---
+  // Pixel Buds, AirPods, etc. fire play/pause on single tap.
+  // Toggle PTT: tap to start transmitting, tap again to stop.
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('pause', () => {
+      if (!audioEnabled) return;
+      if (pttDown) pttStop(); else pttStart();
+      // Keep media session in "playing" state so next tap fires again
+      navigator.mediaSession.playbackState = 'playing';
+      if (remoteAudio) remoteAudio.play().catch(() => {});
+    });
+    navigator.mediaSession.setActionHandler('play', () => {
+      if (!audioEnabled) return;
+      if (pttDown) pttStop(); else pttStart();
+      navigator.mediaSession.playbackState = 'playing';
+      if (remoteAudio) remoteAudio.play().catch(() => {});
+    });
+  }
 
   // --- Settings Overlay ---
   rigCtrlToggle.addEventListener('click', () => {
@@ -1247,9 +1281,17 @@
         });
         remoteAudio = document.getElementById('remote-audio');
         remoteAudio.srcObject = new MediaStream();
-        remoteAudio.volume = 1.0;
         remoteAudio.muted = false;
         await remoteAudio.play().catch(() => {});
+        // Create AudioContext during user gesture so iOS Safari doesn't block it
+        try {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          gainNode = audioCtx.createGain();
+          gainNode.gain.value = VOL_STEPS[volBoostLevel];
+          gainNode.connect(audioCtx.destination);
+        } catch (e) {
+          console.warn('Web Audio API unavailable:', e.message);
+        }
         // Mute mic by default — only unmute during PTT to prevent VOX/feedback TX cycling
         localAudioStream.getAudioTracks().forEach(t => { t.enabled = false; });
         micReady = true;
@@ -1272,10 +1314,29 @@
       }
       pc.ontrack = (event) => {
         setAudioStatus('Live');
-        remoteAudio.srcObject = event.streams[0];
-        remoteAudio.volume = 1.0;
-        remoteAudio.muted = false;
-        remoteAudio.play().catch(() => {});
+        // Route through pre-created GainNode for volume boost
+        if (audioCtx && gainNode) {
+          try {
+            var source = audioCtx.createMediaStreamSource(event.streams[0]);
+            source.connect(gainNode);
+            // Keep video element playing (muted) as iOS keep-alive
+            remoteAudio.srcObject = event.streams[0];
+            remoteAudio.volume = 0;
+            remoteAudio.play().catch(() => {});
+          } catch (e) {
+            console.warn('GainNode wiring failed, using direct playback:', e.message);
+            remoteAudio.srcObject = event.streams[0];
+            remoteAudio.volume = 1.0;
+            remoteAudio.muted = false;
+            remoteAudio.play().catch(() => {});
+          }
+        } else {
+          // Fallback: no Web Audio, play through element directly
+          remoteAudio.srcObject = event.streams[0];
+          remoteAudio.volume = 1.0;
+          remoteAudio.muted = false;
+          remoteAudio.play().catch(() => {});
+        }
       };
       pc.onicecandidate = (event) => {
         if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
@@ -1292,7 +1353,12 @@
       audioEnabled = true;
       audioBtn.classList.add('active');
       audioDot.classList.remove('hidden');
-      if (!isIosSafari) speakerBtn.classList.remove('hidden');
+      volBoostBtn.classList.remove('hidden');
+      // Activate Media Session so Bluetooth earbud buttons work for PTT
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: 'ECHOCAT', artist: 'POTACAT' });
+        navigator.mediaSession.playbackState = 'playing';
+      }
     } catch (err) {
       console.error('Audio error:', err);
       setAudioStatus('Error');
@@ -1303,12 +1369,14 @@
     if (pc) { pc.close(); pc = null; }
     if (localAudioStream) { localAudioStream.getTracks().forEach(t => t.stop()); localAudioStream = null; }
     if (remoteAudio) { remoteAudio.srcObject = null; }
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; gainNode = null; }
     audioEnabled = false;
     micReady = false;
-    speakerMode = false;
+    volBoostLevel = 0;
     audioBtn.classList.remove('active');
-    speakerBtn.classList.add('hidden');
-    speakerBtn.classList.remove('active');
+    volBoostBtn.classList.add('hidden');
+    volBoostBtn.classList.remove('active');
+    volBoostBtn.querySelector('.speaker-label').textContent = 'Vol 1x';
     audioDot.classList.add('hidden');
     audioDot.classList.remove('connected');
     setAudioStatus('Audio');
@@ -1334,20 +1402,15 @@
     }
   }
 
-  // --- Speaker Toggle (hidden on iOS/Safari which lacks setSinkId) ---
-  var isIosSafari = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  if (isIosSafari) speakerBtn.style.display = 'none';
-
-  speakerBtn.addEventListener('click', () => {
-    if (!remoteAudio) return;
-    if (typeof remoteAudio.setSinkId !== 'function') {
-      alert('Speaker toggle is not supported on this browser.\nUse your phone\'s speaker button instead.');
-      return;
-    }
-    speakerMode = !speakerMode;
-    remoteAudio.setSinkId(speakerMode ? 'default' : 'communications')
-      .then(() => { speakerBtn.classList.toggle('active', speakerMode); })
-      .catch(() => { alert('Could not switch audio output.'); speakerMode = !speakerMode; });
+  // --- Volume Boost (cycles 1x → 2x → 3x) ---
+  volBoostBtn.addEventListener('click', () => {
+    volBoostLevel = (volBoostLevel + 1) % VOL_STEPS.length;
+    var gain = VOL_STEPS[volBoostLevel];
+    if (gainNode) gainNode.gain.value = gain;
+    // iOS AudioContext may start suspended — resume on user gesture
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    volBoostBtn.querySelector('.speaker-label').textContent = 'Vol ' + gain + 'x';
+    volBoostBtn.classList.toggle('active', volBoostLevel > 0);
   });
 
   // --- Scan ---
@@ -1798,14 +1861,17 @@
   function handleActivatorState(msg) {
     const refs = msg.parkRefs || [];
     phoneGrid = msg.grid || '';
-    // If desktop is in activator mode with a park, auto-start activation
+    // If desktop is in activator mode with a park, pre-fill the setup form
+    // (don't auto-start — user must tap Start to begin a new activation)
     if (msg.appMode === 'activator' && refs.length > 0 && refs[0].ref) {
-      if (!activationRunning || activationRef !== refs[0].ref) {
-        activationRef = refs[0].ref;
+      if (!activationRunning) {
+        setupRefInput.value = refs[0].ref;
+        setupRefName.textContent = refs[0].name || '';
         activationName = refs[0].name || '';
         activationSig = 'POTA';
         activationType = 'pota';
-        beginActivation();
+        startActivationBtn.disabled = false;
+        document.querySelectorAll('.setup-type-btn').forEach(b => b.classList.toggle('active', b.dataset.type === 'pota'));
       }
     }
   }
@@ -1858,10 +1924,6 @@
     } else if (tab === 'activate') {
       logView.classList.remove('hidden');
       updateLogViewState();
-      if (!activationRunning) {
-        pastActivationsDiv.classList.remove('hidden');
-        requestPastActivations();
-      }
     }
   }
 
@@ -1879,6 +1941,7 @@
       pastActivationsDiv.classList.remove('hidden');
       quickLogForm.classList.add('hidden');
       logFooter.classList.add('hidden');
+      requestPastActivations();
       setupRefInput.focus();
     }
   }

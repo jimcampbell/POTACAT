@@ -19,15 +19,16 @@
   <header>
     <div class="filters">
       <div class="multi-dropdown" id="band-filter">
-        <button class="multi-dropdown-btn" type="button">Band: <span class="multi-dropdown-text">20m</span></button>
+        <button class="multi-dropdown-btn" type="button">Band: <span class="multi-dropdown-text">All</span></button>
         <div class="multi-dropdown-menu">
-          <label class="multi-dropdown-item"><input type="checkbox" value="all"> All</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="all" checked> All</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="radio"> Radio</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="160m"> 160m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="80m"> 80m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="60m"> 60m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="40m"> 40m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="30m"> 30m</label>
-          <label class="multi-dropdown-item"><input type="checkbox" value="20m" checked> 20m</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="20m"> 20m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="17m"> 17m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="15m"> 15m</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="12m"> 12m</label>
@@ -38,10 +39,11 @@
         </div>
       </div>
       <div class="multi-dropdown" id="mode-filter">
-        <button class="multi-dropdown-btn" type="button">Mode: <span class="multi-dropdown-text">CW</span></button>
+        <button class="multi-dropdown-btn" type="button">Mode: <span class="multi-dropdown-text">All</span></button>
         <div class="multi-dropdown-menu">
-          <label class="multi-dropdown-item"><input type="checkbox" value="all"> All</label>
-          <label class="multi-dropdown-item"><input type="checkbox" value="CW" checked> CW</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="all" checked> All</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="radio"> Radio</label>
+          <label class="multi-dropdown-item"><input type="checkbox" value="CW"> CW</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="SSB"> SSB</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="FT8"> FT8</label>
           <label class="multi-dropdown-item"><input type="checkbox" value="FT4"> FT4</label>
@@ -111,14 +113,31 @@
               <div class="switch"><input type="checkbox" id="quick-echo-cat"><span class="switch-slider"></span></div>
             </label>
             <div id="echo-cat-info" class="echo-cat-info hidden">
-              <div class="echo-cat-url" id="echo-cat-url"></div>
+              <div class="echo-cat-url-row">
+                <div class="echo-cat-url" id="echo-cat-url"></div>
+                <button type="button" id="echo-cat-copy-url" class="echo-cat-copy-icon" title="Copy URL">&#x1F4CB;</button>
+              </div>
+              <div class="echo-cat-https-note">You must use https:// — http:// will not work</div>
               <div class="echo-cat-token-row">
                 <span class="echo-cat-token-label">Token:</span>
                 <span class="echo-cat-token-value" id="echo-cat-token"></span>
-                <button type="button" id="echo-cat-copy" class="echo-cat-copy-btn" title="Copy connection info">Copy</button>
+                <button type="button" id="echo-cat-copy" class="echo-cat-copy-btn" title="Copy connection info">Copy All</button>
+              </div>
+              <div class="echo-cat-audio-section">
+                <div class="echo-cat-audio-label">Audio</div>
+                <div class="echo-cat-audio-row">
+                  <span class="echo-cat-audio-icon" title="Radio RX to phone">&#x1F50A;</span>
+                  <select id="quick-audio-input" class="echo-cat-audio-select"><option value="">System Default</option></select>
+                </div>
+                <div class="echo-cat-audio-row">
+                  <span class="echo-cat-audio-icon" title="Phone to radio TX">&#x1F3A4;</span>
+                  <select id="quick-audio-output" class="echo-cat-audio-select"><option value="">System Default</option></select>
+                </div>
               </div>
             </div>
           </div>
+          <div class="spots-panel-divider"></div>
+          <label class="spots-toggle compact"><input type="checkbox" id="quick-hide-worked-parks"> Hide Worked Parks</label>
           <div class="spots-panel-divider"></div>
           <button type="button" id="open-settings-btn" class="settings-dropdown-link">Open Settings...</button>
         </div>
@@ -130,6 +149,7 @@
         <button id="popout-map-btn" class="view-btn popout-btn" title="Pop-out map window">&#x2197;</button>
         <button id="view-rbn-btn" class="view-btn hidden" title="Reverse Beacon Network">RBN</button>
         <button id="cluster-terminal-btn" class="view-btn hidden" title="DX Cluster Terminal">Terminal</button>
+        <button id="view-jtcat-btn" class="view-btn" title="JTCAT — FT8/FT4 Digital Modes">JTCAT</button>
       </div>
     </div>
     <div class="status-bar">
@@ -197,7 +217,7 @@
       <button id="activator-back" class="activator-back-btn" title="Switch to Hunter mode">&larr; Hunter</button>
       <div class="activator-toolbar-sep"></div>
       <div class="activator-park-input-wrap">
-        <input type="text" id="activator-park-ref" placeholder="Park ref (e.g. K-1234)" maxlength="12" spellcheck="false" autocomplete="off">
+        <input type="text" id="activator-park-ref" placeholder="Park ref (e.g. K-1234 or K-1234, K-5678)" maxlength="60" spellcheck="false" autocomplete="off">
         <div id="activator-park-dropdown" class="activator-dropdown hidden"></div>
       </div>
       <span id="activator-park-name" class="activator-park-name"></span>
@@ -236,7 +256,7 @@
       <span id="activator-cat-status" class="status disconnected" title="Disconnected" style="cursor:pointer;font-size:11px;margin-left:4px;">CAT</span>
     </div>
     <div id="activator-quick-log" class="activator-quick-log hidden">
-      <input type="text" id="activator-callsign" placeholder="Callsign(s)" maxlength="60" spellcheck="false" autocomplete="off" style="text-transform:uppercase;">
+      <input type="text" id="activator-callsign" placeholder="Callsign (or K3SBP, W1AW)" maxlength="60" spellcheck="false" autocomplete="off" style="text-transform:uppercase;">
       <div class="activator-rst-group rst-split-mode hidden">
         <label>S:</label>
         <div class="rst-digits" id="activator-rst-sent-digits">
@@ -354,6 +374,88 @@
         </div>
       </div>
     </div>
+    <!-- JTCAT View (FT8/FT4 Digital Modes) -->
+    <div id="jtcat-view" class="hidden">
+      <div class="jtcat-toolbar">
+        <div class="jtcat-band-buttons">
+          <button class="jtcat-band-btn" data-band="160m" data-freq="1840">160</button>
+          <button class="jtcat-band-btn" data-band="80m" data-freq="3573">80</button>
+          <button class="jtcat-band-btn" data-band="60m" data-freq="5357">60</button>
+          <button class="jtcat-band-btn" data-band="40m" data-freq="7074">40</button>
+          <button class="jtcat-band-btn" data-band="30m" data-freq="10136">30</button>
+          <button class="jtcat-band-btn active" data-band="20m" data-freq="14074">20</button>
+          <button class="jtcat-band-btn" data-band="17m" data-freq="18100">17</button>
+          <button class="jtcat-band-btn" data-band="15m" data-freq="21074">15</button>
+          <button class="jtcat-band-btn" data-band="12m" data-freq="24915">12</button>
+          <button class="jtcat-band-btn" data-band="10m" data-freq="28074">10</button>
+          <button class="jtcat-band-btn" data-band="6m" data-freq="50313">6</button>
+        </div>
+        <div class="jtcat-mode-select">
+          <select id="jtcat-mode">
+            <option value="FT8">FT8</option>
+            <option value="FT4">FT4</option>
+          </select>
+        </div>
+        <div class="jtcat-status">
+          <span id="jtcat-cycle-indicator" class="jtcat-cycle">&mdash;</span>
+          <span id="jtcat-countdown" class="jtcat-countdown">&mdash;</span>
+          <span id="jtcat-sync-status" class="jtcat-sync">Sync: &mdash;</span>
+        </div>
+      </div>
+
+      <div class="jtcat-main">
+        <!-- Waterfall (left) -->
+        <div class="jtcat-waterfall-pane">
+          <canvas id="jtcat-waterfall" width="400" height="500"></canvas>
+          <div class="jtcat-freq-labels">
+            <span>0</span><span>500</span><span>1000</span><span>1500</span><span>2000</span><span>2500</span><span>3000</span>
+          </div>
+        </div>
+
+        <!-- Decode panels (right) -->
+        <div class="jtcat-decode-pane">
+          <div class="jtcat-decode-section">
+            <div class="jtcat-decode-header">Band Activity</div>
+            <div id="jtcat-band-activity" class="jtcat-decode-list">
+              <div class="jtcat-empty">Waiting for decodes...</div>
+            </div>
+          </div>
+          <div class="jtcat-decode-section">
+            <div class="jtcat-decode-header">RX Frequency <span id="jtcat-rx-freq-label">1500 Hz</span></div>
+            <div id="jtcat-rx-activity" class="jtcat-decode-list">
+              <div class="jtcat-empty">&mdash;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="jtcat-controls">
+        <div class="jtcat-tx-controls">
+          <label class="jtcat-tx-label">TX Freq:
+            <input type="number" id="jtcat-tx-freq" value="1500" min="100" max="3000" step="10">
+            <span>Hz</span>
+          </label>
+          <label class="jtcat-tx-label">RX Freq:
+            <input type="number" id="jtcat-rx-freq" value="1500" min="100" max="3000" step="10">
+            <span>Hz</span>
+          </label>
+          <button id="jtcat-enable-tx" class="jtcat-btn">Enable TX</button>
+          <button id="jtcat-halt-tx" class="jtcat-btn jtcat-halt-btn">Halt TX</button>
+          <button id="jtcat-log-qso" class="jtcat-btn">Log QSO</button>
+        </div>
+        <div class="jtcat-tx-message">
+          <span class="jtcat-tx-msg-label">TX:</span>
+          <span id="jtcat-tx-msg-text">&mdash;</span>
+          <span class="jtcat-tx-slot-label">Slot:</span>
+          <select id="jtcat-tx-slot">
+            <option value="auto">Auto</option>
+            <option value="even">Even</option>
+            <option value="odd">Odd</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <div id="parks-stats-overlay" class="hidden">
       <div class="parks-stats-header">
         <span>POTA Stats</span>
@@ -578,7 +680,7 @@
             <option value="us_technician">US Technician</option>
           </optgroup>
           <optgroup label="Canada">
-            <option value="ca_honours">CA Basic with Honours</option>
+            <option value="ca_honours">CA Advanced / Basic with Honours</option>
             <option value="ca_basic">CA Basic</option>
           </optgroup>
         </select>
@@ -802,6 +904,8 @@
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Set to 0 to use the radio's default. Sent after every tune to keep your preferred filter.</span>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-split"> Enable split mode</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Send split on/off with each tune command (VFO A = RX, VFO B = TX)</span>
+      <label class="checkbox-label"><input type="checkbox" id="set-enable-atu"> Auto-tune ATU on band change</label>
+      <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Trigger the antenna tuner when tuning to a different band. Supports Yaesu, Kenwood, Elecraft, Hamlib rigctld, and FlexRadio.</span>
       <label class="checkbox-label"><input type="checkbox" id="set-tune-click"> Tune confirmation sound</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Play a click when the radio confirms it has changed frequency</span>
     </fieldset>
@@ -820,6 +924,28 @@
           <input type="number" id="set-rotor-port" value="12040" min="1" max="65535" style="width:80px;">
         </label>
         <span class="help-text" style="display:block;margin-top:4px;">Default port is 12040. Use 12042, 12044, 12046 for additional rotators.</span>
+      </div>
+      <label class="checkbox-label"><input type="checkbox" id="set-enable-ag"> 4O3A Antenna Genius</label>
+      <div id="ag-config" class="radio-sub hidden">
+        <span class="help-text" style="font-size:12px;">Automatically switches antennas when you tune to a spot.</span>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+          <label>Host:
+            <input type="text" id="set-ag-host" placeholder="192.168.1.x" style="width:140px;">
+          </label>
+          <label>Radio Port:
+            <select id="set-ag-radio-port" style="width:70px;">
+              <option value="1">A</option>
+              <option value="2">B</option>
+            </select>
+          </label>
+          <span id="ag-status" class="help-text" style="font-weight:bold;"></span>
+        </div>
+        <div style="margin-top:8px;">
+          <strong style="font-size:12px;">Band &rarr; Antenna Mapping</strong>
+          <div id="ag-band-map" style="display:grid;grid-template-columns:60px 1fr;gap:2px 8px;margin-top:4px;font-size:12px;">
+          </div>
+          <span class="help-text" style="display:block;margin-top:4px;">Set antenna position (1-8) for each band. Leave blank to skip switching on that band.</span>
+        </div>
       </div>
     </fieldset>
     <!-- 7. Logging -->
@@ -854,7 +980,9 @@
               <option value="hamrs">HamRS</option>
               <option value="hrd">Ham Radio Deluxe</option>
               <option value="log4om">Log4OM 2</option>
+              <option value="macloggerdx">MacLoggerDX</option>
               <option value="n3fjp">N3FJP</option>
+              <option value="wavelog">Wavelog</option>
             </select>
           </label>
           <div id="logbook-instructions" class="hidden help-text" style="margin-top:6px;line-height:1.5;"></div>
@@ -867,6 +995,31 @@
             </label>
             <div id="logbook-help" class="help-text" style="margin-top:4px;"></div>
           </div>
+          <div id="logbook-wavelog-config" class="hidden" style="margin-top:6px;">
+            <label>Wavelog URL:
+              <input type="text" id="set-wavelog-url" placeholder="https://log.example.com">
+            </label>
+            <label>API Key:
+              <input type="password" id="set-wavelog-api-key" placeholder="From Wavelog API settings">
+            </label>
+            <label>Station Profile ID:
+              <input type="number" id="set-wavelog-station-id" min="1" placeholder="1">
+            </label>
+            <div id="logbook-wavelog-help" class="help-text" style="margin-top:4px;">In Wavelog: go to API Keys and create a key with read-write access. The Station Profile ID is in the URL when editing a station profile (e.g. /stationsetup/edit/1 means ID is 1).</div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">
+        <label class="checkbox-label"><input type="checkbox" id="set-sota-upload"> Auto-upload SOTA chaser QSOs to SOTAdata</label>
+        <span class="help-text" style="margin-left:12px;display:block;">When you log a SOTA contact, automatically submit it to your SOTAdata chaser log.</span>
+        <div id="sota-upload-config" class="hidden" style="margin:6px 0 0 12px;">
+          <label style="display:block;margin-bottom:4px;">SOTAdata Username:
+            <input type="text" id="set-sota-username" style="width:180px;" placeholder="your SSO username" autocomplete="off">
+          </label>
+          <label style="display:block;">SOTAdata Password:
+            <input type="password" id="set-sota-password" style="width:180px;" placeholder="your SSO password" autocomplete="off">
+          </label>
+          <span class="help-text" style="display:block;margin-top:4px;">Use your <a href="https://www.sotadata.org.uk" target="_blank" style="color:var(--link)">sotadata.org.uk</a> login credentials.</span>
         </div>
       </div>
     </fieldset>
@@ -951,6 +1104,65 @@
           <button type="button" id="net-cancel-btn">Cancel</button>
         </div>
       </div>
+      <div style="margin-top:8px;border-top:1px solid var(--border-primary);padding-top:8px;">
+        <label class="checkbox-label"><input type="checkbox" id="set-enable-directory"> Community HF Nets &amp; SWL Broadcast Directory</label>
+        <span class="help-text" style="margin-left:12px;display:block;">Browse and add nets from a community-managed directory.</span>
+        <div id="dir-controls" class="hidden" style="margin-top:6px;">
+          <button type="button" id="dir-browse-btn" class="settings-add-btn">Browse Directory</button>
+        </div>
+      </div>
+      <div id="dir-browser" class="hidden">
+        <div class="directory-header">
+          <div class="directory-tabs">
+            <button id="dir-tab-nets" class="directory-tab active" type="button">HF Nets</button>
+            <button id="dir-tab-swl" class="directory-tab" type="button">SWL Broadcasts</button>
+          </div>
+          <input type="text" id="dir-search" class="directory-search" placeholder="Search...">
+          <button id="dir-refresh-btn" type="button" class="directory-refresh" title="Refresh from Google Sheets">&#x21BB;</button>
+          <button id="dir-close-btn" type="button" class="directory-refresh" title="Close directory">&#x2715;</button>
+        </div>
+        <div id="dir-nets-container" class="directory-table-container">
+          <table class="directory-table">
+            <thead>
+              <tr>
+                <th class="dir-status-col"></th>
+                <th class="dir-name-col">Net Name</th>
+                <th class="dir-freq-col">Freq</th>
+                <th class="dir-mode-col">Mode</th>
+                <th class="dir-days-col">Days</th>
+                <th class="dir-time-col">Time (UTC)</th>
+                <th class="dir-dur-col">Dur</th>
+                <th class="dir-region-col">Region</th>
+                <th class="dir-notes-col">Notes</th>
+                <th class="dir-action-col"></th>
+              </tr>
+            </thead>
+            <tbody id="dir-nets-body"></tbody>
+          </table>
+        </div>
+        <div id="dir-swl-container" class="directory-table-container hidden">
+          <table class="directory-table">
+            <thead>
+              <tr>
+                <th class="dir-status-col"></th>
+                <th class="dir-name-col">Station</th>
+                <th class="dir-freq-col">Freq</th>
+                <th class="dir-mode-col">Mode</th>
+                <th class="dir-time-col">Start (UTC)</th>
+                <th class="dir-time-col">End (UTC)</th>
+                <th class="dir-lang-col">Lang</th>
+                <th class="dir-power-col">Power</th>
+                <th class="dir-region-col">Target</th>
+                <th class="dir-notes-col">Notes</th>
+              </tr>
+            </thead>
+            <tbody id="dir-swl-body"></tbody>
+          </table>
+        </div>
+        <div id="dir-placeholder" class="hidden">Loading directory data...</div>
+        <div class="dir-suggest-link">Want a net or SWL station added? <a href="#" id="dir-suggest-sheet">Leave a comment on the Google Sheet</a> and we'll review it.</div>
+      </div>
+      <div id="dir-hover-popup" class="dir-hover-popup hidden"></div>
     </fieldset>
 
     <!-- 8. Display (trimmed — bearing moved to Antenna, SmartSDR absorbed) -->
@@ -1098,7 +1310,7 @@
       <button id="settings-cancel">Cancel</button>
     </div>
     <div class="settings-footer">
-      <div class="settings-version">v0.9.42 beta &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
+      <div class="settings-version">v1.0.6 &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
       <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
       <div class="settings-links">
         <a href="#" id="discord-link">Discord</a>
@@ -1206,8 +1418,8 @@
       </label>
       <label id="log-respot-comment-label" style="display:block;margin-top:6px;">
         Re-spot comment:
-        <input type="text" id="log-respot-comment" placeholder="Thks fer {rst}. 73s {mycallsign} via POTACAT">
-        <span class="help-text">Use {rst} to automatically fill in the signal report you sent</span>
+        <input type="text" id="log-respot-comment" placeholder="Thks {op_firstname} fer {rst}. 73s {mycallsign} via POTACAT">
+        <span class="help-text">{rst} signal report, {QTH} grid, {mycallsign} your call, {op_firstname} their name (OM if unknown)</span>
       </label>
     </div>
     <div class="dialog-buttons">
@@ -1231,6 +1443,7 @@
     <div id="respot-network-bar" class="respot-network-bar"></div>
     <label>Comment:
       <input type="text" id="respot-comment" placeholder="Re-spot comment">
+      <span class="help-text">{rst} {QTH} {mycallsign} {op_firstname}</span>
     </label>
     <div class="dialog-buttons">
       <button type="button" id="respot-cancel">Cancel</button>
@@ -1303,12 +1516,27 @@
 
   <!-- Welcome dialog (first run) -->
   <dialog id="welcome-dialog">
-    <h3>Welcome to POTACAT</h3>
-    <p class="welcome-text">Let's get you set up. You can configure your radio any time in Settings.</p>
+    <h3>POTACAT: Democratizing Remote Radio</h3>
+    <p class="welcome-text">Here are some quick settings to get you up and running. There are many more inside the Settings menu.</p>
+
+    <div class="welcome-section-label">Display</div>
+    <label class="switch-label welcome-theme-switch">
+      <span>Dark Mode</span>
+      <div class="switch">
+        <input type="checkbox" id="welcome-light-mode">
+        <span class="switch-slider"></span>
+      </div>
+      <span>Light Mode</span>
+    </label>
+    <div class="welcome-field">
+      <span style="font-size:13px;color:var(--text-secondary);">Change Font Size</span>
+      <span class="help-text" style="display:block;margin-top:2px;">Press <kbd>Ctrl +</kbd> to make text larger, <kbd>Ctrl &minus;</kbd> to make smaller, <kbd>Ctrl 0</kbd> to reset</span>
+    </div>
+
+    <div class="welcome-section-label">Station</div>
     <label class="welcome-field">Callsign: <input type="text" id="welcome-callsign" maxlength="10" placeholder="WB6ACU" style="text-transform:uppercase;"></label>
-    <span class="help-text" style="margin-top:-4px;margin-bottom:8px;display:block;">Required for DX Cluster login and QSO logging</span>
     <label class="welcome-field">QTH Grid Square: <input type="text" id="welcome-grid" maxlength="6" placeholder="FN20jb"></label>
-    <span class="help-text" style="margin-top:-4px;margin-bottom:8px;display:block;">Used to calculate distance from you to each spot</span>
+    <span class="help-text" style="margin-top:-4px;margin-bottom:8px;display:block;">Used for distance calculation, DX Cluster login, and QSO logging</span>
     <div style="display:flex;gap:8px;">
       <label class="welcome-field" style="flex:1;">Distance Unit:
         <select id="welcome-dist-unit">
@@ -1326,7 +1554,7 @@
             <option value="us_technician">US Technician</option>
           </optgroup>
           <optgroup label="Canada">
-            <option value="ca_honours">CA Basic with Honours</option>
+            <option value="ca_honours">CA Advanced / Basic with Honours</option>
             <option value="ca_basic">CA Basic</option>
           </optgroup>
         </select>
@@ -1335,52 +1563,23 @@
     <label class="checkbox-label" style="margin-top:4px;margin-bottom:8px;">
       <input type="checkbox" id="welcome-hide-oob"> Hide out-of-privilege spots
     </label>
-    <span class="help-text" style="margin-top:-4px;margin-bottom:8px;display:block;">Don't be tempted by activators you can't work with your privileges!</span>
-    <div style="display:flex;gap:12px;margin-bottom:8px;">
-      <label class="checkbox-label"><input type="checkbox" id="welcome-enable-pota" checked> POTA spots</label>
-      <label class="checkbox-label"><input type="checkbox" id="welcome-enable-sota" checked> SOTA spots</label>
-      <label class="checkbox-label"><input type="checkbox" id="welcome-enable-wwff"> WWFF spots</label>
-      <label class="checkbox-label"><input type="checkbox" id="welcome-enable-llota"> LLOTA spots</label>
+
+    <div class="welcome-section-label">QRZ Lookup (optional)</div>
+    <span class="help-text" style="display:block;margin-bottom:6px;">Shows operator name, location, and callsign details on spots. Requires a QRZ account.</span>
+    <div style="display:flex;gap:8px;">
+      <label class="welcome-field" style="flex:1;">Username:
+        <input type="text" id="welcome-qrz-user" maxlength="10" placeholder="K3SBP" style="text-transform:uppercase;">
+      </label>
+      <label class="welcome-field" style="flex:1;">Password:
+        <input type="password" id="welcome-qrz-pass" placeholder="QRZ password">
+      </label>
     </div>
-    <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;">
-      <span style="font-weight:600;font-size:13px;">Start as:</span>
-      <label class="radio-label"><input type="radio" name="welcome-app-mode" value="hunter" checked> Hunter</label>
-      <label class="radio-label"><input type="radio" name="welcome-app-mode" value="activator"> Activator</label>
-      <span class="help-text" style="font-size:11px;color:#888;">You can switch any time in Settings</span>
-    </div>
-    <div class="welcome-import-section">
-      <div style="font-weight:bold;margin-bottom:4px;">Import Your Data (optional)</div>
-      <span class="help-text" style="display:block;margin-bottom:8px;">Already have QSO history or POTA park data? Import now to see worked indicators from the start.</span>
-      <div class="welcome-import-row">
-        <div class="welcome-import-info">
-          <div style="font-weight:bold;">QSO History</div>
-          <div class="help-text">ADIF or Log4OM SQLite from LoTW, QRZ, POTA, or any logger</div>
-        </div>
-        <button type="button" id="welcome-import-adif" class="welcome-import-btn">Browse</button>
-        <span id="welcome-adif-result" class="welcome-import-result"></span>
-      </div>
-      <div class="welcome-import-row">
-        <div class="welcome-import-info">
-          <div style="font-weight:bold;">POTA Parks Worked</div>
-          <div class="help-text">CSV from <a href="#" id="welcome-pota-csv-link">pota.app</a></div>
-        </div>
-        <button type="button" id="welcome-import-parks" class="welcome-import-btn">Browse</button>
-        <span id="welcome-parks-result" class="welcome-import-result"></span>
-      </div>
-    </div>
-    <label class="switch-label welcome-theme-switch">
-      <span>Dark Mode</span>
-      <div class="switch">
-        <input type="checkbox" id="welcome-light-mode">
-        <span class="switch-slider"></span>
-      </div>
-      <span>Light Mode</span>
-    </label>
+
     <div class="welcome-radio-section">
-      <div style="font-weight:bold;margin-bottom:4px;">Add Your Radio (optional)</div>
+      <div class="welcome-section-label" style="margin-top:0;">Add Your Radio (optional)</div>
       <span class="help-text" style="display:block;margin-bottom:8px;">
         You may need to check out the <a href="#" id="welcome-radio-help-link">Set Up My Radio</a>
-        section of the website. You can always edit your radio settings in Settings.
+        section of the website. You can always edit your radio in Settings.
         Additional help can be found on the <a href="#" id="welcome-radio-discord-link">POTACAT Discord</a>.
       </span>
       <div id="welcome-rig-display" class="hidden"></div>
@@ -1466,7 +1665,7 @@
       </div>
     </div>
     <div class="welcome-beta-note">
-      POTACAT is in beta and we're working toward a strong v1 release. We're still collecting feedback on radio settings that work for each rig. Please visit the <a href="#" id="welcome-discord-link">Discord</a> and share a rig report on what you're integrating &mdash; every tester helps!
+      POTACAT is in active development. If you experience a bug, have difficulty connecting your radio, or have a feature request, please join the <a href="#" id="welcome-discord-link">Discord</a> and ask for help. Be verbose in your requests and bug reports &mdash; share your rig, operating system, and exactly what you did and what did not work.
     </div>
     <div class="dialog-buttons" style="margin-top:12px;">
       <button type="button" id="welcome-start" class="log-save-btn">Get Started</button>

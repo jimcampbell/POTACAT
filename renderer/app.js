@@ -169,10 +169,17 @@ const setHideOutOfBand = document.getElementById('set-hide-out-of-band');
 const setHideWorked = document.getElementById('set-hide-worked');
 const setTuneClick = document.getElementById('set-tune-click');
 const setEnableSplit = document.getElementById('set-enable-split');
+const setEnableAtu = document.getElementById('set-enable-atu');
 const setEnableRotor = document.getElementById('set-enable-rotor');
 const rotorConfig = document.getElementById('rotor-config');
 const setRotorHost = document.getElementById('set-rotor-host');
 const setRotorPort = document.getElementById('set-rotor-port');
+const setEnableAg = document.getElementById('set-enable-ag');
+const agConfig = document.getElementById('ag-config');
+const setAgHost = document.getElementById('set-ag-host');
+const setAgRadioPort = document.getElementById('set-ag-radio-port');
+const agBandMapEl = document.getElementById('ag-band-map');
+const agStatusEl = document.getElementById('ag-status');
 const setVerboseLog = document.getElementById('set-verbose-log');
 const setLightIcon = document.getElementById('set-light-icon');
 const setEnableSplitView = document.getElementById('set-enable-split-view');
@@ -311,6 +318,27 @@ const rbnTableContainer = document.getElementById('rbn-table-container');
 const rbnTableBody = document.getElementById('rbn-table-body');
 const rbnDistHeader = document.getElementById('rbn-dist-header');
 const rbnBandFilterEl = document.getElementById('rbn-band-filter');
+// Directory browser (inside Settings > Net Reminders)
+const setEnableDirectory = document.getElementById('set-enable-directory');
+const dirControls = document.getElementById('dir-controls');
+const dirBrowseBtn = document.getElementById('dir-browse-btn');
+const dirBrowser = document.getElementById('dir-browser');
+const dirCloseBtn = document.getElementById('dir-close-btn');
+const dirTabNets = document.getElementById('dir-tab-nets');
+const dirTabSwl = document.getElementById('dir-tab-swl');
+const dirSearchInput = document.getElementById('dir-search');
+const dirRefreshBtn = document.getElementById('dir-refresh-btn');
+const dirNetsContainer = document.getElementById('dir-nets-container');
+const dirSwlContainer = document.getElementById('dir-swl-container');
+const dirNetsBody = document.getElementById('dir-nets-body');
+const dirSwlBody = document.getElementById('dir-swl-body');
+const dirPlaceholder = document.getElementById('dir-placeholder');
+const dirHoverPopup = document.getElementById('dir-hover-popup');
+const dirSuggestSheet = document.getElementById('dir-suggest-sheet');
+const DIR_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1fg6ZX9DokyThbvHO4VXKcKhKsscy7RYidmERrOB1inc/edit?usp=sharing';
+let directoryNets = [];
+let directorySwl = [];
+let dirActiveTab = 'nets'; // 'nets' or 'swl'
 const rbnMaxAgeInput = document.getElementById('rbn-max-age');
 const rbnAgeUnitSelect = document.getElementById('rbn-age-unit');
 const setPotaParksPath = document.getElementById('set-pota-parks-path');
@@ -327,6 +355,10 @@ const parksStatsToggleBtn = document.getElementById('parks-stats-toggle');
 const parksStatsCloseBtn = document.getElementById('parks-stats-close');
 let parksStatsOpen = false;
 const setEnableDxcc = document.getElementById('set-enable-dxcc');
+const setSotaUpload = document.getElementById('set-sota-upload');
+const sotaUploadConfig = document.getElementById('sota-upload-config');
+const setSotaUsername = document.getElementById('set-sota-username');
+const setSotaPassword = document.getElementById('set-sota-password');
 const distHeader = document.getElementById('dist-header');
 const utcClockEl = document.getElementById('utc-clock');
 const sfiStatusEl = document.getElementById('sfi-status');
@@ -353,6 +385,10 @@ const logbookPortConfig = document.getElementById('logbook-port-config');
 const setLogbookHost = document.getElementById('set-logbook-host');
 const setLogbookPort = document.getElementById('set-logbook-port');
 const logbookHelp = document.getElementById('logbook-help');
+const logbookWavelogConfig = document.getElementById('logbook-wavelog-config');
+const setWavelogUrl = document.getElementById('set-wavelog-url');
+const setWavelogApiKey = document.getElementById('set-wavelog-api-key');
+const setWavelogStationId = document.getElementById('set-wavelog-station-id');
 const setDisableAutoUpdate = document.getElementById('set-disable-auto-update');
 const setEnableTelemetry = document.getElementById('set-enable-telemetry');
 const setLightMode = document.getElementById('set-light-mode');
@@ -847,7 +883,7 @@ function renderRigOptions(filteredList, selectedId) {
   if (filteredList.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = allRigOptions.length === 0 ? 'No rigs found — is Hamlib installed?' : 'No matches';
+    opt.textContent = allRigOptions.length === 0 ? 'No rigs found — install Hamlib (Linux: sudo apt install libhamlib-utils)' : 'No matches';
     setRigModel.appendChild(opt);
   } else {
     for (const rig of filteredList) {
@@ -1054,7 +1090,7 @@ function buildCatTargetFromForm() {
       type: 'rigctld',
       rigId: parseInt(setRigModel.value, 10),
       serialPort: getEffectivePort(),
-      baudRate: parseInt(setRigBaud.value, 10),
+      baudRate: parseInt(setRigBaud.value, 10) || 9600,
       dtrOff: setRigDtrOff.checked,
       rigctldPort: parseInt(setRigctldPort.value, 10) || 4532,
     };
@@ -1155,9 +1191,22 @@ function initMultiDropdown(container, label, onChange) {
   const menu = container.querySelector('.multi-dropdown-menu');
   const textEl = container.querySelector('.multi-dropdown-text');
   const allCb = menu.querySelector('input[value="all"]');
-  const itemCbs = [...menu.querySelectorAll('input:not([value="all"])')];
+  const radioCb = menu.querySelector('input[value="radio"]');  // only exists on band & mode filters
+  const itemCbs = [...menu.querySelectorAll('input:not([value="all"]):not([value="radio"])')];
+
+  container._updateText = updateText;
 
   function updateText() {
+    if (radioCb && radioCb.checked) {
+      let detail = null;
+      if (label === 'Band') {
+        detail = radioFreqKhz ? freqToBandActivator(radioFreqKhz) : null;
+      } else if (label === 'Mode') {
+        detail = radioMode ? radioModeToFilter(radioMode) : null;
+      }
+      textEl.textContent = detail ? `Radio (${detail})` : 'Radio';
+      return;
+    }
     const checked = itemCbs.filter((cb) => cb.checked);
     if (allCb.checked || checked.length === 0) {
       textEl.textContent = 'All';
@@ -1184,10 +1233,21 @@ function initMultiDropdown(container, label, onChange) {
     const cb = e.target;
     if (cb.value === 'all') {
       const nowChecked = cb.checked;
+      if (radioCb) radioCb.checked = false;
       itemCbs.forEach((c) => { c.checked = nowChecked; });
+    } else if (cb.value === 'radio') {
+      // Radio is exclusive — uncheck All and all individual bands
+      if (cb.checked) {
+        allCb.checked = false;
+        itemCbs.forEach((c) => { c.checked = false; });
+      } else {
+        // Unchecking Radio with nothing else → fall back to All
+        allCb.checked = true;
+      }
     } else {
-      // Uncheck "All" when toggling individual items
+      // Uncheck "All" and "Radio" when toggling individual items
       allCb.checked = false;
+      if (radioCb) radioCb.checked = false;
       // If nothing checked, check "All"
       if (itemCbs.every((c) => !c.checked)) allCb.checked = true;
       // If everything checked, switch to "All"
@@ -1207,7 +1267,17 @@ function initMultiDropdown(container, label, onChange) {
 function getDropdownValues(container) {
   const allCb = container.querySelector('input[value="all"]');
   if (allCb.checked) return null;
-  const checked = [...container.querySelectorAll('input:not([value="all"]):checked')];
+  const radioCb = container.querySelector('input[value="radio"]');
+  if (radioCb && radioCb.checked) {
+    if (container === bandFilterEl) {
+      const band = radioFreqKhz ? freqToBandActivator(radioFreqKhz) : null;
+      return band ? new Set([band]) : null;
+    } else if (container === modeFilterEl) {
+      const mode = radioMode ? radioModeToFilter(radioMode) : null;
+      return mode ? new Set([mode]) : null;
+    }
+  }
+  const checked = [...container.querySelectorAll('input:not([value="all"]):not([value="radio"]):checked')];
   if (checked.length === 0) return null;
   return new Set(checked.map((cb) => cb.value));
 }
@@ -1334,12 +1404,18 @@ function playTuneClick() {
 const FILTERS_KEY = 'pota-cat-filters';
 
 function saveFilters() {
-  const bands = getDropdownValues(bandFilterEl);
-  const modes = getDropdownValues(modeFilterEl);
+  const bandRadioCb = bandFilterEl.querySelector('input[value="radio"]');
+  const bandRadio = bandRadioCb && bandRadioCb.checked;
+  const modeRadioCb = modeFilterEl.querySelector('input[value="radio"]');
+  const modeRadio = modeRadioCb && modeRadioCb.checked;
+  const bands = bandRadio ? null : getDropdownValues(bandFilterEl);
+  const modes = modeRadio ? null : getDropdownValues(modeFilterEl);
   const continents = getDropdownValues(continentFilterEl);
   const data = {
     bands: bands ? [...bands] : null,
+    bandRadio,
     modes: modes ? [...modes] : null,
+    modeRadio,
     continents: continents ? [...continents] : null,
     maxAgeMin,
   };
@@ -1349,13 +1425,30 @@ function saveFilters() {
 function restoreFilters() {
   try {
     const data = JSON.parse(localStorage.getItem(FILTERS_KEY));
-    if (!data) return;
+    if (!data) {
+      // First run — ensure filters default to "All" (override any HTML-hardcoded checks)
+      [bandFilterEl, modeFilterEl, continentFilterEl].forEach((container) => {
+        container.querySelector('input[value="all"]').checked = true;
+        const radioCb = container.querySelector('input[value="radio"]');
+        if (radioCb) radioCb.checked = false;
+        container.querySelectorAll('input:not([value="all"]):not([value="radio"])').forEach((cb) => { cb.checked = false; });
+        if (container._updateText) container._updateText();
+      });
+      return;
+    }
 
     // Restore band checkboxes
-    if (data.bands) {
+    if (data.bandRadio) {
+      bandFilterEl.querySelector('input[value="all"]').checked = false;
+      const radioCb = bandFilterEl.querySelector('input[value="radio"]');
+      if (radioCb) radioCb.checked = true;
+      bandFilterEl.querySelectorAll('input:not([value="all"]):not([value="radio"])').forEach((cb) => { cb.checked = false; });
+    } else if (data.bands) {
       const bandSet = new Set(data.bands);
       bandFilterEl.querySelector('input[value="all"]').checked = false;
-      bandFilterEl.querySelectorAll('input:not([value="all"])').forEach((cb) => {
+      const radioCb = bandFilterEl.querySelector('input[value="radio"]');
+      if (radioCb) radioCb.checked = false;
+      bandFilterEl.querySelectorAll('input:not([value="all"]):not([value="radio"])').forEach((cb) => {
         cb.checked = bandSet.has(cb.value);
       });
     } else {
@@ -1364,10 +1457,17 @@ function restoreFilters() {
     }
 
     // Restore mode checkboxes
-    if (data.modes) {
+    if (data.modeRadio) {
+      modeFilterEl.querySelector('input[value="all"]').checked = false;
+      const radioCb = modeFilterEl.querySelector('input[value="radio"]');
+      if (radioCb) radioCb.checked = true;
+      modeFilterEl.querySelectorAll('input:not([value="all"]):not([value="radio"])').forEach((cb) => { cb.checked = false; });
+    } else if (data.modes) {
       const modeSet = new Set(data.modes);
       modeFilterEl.querySelector('input[value="all"]').checked = false;
-      modeFilterEl.querySelectorAll('input:not([value="all"])').forEach((cb) => {
+      const radioCb = modeFilterEl.querySelector('input[value="radio"]');
+      if (radioCb) radioCb.checked = false;
+      modeFilterEl.querySelectorAll('input:not([value="all"]):not([value="radio"])').forEach((cb) => {
         cb.checked = modeSet.has(cb.value);
       });
     } else {
@@ -1794,6 +1894,59 @@ setEnablePskr.addEventListener('change', () => {
 setEnableRotor.addEventListener('change', () => {
   rotorConfig.classList.toggle('hidden', !setEnableRotor.checked);
 });
+// Antenna Genius checkbox toggles config visibility
+setEnableAg.addEventListener('change', () => {
+  agConfig.classList.toggle('hidden', !setEnableAg.checked);
+});
+
+// Antenna Genius band map UI
+const AG_BANDS = ['160m','80m','60m','40m','30m','20m','17m','15m','12m','10m','6m','2m','70cm'];
+function buildAgBandMap(bandMap) {
+  agBandMapEl.innerHTML = '';
+  for (const band of AG_BANDS) {
+    const label = document.createElement('span');
+    label.textContent = band;
+    label.style.textAlign = 'right';
+    label.style.paddingRight = '4px';
+    const select = document.createElement('select');
+    select.id = `ag-band-${band}`;
+    select.style.width = '100%';
+    select.innerHTML = '<option value="">—</option>';
+    for (let i = 1; i <= 8; i++) {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = agAntennaNames[i] ? `${i}: ${agAntennaNames[i]}` : String(i);
+      select.appendChild(opt);
+    }
+    if (bandMap && bandMap[band]) select.value = String(bandMap[band]);
+    agBandMapEl.appendChild(label);
+    agBandMapEl.appendChild(select);
+  }
+}
+let agAntennaNames = {};
+function getAgBandMap() {
+  const map = {};
+  for (const band of AG_BANDS) {
+    const sel = document.getElementById(`ag-band-${band}`);
+    if (sel && sel.value) map[band] = parseInt(sel.value, 10);
+  }
+  return map;
+}
+// IPC: Antenna Genius status + antenna names
+if (window.api.onAgStatus) {
+  window.api.onAgStatus((status) => {
+    agStatusEl.textContent = status.connected ? 'Connected' : '';
+    agStatusEl.style.color = status.connected ? '#4ecca3' : '';
+  });
+}
+if (window.api.onAgAntennaNames) {
+  window.api.onAgAntennaNames((names) => {
+    agAntennaNames = names;
+    // Rebuild dropdowns with antenna names, preserving current selections
+    const currentMap = getAgBandMap();
+    buildAgBandMap(currentMap);
+  });
+}
 
 // Split view checkbox toggles orientation config visibility
 setEnableSplitView.addEventListener('change', () => {
@@ -1808,6 +1961,10 @@ setSmartSdrSpots.addEventListener('change', () => {
 // TCI checkbox toggles config visibility
 setTciSpots.addEventListener('change', () => {
   tciConfig.classList.toggle('hidden', !setTciSpots.checked);
+});
+// SOTA upload checkbox toggles config visibility
+setSotaUpload.addEventListener('change', () => {
+  sotaUploadConfig.classList.toggle('hidden', !setSotaUpload.checked);
 });
 
 // ECHOCAT checkbox toggles config visibility
@@ -1897,29 +2054,37 @@ const LOGBOOK_DEFAULTS = {
     help: 'In Log4OM 2: Settings > Program Configuration > Software Integration > UDP Inbound tab. Click the green "+" button to add a new entry. Set Type to "ADIF-MESSAGE" and Port to "2237". Click "Save and apply". Leave Host at 127.0.0.1 in POTACAT. Log4OM must be running to receive QSOs. Only live-logged QSOs are forwarded — importing logs into POTACAT will not create duplicates.',
   },
   dxkeeper: { port: 52001, help: 'In DXKeeper: Configuration > Defaults tab > Network Service panel. The default base port is 52000 (DXKeeper listens on base + 1 = 52001). DXKeeper must be running to receive QSOs. QSOs will be logged with missing fields auto-deduced from callbook/entity databases.' },
-  hamrs: { port: 2333, help: 'In HamRS: enable WSJT-X integration in Settings. HamRS listens on UDP port 2333 for ADIF data. Leave Host at 127.0.0.1 if HamRS is running on the same computer. HamRS must be running to receive QSOs.' },
+  hamrs: { port: 2333, help: 'In HamRS: enable WSJT-X integration in Settings and set the UDP port. POTACAT speaks the WSJT-X binary protocol so HamRS sees it as a WSJT-X connection. The port here must match the port in HamRS. HamRS must be running to receive QSOs.' },
   n3fjp: { port: 1100, help: 'In N3FJP: Settings > Application Program Interface > check "TCP API Enabled". Set the port to 1100 (default). N3FJP must be running to receive QSOs. When using with WSJT-X, open WSJT-X first, then POTACAT, then N3FJP.' },
   hrd: { port: 2333, help: 'In HRD Logbook: Tools > Configure > QSO Forwarding. Under UDP Receive, check "Receive QSO notifications using UDP9/ADIF from other logging programs (eg. WSJT-X)". Set the receive port to 2333 and select your target database. POTACAT and WSJT-X can both send to this port simultaneously.' },
+  macloggerdx: { port: 9090, help: 'In MacLoggerDX: Preferences > UDP > check "Enable UDP Server". Set the port to 9090 (default). MacLoggerDX must be running to receive QSOs.' },
+  wavelog: { apiConfig: true },
 };
 
 function updateLogbookPortConfig() {
   const type = setLogbookType.value;
   const defaults = LOGBOOK_DEFAULTS[type];
   if (defaults && defaults.fileWatch) {
-    // File-based integration (e.g. Log4OM) — show instructions, hide port config
     logbookInstructions.innerHTML = defaults.instructions;
     logbookInstructions.classList.remove('hidden');
     logbookPortConfig.classList.add('hidden');
+    logbookWavelogConfig.classList.add('hidden');
     logbookHelp.textContent = '';
+  } else if (defaults && defaults.apiConfig) {
+    logbookInstructions.classList.add('hidden');
+    logbookPortConfig.classList.add('hidden');
+    logbookWavelogConfig.classList.remove('hidden');
   } else if (defaults) {
     logbookInstructions.classList.add('hidden');
     logbookPortConfig.classList.remove('hidden');
+    logbookWavelogConfig.classList.add('hidden');
     const currentPort = parseInt(setLogbookPort.value, 10);
     if (!currentPort || currentPort === defaults.port) setLogbookPort.value = defaults.port;
     logbookHelp.textContent = defaults.help;
   } else {
     logbookInstructions.classList.add('hidden');
     logbookPortConfig.classList.add('hidden');
+    logbookWavelogConfig.classList.add('hidden');
     logbookHelp.textContent = '';
   }
 }
@@ -2069,6 +2234,20 @@ function modeMatches(spotMode, selectedModes) {
   if (selectedModes.has(spotMode)) return true;
   if (selectedModes.has('SSB') && (spotMode === 'USB' || spotMode === 'LSB')) return true;
   return false;
+}
+
+/** Map CAT radio mode (USB, LSB, CW, FM, RTTY, etc.) to filter category. */
+function radioModeToFilter(catMode) {
+  if (!catMode) return null;
+  const m = catMode.toUpperCase();
+  if (m === 'CW' || m === 'CW-L' || m === 'CWL' || m === 'CW-U' || m === 'CWU' || m === 'CWR') return 'CW';
+  if (m === 'USB' || m === 'LSB' || m === 'SSB' || m === 'AM') return 'SSB';
+  if (m === 'FM' || m === 'NFM' || m === 'WFM' || m === 'FM-N' || m === 'FMN') return 'FM';
+  if (m === 'RTTY' || m === 'RTTY-U' || m === 'RTTY-L' || m === 'RTTYR' || m === 'RTTY-LSB' || m === 'RTTY-USB') return 'RTTY';
+  if (m === 'FT8') return 'FT8';
+  if (m === 'FT4') return 'FT4';
+  if (m === 'FREEDV') return 'FREEDV';
+  return null;
 }
 
 function spotAgeSecs(spotTime) {
@@ -3394,11 +3573,14 @@ async function openQuickRespot() {
   // Comment template — pick based on network type
   const commentField = document.getElementById('respot-comment');
   const tmpl = targets.includes('dxc') ? dxRespotTemplate : respotTemplate;
+  const spotQrz = s.callsign ? qrzData.get(s.callsign.toUpperCase().split('/')[0]) : null;
+  const spotFirstname = (spotQrz && (cleanQrzName(spotQrz.nickname) || cleanQrzName(spotQrz.fname))) || 'OM';
   commentField.value = tmpl
     .replace(/\{QTH\}/gi, grid)
     .replace(/\{rst\}/gi, '')
     .replace(/\{callsign\}/gi, myCallsign)
-    .replace(/\{mycallsign\}/gi, myCallsign);
+    .replace(/\{mycallsign\}/gi, myCallsign)
+    .replace(/\{op_firstname\}/gi, spotFirstname);
 
   dlg.showModal();
 }
@@ -4690,7 +4872,11 @@ logSaveBtn.addEventListener('click', async () => {
 
   // Determine WWFF reference for respot
   const respotWwffRef = (currentLogSpot && currentLogSpot.wwffReference) ? currentLogSpot.wwffReference : (logSelectedType === 'wwff' ? typedRef : '');
-  const commentText = respotComment.value.trim().replace(/\{rst\}/gi, getRstDigits('rst-sent-digits', '59')).replace(/\{QTH\}/gi, grid).replace(/\{mycallsign\}/gi, myCallsign);
+  // Resolve {op_firstname} from QRZ data for the primary callsign; fall back to "OM"
+  const primaryCall = callsigns[0] || '';
+  const primaryQrz = qrzData.get(primaryCall.split('/')[0]);
+  const opFirstname = (primaryQrz && (cleanQrzName(primaryQrz.nickname) || cleanQrzName(primaryQrz.fname))) || 'OM';
+  const commentText = respotComment.value.trim().replace(/\{rst\}/gi, getRstDigits('rst-sent-digits', '59')).replace(/\{QTH\}/gi, grid).replace(/\{mycallsign\}/gi, myCallsign).replace(/\{op_firstname\}/gi, opFirstname);
 
   const rstSent = getRstDigits('rst-sent-digits', '59');
   const rstRcvd = getRstDigits('rst-rcvd-digits', '59');
@@ -4960,6 +5146,7 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
   setEnablePskr.checked = enablePskr;
   setHideWorked.checked = hideWorked;
   setHideWorkedParks.checked = hideWorkedParks;
+  quickHideWorkedParks.checked = hideWorkedParks;
   setHideOutOfBand.checked = hideOutOfBand;
   setEnableDxcc.checked = enableDxcc;
 
@@ -5000,6 +5187,7 @@ logbookBtn.addEventListener('click', () => window.api.qsoPopoutOpen());
 const settingsDropdown = document.getElementById('settings-dropdown');
 const quickLightMode = document.getElementById('quick-light-mode');
 const quickActivatorMode = document.getElementById('quick-activator-mode');
+const quickHideWorkedParks = document.getElementById('quick-hide-worked-parks');
 const openSettingsBtn = document.getElementById('open-settings-btn');
 
 settingsDropdown.querySelector('.settings-dropdown-panel').addEventListener('click', (e) => {
@@ -5017,6 +5205,7 @@ settingsBtn.addEventListener('click', (e) => {
     // Sync switches to current state
     quickLightMode.checked = document.documentElement.getAttribute('data-theme') === 'light';
     quickActivatorMode.checked = appMode === 'activator';
+    quickHideWorkedParks.checked = hideWorkedParks;
     refreshEchoCatInfo();
   }
 });
@@ -5041,6 +5230,15 @@ quickActivatorMode.addEventListener('change', async () => {
   await window.api.saveSettings({ appMode: mode });
 });
 
+quickHideWorkedParks.addEventListener('change', async () => {
+  hideWorkedParks = quickHideWorkedParks.checked;
+  spotsHideParks.checked = hideWorkedParks;
+  setHideWorkedParks.checked = hideWorkedParks;
+  renderTable();
+  renderMap();
+  await window.api.saveSettings({ hideWorkedParks });
+});
+
 openSettingsBtn.addEventListener('click', () => {
   settingsDropdown.classList.remove('open');
   closeActivatorSettingsPanel();
@@ -5053,6 +5251,9 @@ const echoCatInfo = document.getElementById('echo-cat-info');
 const echoCatUrl = document.getElementById('echo-cat-url');
 const echoCatToken = document.getElementById('echo-cat-token');
 const echoCatCopy = document.getElementById('echo-cat-copy');
+
+const quickAudioInput = document.getElementById('quick-audio-input');
+const quickAudioOutput = document.getElementById('quick-audio-output');
 
 async function refreshEchoCatInfo() {
   const s = await window.api.getSettings();
@@ -5078,8 +5279,51 @@ async function refreshEchoCatInfo() {
       echoCatToken.textContent = '';
       if (tokenRow) tokenRow.classList.add('hidden');
     }
+    // Populate quick audio device dropdowns
+    await populateQuickAudioDevices(s.remoteAudioInput || '', s.remoteAudioOutput || '');
   }
 }
+
+async function populateQuickAudioDevices(restoreIn, restoreOut) {
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter(d => d.kind === 'audioinput');
+    const outputs = devices.filter(d => d.kind === 'audiooutput');
+    quickAudioInput.innerHTML = '<option value="">System Default</option>' +
+      inputs.map(d => `<option value="${d.deviceId}">${d.label || d.deviceId.slice(0, 20)}</option>`).join('');
+    quickAudioOutput.innerHTML = '<option value="">System Default</option>' +
+      outputs.map(d => `<option value="${d.deviceId}">${d.label || d.deviceId.slice(0, 20)}</option>`).join('');
+    if (restoreIn) quickAudioInput.value = restoreIn;
+    if (restoreOut) quickAudioOutput.value = restoreOut;
+  } catch (e) {
+    console.warn('Could not enumerate audio devices:', e.message);
+  }
+}
+
+quickAudioInput.addEventListener('change', async () => {
+  const s = await window.api.getSettings();
+  const rigs = s.rigs || [];
+  const activeRig = rigs.find(r => r.id === s.activeRigId);
+  if (activeRig) {
+    activeRig.remoteAudioInput = quickAudioInput.value;
+    await window.api.saveSettings({ rigs, remoteAudioInput: quickAudioInput.value });
+  } else {
+    await window.api.saveSettings({ remoteAudioInput: quickAudioInput.value });
+  }
+});
+
+quickAudioOutput.addEventListener('change', async () => {
+  const s = await window.api.getSettings();
+  const rigs = s.rigs || [];
+  const activeRig = rigs.find(r => r.id === s.activeRigId);
+  if (activeRig) {
+    activeRig.remoteAudioOutput = quickAudioOutput.value;
+    await window.api.saveSettings({ rigs, remoteAudioOutput: quickAudioOutput.value });
+  } else {
+    await window.api.saveSettings({ remoteAudioOutput: quickAudioOutput.value });
+  }
+});
 
 quickEchoCat.addEventListener('change', async () => {
   const on = quickEchoCat.checked;
@@ -5095,6 +5339,22 @@ quickEchoCat.addEventListener('change', async () => {
   updateSettingsConnBar();
 });
 
+// Copy just the URL
+const echoCatCopyUrl = document.getElementById('echo-cat-copy-url');
+echoCatCopyUrl.addEventListener('click', async () => {
+  const s = await window.api.getSettings();
+  const port = s.remotePort || 7300;
+  const ips = await window.api.getLocalIPs();
+  const best = ips.find(ip => ip.tailscale) || ips[0];
+  const url = best ? `https://${best.address}:${port}` : '';
+  try {
+    await navigator.clipboard.writeText(url);
+    echoCatCopyUrl.textContent = '\u2705';
+    setTimeout(() => { echoCatCopyUrl.textContent = '\u{1F4CB}'; }, 1500);
+  } catch {}
+});
+
+// Copy URL + token
 echoCatCopy.addEventListener('click', async () => {
   const s = await window.api.getSettings();
   const port = s.remotePort || 7300;
@@ -5136,7 +5396,13 @@ async function openSettingsDialog() {
   setRotorHost.value = s.rotorHost || '127.0.0.1';
   setRotorPort.value = s.rotorPort || 12040;
   rotorConfig.classList.toggle('hidden', !s.enableRotor);
+  setEnableAg.checked = s.enableAntennaGenius === true;
+  setAgHost.value = s.agHost || '';
+  setAgRadioPort.value = s.agRadioPort || '1';
+  buildAgBandMap(s.agBandMap || {});
+  agConfig.classList.toggle('hidden', !s.enableAntennaGenius);
   setEnableSplit.checked = s.enableSplit === true;
+  setEnableAtu.checked = s.enableAtu === true;
   setVerboseLog.checked = s.verboseLog === true;
   setLightIcon.checked = s.lightIcon === true;
   setEnablePota.checked = s.enablePota !== false;
@@ -5200,6 +5466,11 @@ async function openSettingsDialog() {
   renderNetList(currentNetReminders);
   netEditor.classList.add('hidden');
   netAddBtn.classList.remove('hidden');
+  // Directory opt-in
+  setEnableDirectory.checked = s.enableDirectory === true;
+  dirControls.classList.toggle('hidden', !s.enableDirectory);
+  if (dirBrowser) dirBrowser.classList.add('hidden');
+  if (dirBrowseBtn) dirBrowseBtn.classList.remove('hidden');
   clusterConfig.classList.toggle('hidden', !s.enableCluster);
   rbnConfig.classList.toggle('hidden', !s.enableRbn);
   setEnableWsjtx.checked = s.enableWsjtx === true;
@@ -5221,6 +5492,9 @@ async function openSettingsDialog() {
   setLogbookType.value = s.logbookType || '';
   setLogbookHost.value = s.logbookHost || '127.0.0.1';
   setLogbookPort.value = s.logbookPort || '';
+  setWavelogUrl.value = s.wavelogUrl || '';
+  setWavelogApiKey.value = s.wavelogApiKey || '';
+  setWavelogStationId.value = s.wavelogStationId || '';
   loggingConfig.classList.toggle('hidden', !s.enableLogging);
   logbookConfig.classList.toggle('hidden', !s.sendToLogbook);
   updateLogbookPortConfig();
@@ -5233,6 +5507,10 @@ async function openSettingsDialog() {
   splitOrientationConfig.classList.toggle('hidden', !setEnableSplitView.checked);
   document.getElementById('set-split-orientation').value = s.splitOrientation || 'horizontal';
   setEnableDxcc.checked = s.enableDxcc === true;
+  setSotaUpload.checked = s.sotaUpload === true;
+  setSotaUsername.value = s.sotaUsername || '';
+  setSotaPassword.value = s.sotaPassword || '';
+  sotaUploadConfig.classList.toggle('hidden', !s.sotaUpload);
   setPotaParksPath.value = s.potaParksPath || '';
   potaParksClearBtn.style.display = s.potaParksPath ? '' : 'none';
   setHideWorkedParks.checked = s.hideWorkedParks === true;
@@ -5359,6 +5637,9 @@ settingsSave.addEventListener('click', async () => {
   const enableSplitViewVal = setEnableSplitView.checked;
   const splitOrientationVal = document.getElementById('set-split-orientation').value;
   const dxccEnabled = setEnableDxcc.checked;
+  const sotaUploadEnabled = setSotaUpload.checked;
+  const sotaUsernameVal = setSotaUsername.value.trim();
+  const sotaPasswordVal = setSotaPassword.value;
   const licenseClassVal = setLicenseClass.value;
   const hideOob = setHideOutOfBand.checked;
   const hideWorkedEnabled = setHideWorked.checked;
@@ -5366,7 +5647,12 @@ settingsSave.addEventListener('click', async () => {
   const rotorEnabled = setEnableRotor.checked;
   const rotorHostVal = setRotorHost.value.trim() || '127.0.0.1';
   const rotorPortVal = parseInt(setRotorPort.value, 10) || 12040;
+  const agEnabled = setEnableAg.checked;
+  const agHostVal = setAgHost.value.trim();
+  const agRadioPortVal = parseInt(setAgRadioPort.value, 10) || 1;
+  const agBandMapVal = getAgBandMap();
   const enableSplitEnabled = setEnableSplit.checked;
+  const atuEnabled = setEnableAtu.checked;
   const verboseLogEnabled = setVerboseLog.checked;
   const lightIconEnabled = setLightIcon.checked;
   const disableAutoUpdate = setDisableAutoUpdate.checked;
@@ -5451,6 +5737,7 @@ settingsSave.addEventListener('click', async () => {
     myCallsign: myCallsign,
     clusterNodes: clusterNodes,
     netReminders: currentNetReminders,
+    enableDirectory: setEnableDirectory.checked,
     showBeacons: showBeaconsEnabled,
     showDxBar: showDxBarEnabled,
     enableClusterTerminal: clusterTerminalEnabled,
@@ -5462,6 +5749,9 @@ settingsSave.addEventListener('click', async () => {
     enableSplitView: enableSplitViewVal,
     splitOrientation: splitOrientationVal,
     enableDxcc: dxccEnabled,
+    sotaUpload: sotaUploadEnabled,
+    sotaUsername: sotaUsernameVal,
+    sotaPassword: sotaPasswordVal,
     licenseClass: licenseClassVal,
     hideOutOfBand: hideOob,
     hideWorked: hideWorkedEnabled,
@@ -5469,7 +5759,12 @@ settingsSave.addEventListener('click', async () => {
     enableRotor: rotorEnabled,
     rotorHost: rotorHostVal,
     rotorPort: rotorPortVal,
+    enableAntennaGenius: agEnabled,
+    agHost: agHostVal,
+    agRadioPort: agRadioPortVal,
+    agBandMap: agBandMapVal,
     enableSplit: enableSplitEnabled,
+    enableAtu: atuEnabled,
     verboseLog: verboseLogEnabled,
     lightIcon: lightIconEnabled,
     potaParksPath: potaParksPath,
@@ -5482,6 +5777,9 @@ settingsSave.addEventListener('click', async () => {
     logbookType: logbookTypeVal,
     logbookHost: logbookHostVal,
     logbookPort: logbookPortVal,
+    wavelogUrl: setWavelogUrl.value.trim(),
+    wavelogApiKey: setWavelogApiKey.value.trim(),
+    wavelogStationId: setWavelogStationId.value.trim(),
     disableAutoUpdate: disableAutoUpdate,
     enableTelemetry: telemetryEnabled,
     lightMode: lightModeEnabled,
@@ -6297,6 +6595,332 @@ window.api.onActiveEvents((events) => {
   render(); // re-render table for badges
 });
 
+// --- Directory (HF Nets & SWL Broadcasts) ---
+
+function isNetActiveNow(net) {
+  if (!net.startTimeUtc) return false;
+  const now = new Date();
+  const utcH = now.getUTCHours();
+  const utcM = now.getUTCMinutes();
+  const nowMin = utcH * 60 + utcM;
+  const parts = net.startTimeUtc.split(':');
+  const startMin = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
+  const endMin = startMin + (net.duration || 60);
+  // Check day of week
+  const days = (net.days || 'Daily').toLowerCase();
+  if (days !== 'daily') {
+    const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    const todayAbbr = dayNames[now.getUTCDay()];
+    if (!days.includes(todayAbbr) && !days.includes(dayNames[now.getUTCDay()].substring(0, 2))) {
+      return false;
+    }
+  }
+  if (endMin > 1440) {
+    // Wraps midnight
+    return nowMin >= startMin || nowMin < (endMin - 1440);
+  }
+  return nowMin >= startMin && nowMin < endMin;
+}
+
+function isSwlOnAirNow(entry) {
+  if (!entry.startTimeUtc || !entry.endTimeUtc) return false;
+  const now = new Date();
+  const utcH = now.getUTCHours();
+  const utcM = now.getUTCMinutes();
+  const nowMin = utcH * 60 + utcM;
+  const sp = entry.startTimeUtc.split(':');
+  const ep = entry.endTimeUtc.split(':');
+  const startMin = parseInt(sp[0], 10) * 60 + parseInt(sp[1] || '0', 10);
+  let endMin = parseInt(ep[0], 10) * 60 + parseInt(ep[1] || '0', 10);
+  if (entry.endTimeUtc === '24:00') endMin = 1440;
+  if (endMin <= startMin) {
+    // Wraps midnight
+    return nowMin >= startMin || nowMin < endMin;
+  }
+  return nowMin >= startMin && nowMin < endMin;
+}
+
+function renderDirectory() {
+  if (!dirBrowser || dirBrowser.classList.contains('hidden')) return;
+  const search = (dirSearchInput.value || '').toLowerCase().trim();
+  if (dirActiveTab === 'nets') {
+    renderNetsTable(search);
+  } else {
+    renderSwlTable(search);
+  }
+}
+
+function renderNetsTable(search) {
+  dirNetsBody.innerHTML = '';
+  let filtered = directoryNets;
+  if (search) {
+    filtered = filtered.filter(n =>
+      (n.name || '').toLowerCase().includes(search) ||
+      (n.region || '').toLowerCase().includes(search) ||
+      (n.notes || '').toLowerCase().includes(search) ||
+      (n.mode || '').toLowerCase().includes(search) ||
+      String(n.frequency).includes(search)
+    );
+  }
+  if (filtered.length === 0) {
+    dirPlaceholder.textContent = directoryNets.length === 0 ? 'Loading directory data...' : 'No matching nets found.';
+    dirPlaceholder.classList.remove('hidden');
+    return;
+  }
+  dirPlaceholder.classList.add('hidden');
+  // Sort: on-air first, then by name
+  filtered.sort((a, b) => {
+    const aOn = isNetActiveNow(a) ? 0 : 1;
+    const bOn = isNetActiveNow(b) ? 0 : 1;
+    if (aOn !== bOn) return aOn - bOn;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  for (const net of filtered) {
+    const tr = document.createElement('tr');
+    const onAir = isNetActiveNow(net);
+    const dot = onAir ? '<span class="dir-status-dot on-air"></span>' : '<span class="dir-status-dot"></span>';
+    const nameCell = net.url
+      ? `<a class="dir-name-link" href="#" data-url="${net.url.replace(/"/g, '&quot;')}">${esc(net.name)}</a>`
+      : esc(net.name);
+    const duration = net.duration ? `${net.duration}m` : '';
+    const alreadyAdded = currentNetReminders.some(r =>
+      r.name === net.name && r.frequency === net.frequency
+    );
+    const actionCell = alreadyAdded
+      ? '<span class="dir-added-label">Added</span>'
+      : '<button class="dir-add-btn" type="button">+ Add</button>';
+    tr.innerHTML = `<td class="dir-status-col">${dot}</td>`
+      + `<td class="dir-name-col">${nameCell}</td>`
+      + `<td class="dir-freq-col">${net.frequency || ''}</td>`
+      + `<td class="dir-mode-col">${esc(net.mode)}</td>`
+      + `<td class="dir-days-col">${esc(net.days)}</td>`
+      + `<td class="dir-time-col">${esc(net.startTimeUtc)}</td>`
+      + `<td class="dir-dur-col">${duration}</td>`
+      + `<td class="dir-region-col">${esc(net.region)}</td>`
+      + `<td class="dir-notes-col">${esc(net.notes)}</td>`
+      + `<td class="dir-action-col">${actionCell}</td>`;
+    // Hover popup
+    attachDirHover(tr, [
+      { label: 'Net', value: net.name },
+      { label: 'Frequency', value: net.frequency ? `${net.frequency} kHz` : '' },
+      { label: 'Mode', value: net.mode },
+      { label: 'Schedule', value: `${net.days || 'Daily'} at ${net.startTimeUtc || '?'} UTC` },
+      { label: 'Duration', value: duration },
+      { label: 'Region', value: net.region },
+      { label: 'Notes', value: net.notes },
+    ]);
+    // Add to My Nets
+    const addBtn = tr.querySelector('.dir-add-btn');
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        addDirectoryNetToReminders(net);
+        renderDirectory();
+        renderNetList(currentNetReminders);
+      });
+    }
+    // URL link
+    const link = tr.querySelector('.dir-name-link');
+    if (link) {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        window.api.openExternal(link.dataset.url);
+      });
+    }
+    dirNetsBody.appendChild(tr);
+  }
+}
+
+function renderSwlTable(search) {
+  dirSwlBody.innerHTML = '';
+  let filtered = directorySwl;
+  if (search) {
+    filtered = filtered.filter(e =>
+      (e.station || '').toLowerCase().includes(search) ||
+      (e.language || '').toLowerCase().includes(search) ||
+      (e.regionTarget || '').toLowerCase().includes(search) ||
+      (e.notes || '').toLowerCase().includes(search) ||
+      String(e.frequency).includes(search)
+    );
+  }
+  if (filtered.length === 0) {
+    dirPlaceholder.textContent = directorySwl.length === 0 ? 'Loading directory data...' : 'No matching broadcasts found.';
+    dirPlaceholder.classList.remove('hidden');
+    return;
+  }
+  dirPlaceholder.classList.add('hidden');
+  // Sort: on-air first, then by station name
+  filtered.sort((a, b) => {
+    const aOn = isSwlOnAirNow(a) ? 0 : 1;
+    const bOn = isSwlOnAirNow(b) ? 0 : 1;
+    if (aOn !== bOn) return aOn - bOn;
+    return (a.station || '').localeCompare(b.station || '');
+  });
+  for (const entry of filtered) {
+    const tr = document.createElement('tr');
+    const onAir = isSwlOnAirNow(entry);
+    const dot = onAir ? '<span class="dir-status-dot on-air"></span>' : '<span class="dir-status-dot"></span>';
+    const powerStr = entry.powerKw ? `${entry.powerKw} kW` : '';
+    tr.innerHTML = `<td class="dir-status-col">${dot}</td>`
+      + `<td class="dir-name-col">${esc(entry.station)}</td>`
+      + `<td class="dir-freq-col">${entry.frequency || ''}</td>`
+      + `<td class="dir-mode-col">${esc(entry.mode)}</td>`
+      + `<td class="dir-time-col">${esc(entry.startTimeUtc)}</td>`
+      + `<td class="dir-time-col">${esc(entry.endTimeUtc)}</td>`
+      + `<td class="dir-lang-col">${esc(entry.language)}</td>`
+      + `<td class="dir-power-col">${powerStr}</td>`
+      + `<td class="dir-region-col">${esc(entry.regionTarget)}</td>`
+      + `<td class="dir-notes-col">${esc(entry.notes)}</td>`;
+    // Hover popup
+    attachDirHover(tr, [
+      { label: 'Station', value: entry.station },
+      { label: 'Frequency', value: entry.frequency ? `${entry.frequency} kHz` : '' },
+      { label: 'Mode', value: entry.mode },
+      { label: 'Schedule', value: `${entry.startTimeUtc || '?'} \u2013 ${entry.endTimeUtc || '?'} UTC` },
+      { label: 'Language', value: entry.language },
+      { label: 'Power', value: powerStr },
+      { label: 'Target', value: entry.regionTarget },
+      { label: 'Notes', value: entry.notes },
+    ]);
+    dirSwlBody.appendChild(tr);
+  }
+}
+
+function esc(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Hover popup for directory rows
+let dirHoverTimer = null;
+function attachDirHover(tr, fields) {
+  tr.addEventListener('mouseenter', (e) => {
+    dirHoverTimer = setTimeout(() => {
+      if (!dirHoverPopup) return;
+      let html = '';
+      for (const f of fields) {
+        if (!f.value) continue;
+        html += `<div class="dir-popup-field"><span class="dir-popup-label">${esc(f.label)}</span><br>${esc(f.value)}</div>`;
+      }
+      if (!html) return;
+      dirHoverPopup.innerHTML = html;
+      dirHoverPopup.classList.remove('hidden');
+      // Position near cursor, keep within viewport
+      const rect = dirHoverPopup.getBoundingClientRect();
+      let x = e.clientX + 12;
+      let y = e.clientY + 12;
+      if (x + rect.width > window.innerWidth - 8) x = e.clientX - rect.width - 12;
+      if (y + rect.height > window.innerHeight - 8) y = e.clientY - rect.height - 12;
+      dirHoverPopup.style.left = x + 'px';
+      dirHoverPopup.style.top = y + 'px';
+    }, 350);
+  });
+  tr.addEventListener('mouseleave', () => {
+    clearTimeout(dirHoverTimer);
+    if (dirHoverPopup) dirHoverPopup.classList.add('hidden');
+  });
+  tr.addEventListener('mousemove', (e) => {
+    if (!dirHoverPopup || dirHoverPopup.classList.contains('hidden')) return;
+    const rect = dirHoverPopup.getBoundingClientRect();
+    let x = e.clientX + 12;
+    let y = e.clientY + 12;
+    if (x + rect.width > window.innerWidth - 8) x = e.clientX - rect.width - 12;
+    if (y + rect.height > window.innerHeight - 8) y = e.clientY - rect.height - 12;
+    dirHoverPopup.style.left = x + 'px';
+    dirHoverPopup.style.top = y + 'px';
+  });
+}
+
+// Google Sheet suggestion link
+if (dirSuggestSheet) dirSuggestSheet.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.api.openExternal(DIR_SHEET_URL);
+});
+
+// Add a directory net to My Net Reminders
+function addDirectoryNetToReminders(net) {
+  // Parse days from the directory entry to build a schedule
+  const daysStr = (net.days || 'Daily').toLowerCase();
+  let schedule;
+  if (daysStr === 'daily') {
+    schedule = { type: 'daily' };
+  } else {
+    const dayMap = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+    const dayNums = [];
+    for (const [abbr, num] of Object.entries(dayMap)) {
+      if (daysStr.includes(abbr)) dayNums.push(num);
+    }
+    schedule = dayNums.length > 0 ? { type: 'weekly', days: dayNums } : { type: 'daily' };
+  }
+  const newNet = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: net.name,
+    frequency: net.frequency,
+    mode: net.mode || 'SSB',
+    startTime: net.startTimeUtc || '00:00',
+    timeZone: 'utc',
+    duration: net.duration || 60,
+    leadTime: 15,
+    schedule,
+    enabled: true,
+  };
+  currentNetReminders.push(newNet);
+}
+
+// Directory tab switching
+if (dirTabNets) dirTabNets.addEventListener('click', () => {
+  dirActiveTab = 'nets';
+  dirTabNets.classList.add('active');
+  dirTabSwl.classList.remove('active');
+  dirNetsContainer.classList.remove('hidden');
+  dirSwlContainer.classList.add('hidden');
+  renderDirectory();
+});
+if (dirTabSwl) dirTabSwl.addEventListener('click', () => {
+  dirActiveTab = 'swl';
+  dirTabSwl.classList.add('active');
+  dirTabNets.classList.remove('active');
+  dirSwlContainer.classList.remove('hidden');
+  dirNetsContainer.classList.add('hidden');
+  renderDirectory();
+});
+
+// Directory search
+if (dirSearchInput) dirSearchInput.addEventListener('input', () => { renderDirectory(); });
+
+// Directory refresh button
+if (dirRefreshBtn) dirRefreshBtn.addEventListener('click', () => { window.api.fetchDirectory(); });
+
+// Directory opt-in checkbox
+if (setEnableDirectory) setEnableDirectory.addEventListener('change', () => {
+  const on = setEnableDirectory.checked;
+  dirControls.classList.toggle('hidden', !on);
+  if (!on && dirBrowser) {
+    dirBrowser.classList.add('hidden');
+    dirBrowseBtn.classList.remove('hidden');
+  }
+});
+
+// Browse / close directory browser
+if (dirBrowseBtn) dirBrowseBtn.addEventListener('click', () => {
+  dirBrowser.classList.remove('hidden');
+  dirBrowseBtn.classList.add('hidden');
+  if (directoryNets.length === 0 && directorySwl.length === 0) {
+    window.api.fetchDirectory();
+  }
+  renderDirectory();
+});
+if (dirCloseBtn) dirCloseBtn.addEventListener('click', () => {
+  dirBrowser.classList.add('hidden');
+  dirBrowseBtn.classList.remove('hidden');
+});
+
+// Receive directory data from main process
+window.api.onDirectoryData((data) => {
+  directoryNets = data.nets || [];
+  directorySwl = data.swl || [];
+  renderDirectory();
+});
+
 // --- Worked parks listener ---
 window.api.onQrzData((data) => {
   for (const [cs, info] of Object.entries(data)) {
@@ -6471,13 +7095,27 @@ window.api.onWsjtxActivatorQso((contact) => {
 window.api.onCatFrequency((hz) => {
   const newKhz = Math.round(hz / 1000);
   if (newKhz === radioFreqKhz) return;
+  const oldBand = radioFreqKhz ? freqToBandActivator(radioFreqKhz) : null;
   radioFreqKhz = newKhz;
+  const newBand = freqToBandActivator(newKhz);
+  // Update band filter text and re-filter when band changes in Radio mode
+  const radioBandCb = bandFilterEl.querySelector('input[value="radio"]');
+  if (radioBandCb && radioBandCb.checked && newBand !== oldBand) {
+    if (bandFilterEl._updateText) bandFilterEl._updateText();
+  }
   playTuneClick();
   if (showTable || showMap) render();
 });
 
 window.api.onCatMode((mode) => {
+  const oldFilter = radioMode ? radioModeToFilter(radioMode) : null;
   radioMode = mode;
+  const newFilter = radioModeToFilter(mode);
+  const radioModeCb = modeFilterEl.querySelector('input[value="radio"]');
+  if (radioModeCb && radioModeCb.checked && newFilter !== oldFilter) {
+    if (modeFilterEl._updateText) modeFilterEl._updateText();
+    if (showTable || showMap) render();
+  }
 });
 
 let radioPower = 0; // last known TX power from CAT (watts)
@@ -7385,7 +8023,7 @@ function buildWelcomeCatTarget() {
       type: 'rigctld',
       rigId: parseInt(document.getElementById('welcome-rig-model').value, 10),
       serialPort: manual || document.getElementById('welcome-rig-port').value,
-      baudRate: parseInt(document.getElementById('welcome-rig-baud').value, 10),
+      baudRate: parseInt(document.getElementById('welcome-rig-baud').value, 10) || 9600,
       dtrOff: document.getElementById('welcome-rig-dtr-off').checked,
     };
   } else if (type === 'rigctldnet') {
@@ -7480,59 +8118,15 @@ document.getElementById('welcome-rig-search').addEventListener('input', () => {
 });
 
 // Welcome import buttons
-document.getElementById('welcome-import-adif').addEventListener('click', async () => {
-  const resultEl = document.getElementById('welcome-adif-result');
-  resultEl.textContent = 'Importing...';
-  resultEl.className = 'welcome-import-result';
-  try {
-    const result = await window.api.importAdif();
-    if (!result) {
-      resultEl.textContent = '';
-    } else if (result.success) {
-      resultEl.textContent = `${result.imported} QSOs imported`;
-      resultEl.className = 'welcome-import-result success';
-    } else {
-      resultEl.textContent = 'Import failed';
-      resultEl.className = 'welcome-import-result error';
-    }
-  } catch (err) {
-    resultEl.textContent = 'Import failed';
-    resultEl.className = 'welcome-import-result error';
-  }
-});
-
-document.getElementById('welcome-import-parks').addEventListener('click', async () => {
-  const resultEl = document.getElementById('welcome-parks-result');
-  try {
-    const filePath = await window.api.choosePotaParksFile();
-    if (filePath) {
-      const currentSettings = await window.api.getSettings();
-      await window.api.saveSettings(Object.assign({}, currentSettings, { potaParksPath: filePath }));
-      resultEl.textContent = 'Parks loaded';
-      resultEl.className = 'welcome-import-result success';
-    }
-  } catch (err) {
-    resultEl.textContent = 'Load failed';
-    resultEl.className = 'welcome-import-result error';
-  }
-});
-
-document.getElementById('welcome-pota-csv-link').addEventListener('click', (e) => {
-  e.preventDefault();
-  window.api.openExternal('https://pota.app');
-});
-
 document.getElementById('welcome-start').addEventListener('click', async () => {
   const myCallsign = (welcomeCallsignInput.value.trim() || '').toUpperCase();
   const grid = welcomeGridInput.value.trim() || 'FN20jb';
   const distUnitVal = document.getElementById('welcome-dist-unit').value;
   const licenseClassVal = document.getElementById('welcome-license-class').value;
   const hideOobChecked = document.getElementById('welcome-hide-oob').checked;
-  const enablePotaVal = document.getElementById('welcome-enable-pota').checked;
-  const enableSotaVal = document.getElementById('welcome-enable-sota').checked;
-  const enableWwffVal = document.getElementById('welcome-enable-wwff') ? document.getElementById('welcome-enable-wwff').checked : false;
-  const enableLlotaVal = document.getElementById('welcome-enable-llota') ? document.getElementById('welcome-enable-llota').checked : false;
   const lightModeEnabled = welcomeLightMode.checked;
+  const qrzUser = (document.getElementById('welcome-qrz-user')?.value || '').trim().toUpperCase();
+  const qrzPass = document.getElementById('welcome-qrz-pass')?.value || '';
   const currentSettings = await window.api.getSettings();
 
   // Merge with existing settings so upgrade doesn't wipe user preferences
@@ -7545,18 +8139,22 @@ document.getElementById('welcome-start').addEventListener('click', async () => {
     hideOutOfBand: hideOobChecked,
     firstRun: false,
     lastVersion: currentSettings.appVersion,
-    enablePota: enablePotaVal,
-    enableSota: enableSotaVal,
-    enableWwff: enableWwffVal,
-    enableLlota: enableLlotaVal,
     lightMode: lightModeEnabled,
-    appMode: document.querySelector('input[name="welcome-app-mode"]:checked')?.value || 'hunter',
   };
+  // Only set QRZ if user filled it in (don't overwrite existing with blank)
+  if (qrzUser) {
+    saveData.qrzUsername = qrzUser;
+    saveData.enableQrz = true;
+  }
+  if (qrzPass) saveData.qrzPassword = qrzPass;
   delete saveData.appVersion; // runtime-only, don't persist
 
-  // Add rig if configured in welcome
+  // Add rig if configured in welcome (skip if already exists)
   if (welcomeRig) {
-    saveData.rigs = [...(currentSettings.rigs || []), welcomeRig];
+    const existingRigs = currentSettings.rigs || [];
+    if (!existingRigs.some(r => r.id === welcomeRig.id)) {
+      saveData.rigs = [...existingRigs, welcomeRig];
+    }
     saveData.activeRigId = welcomeRig.id;
   }
 
@@ -7586,12 +8184,10 @@ async function checkFirstRun(force = false) {
       if (s.distUnit) document.getElementById('welcome-dist-unit').value = s.distUnit;
       if (s.licenseClass) document.getElementById('welcome-license-class').value = s.licenseClass;
       document.getElementById('welcome-hide-oob').checked = s.hideOutOfBand === true;
-      document.getElementById('welcome-enable-pota').checked = s.enablePota !== false;
-      document.getElementById('welcome-enable-sota').checked = s.enableSota === true;
-      if (document.getElementById('welcome-enable-wwff')) document.getElementById('welcome-enable-wwff').checked = s.enableWwff === true;
-      if (document.getElementById('welcome-enable-llota')) document.getElementById('welcome-enable-llota').checked = s.enableLlota === true;
-      const welcomeModeRadio = document.querySelector(`input[name="welcome-app-mode"][value="${s.appMode || 'hunter'}"]`);
-      if (welcomeModeRadio) welcomeModeRadio.checked = true;
+      const welcomeQrzUser = document.getElementById('welcome-qrz-user');
+      const welcomeQrzPass = document.getElementById('welcome-qrz-pass');
+      if (welcomeQrzUser) welcomeQrzUser.value = s.qrzUsername || '';
+      if (welcomeQrzPass) welcomeQrzPass.value = s.qrzPassword || '';
       welcomeLightMode.checked = s.lightMode === true;
       // Show existing active rig if any
       const rigs = s.rigs || [];
@@ -8692,14 +9288,29 @@ let parkSearchTimeout = null;
 if (activatorParkRefInput) {
   activatorParkRefInput.addEventListener('input', () => {
     clearTimeout(parkSearchTimeout);
-    const query = activatorParkRefInput.value.trim();
-    if (query.length < 2) {
+    const fullVal = activatorParkRefInput.value.trim().toUpperCase();
+    // Support comma-separated park refs — parse all segments
+    const segments = fullVal.split(',').map(s => s.trim()).filter(Boolean);
+    const lastSeg = segments.length > 0 ? segments[segments.length - 1] : '';
+
+    if (!fullVal) {
       activatorParkDropdown.classList.add('hidden');
-      // Disable start if park cleared
       activatorStartBtn.disabled = true;
       activatorParkNameEl.textContent = '';
       activatorParkRefs = [];
       updateParkExtraBadge();
+      return;
+    }
+
+    // Resolve completed segments (before the last comma) into activatorParkRefs
+    if (segments.length > 1) {
+      parseCommaSeparatedParks(segments);
+    }
+
+    // Only search for the last segment (the one being typed)
+    const query = lastSeg;
+    if (query.length < 2) {
+      activatorParkDropdown.classList.add('hidden');
       return;
     }
     parkSearchTimeout = setTimeout(async () => {
@@ -8713,16 +9324,22 @@ if (activatorParkRefInput) {
         const item = document.createElement('div');
         item.className = 'activator-dropdown-item';
         item.innerHTML = `<span class="activator-dropdown-ref">${park.reference}</span><span class="activator-dropdown-name">${park.name || ''}</span><span class="activator-dropdown-loc">${park.locationDesc || ''}</span>`;
-        item.addEventListener('mousedown', (e) => { e.preventDefault(); selectPark(park); });
+        item.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          selectParkMulti(park);
+        });
         activatorParkDropdown.appendChild(item);
       }
       activatorParkDropdown.classList.remove('hidden');
     }, 150);
   });
 
-  // Close dropdown on blur
+  // Close dropdown on blur — also finalize comma-separated refs
   activatorParkRefInput.addEventListener('blur', () => {
-    setTimeout(() => activatorParkDropdown.classList.add('hidden'), 150);
+    setTimeout(() => {
+      activatorParkDropdown.classList.add('hidden');
+      finalizeCommaSeparatedParks();
+    }, 150);
   });
 
   // Allow Enter to select first dropdown item
@@ -8732,6 +9349,9 @@ if (activatorParkRefInput) {
       if (first && !activatorParkDropdown.classList.contains('hidden')) {
         first.click();
         e.preventDefault();
+      } else {
+        // No dropdown — finalize comma-separated refs
+        finalizeCommaSeparatedParks();
       }
     }
   });
@@ -8766,9 +9386,114 @@ function selectPark(park) {
   window.api.saveSettings({ activatorParkRefs });
 }
 
+/** Select a park from dropdown when in multi-park (comma-separated) mode */
+function selectParkMulti(park) {
+  // Replace the last segment in the input with the selected park ref
+  const fullVal = activatorParkRefInput.value;
+  const lastComma = fullVal.lastIndexOf(',');
+  const prefix = lastComma >= 0 ? fullVal.substring(0, lastComma + 1) + ' ' : '';
+  activatorParkRefInput.value = prefix + park.reference;
+  activatorParkDropdown.classList.add('hidden');
+
+  // Rebuild activatorParkRefs from the full input
+  const segments = activatorParkRefInput.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  activatorParkRefs = segments.map(ref => ({ ref, name: '' }));
+  // Fill in the selected park's name for the last one
+  activatorParkRefs[activatorParkRefs.length - 1].name = park.name || '';
+
+  // Look up names for any earlier refs we don't have names for
+  for (let i = 0; i < activatorParkRefs.length - 1; i++) {
+    if (!activatorParkRefs[i].name) {
+      window.api.getPark(activatorParkRefs[i].ref).then(p => {
+        if (p) { activatorParkRefs[i].name = p.name || ''; updateParkExtraBadge(); }
+      }).catch(() => {});
+    }
+  }
+
+  // Display: show first park name, badge shows +N
+  if (activatorParkRefs.length === 1) {
+    activatorParkNameEl.textContent = park.name || '';
+  } else {
+    activatorParkNameEl.textContent = (activatorParkRefs[0].name || activatorParkRefs[0].ref);
+  }
+  updateParkExtraBadge();
+
+  // Grid from the first park
+  const gridInput = document.getElementById('activator-grid');
+  if (activatorParkRefs.length === 1 && park.latitude && park.longitude) {
+    activatorParkGrid = latLonToGridLocal(parseFloat(park.latitude), parseFloat(park.longitude));
+    if (gridInput) gridInput.value = activatorParkGrid;
+  }
+
+  activatorStartBtn.disabled = false;
+  window.api.saveSettings({ activatorParkRefs });
+}
+
+/** Parse comma-separated park refs typed directly (without dropdown selection) */
+function parseCommaSeparatedParks(segments) {
+  // Rebuild activatorParkRefs from completed segments
+  const newRefs = segments.map(ref => {
+    const existing = activatorParkRefs.find(p => p.ref === ref);
+    return existing || { ref, name: '' };
+  });
+  activatorParkRefs = newRefs;
+
+  if (activatorParkRefs.length > 0) {
+    activatorStartBtn.disabled = false;
+    updateParkExtraBadge();
+  }
+}
+
+/** Finalize comma-separated refs on blur/Enter — look up names, set grid from first park */
+function finalizeCommaSeparatedParks() {
+  const fullVal = activatorParkRefInput.value.trim().toUpperCase();
+  if (!fullVal) return;
+  const segments = fullVal.split(',').map(s => s.trim()).filter(Boolean);
+  if (segments.length === 0) return;
+
+  activatorParkRefs = segments.map(ref => {
+    const existing = activatorParkRefs.find(p => p.ref === ref);
+    return existing || { ref, name: '' };
+  });
+
+  // Look up names for refs we don't have
+  for (let i = 0; i < activatorParkRefs.length; i++) {
+    if (!activatorParkRefs[i].name) {
+      const idx = i;
+      window.api.getPark(activatorParkRefs[idx].ref).then(p => {
+        if (p) {
+          activatorParkRefs[idx].name = p.name || '';
+          if (idx === 0) activatorParkNameEl.textContent = p.name || '';
+          // Set grid from first park if not already set
+          if (idx === 0 && p.latitude && p.longitude) {
+            activatorParkGrid = latLonToGridLocal(parseFloat(p.latitude), parseFloat(p.longitude));
+            const gridInput = document.getElementById('activator-grid');
+            if (gridInput) gridInput.value = activatorParkGrid;
+          }
+          updateParkExtraBadge();
+        }
+      }).catch(() => {});
+    }
+  }
+
+  if (activatorParkRefs.length === 1) {
+    activatorParkNameEl.textContent = activatorParkRefs[0].name || '';
+  } else {
+    activatorParkNameEl.textContent = activatorParkRefs[0].name || activatorParkRefs[0].ref;
+  }
+  updateParkExtraBadge();
+  activatorStartBtn.disabled = false;
+  window.api.saveSettings({ activatorParkRefs });
+}
+
 /** Update the park display: input value, name, and extra badge */
 function updateParkDisplay() {
-  activatorParkRefInput.value = primaryParkRef();
+  // Show comma-separated refs if multiple parks
+  if (activatorParkRefs.length > 1) {
+    activatorParkRefInput.value = activatorParkRefs.map(p => p.ref).join(', ');
+  } else {
+    activatorParkRefInput.value = primaryParkRef();
+  }
   activatorParkNameEl.textContent = primaryParkName();
   updateParkExtraBadge();
 }
@@ -9526,7 +10251,7 @@ function addMultiparkSlot(ref, name) {
   slot.className = 'multipark-slot';
   slot.innerHTML = `
     <div class="multipark-slot-row">
-      <input type="text" class="multipark-ref-input" placeholder="Park ref (e.g. K-1234)" maxlength="12" spellcheck="false" autocomplete="off" value="${ref || ''}">
+      <input type="text" class="multipark-ref-input" placeholder="Park ref (e.g. K-1234)" maxlength="20" spellcheck="false" autocomplete="off" value="${ref || ''}">
       <button type="button" class="multipark-remove-btn" title="Remove">&times;</button>
     </div>
     <span class="multipark-name">${name || ''}</span>

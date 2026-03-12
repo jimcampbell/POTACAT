@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('api', {
   onRbnSpots: (cb) => ipcRenderer.on('rbn-spots', (_e, data) => cb(data)),
   onRbnStatus: (cb) => ipcRenderer.on('rbn-status', (_e, s) => cb(s)),
   onPskrStatus: (cb) => ipcRenderer.on('pskr-status', (_e, s) => cb(s)),
+  onAgStatus: (cb) => ipcRenderer.on('ag-status', (_e, s) => cb(s)),
+  onAgAntennaNames: (cb) => ipcRenderer.on('ag-antenna-names', (_e, names) => cb(names)),
+  onAgPortStatus: (cb) => ipcRenderer.on('ag-port-status', (_e, s) => cb(s)),
   clearRbn: () => ipcRenderer.send('rbn-clear'),
   onSolarData: (cb) => ipcRenderer.on('solar-data', (_e, d) => cb(d)),
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, d) => cb(d)),
@@ -67,6 +70,10 @@ contextBridge.exposeInMainWorld('api', {
   onQrzData: (cb) => ipcRenderer.on('qrz-data', (_e, data) => cb(data)),
   onDonorCallsigns: (cb) => ipcRenderer.on('donor-callsigns', (_e, data) => cb(data)),
   onExpeditionCallsigns: (cb) => ipcRenderer.on('expedition-callsigns', (_e, data) => cb(data)),
+  // Directory (HF Nets & SWL Broadcasts)
+  onDirectoryData: (cb) => ipcRenderer.on('directory-data', (_e, data) => cb(data)),
+  fetchDirectory: () => ipcRenderer.send('fetch-directory'),
+  getDirectory: () => ipcRenderer.invoke('get-directory'),
   // Events system
   onActiveEvents: (cb) => ipcRenderer.on('active-events', (_e, data) => cb(data)),
   getActiveEvents: () => ipcRenderer.invoke('get-active-events'),

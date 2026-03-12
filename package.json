@@ -1,6 +1,6 @@
 {
   "name": "potacat",
-  "version": "0.9.43",
+  "version": "1.0.6",
   "description": "Amateur radio spot aggregator with CAT control, QSO logging, and panadapter integration",
   "author": {
     "name": "Casey Stanton",
@@ -32,6 +32,7 @@
       "lib/**/*",
       "renderer/**/*",
       "assets/icon.png",
+      "assets/icon.ico",
       "assets/icon-256.png",
       "assets/icon-light.png",
       "assets/cty.dat",
@@ -41,6 +42,7 @@
       "!node_modules/sharp/**/*"
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         "nsis",
         "portable"

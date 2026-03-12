@@ -7,7 +7,8 @@ process.stdout?.on('error', () => {});
 process.stderr?.on('error', () => {});
 const { execFile, spawn } = require('child_process');
 const { fetchSpots: fetchPotaSpots } = require('./lib/pota');
-const { fetchSpots: fetchSotaSpots, fetchSummitCoordsBatch, summitCache, loadAssociations, getAssociationName } = require('./lib/sota');
+const { fetchSpots: fetchSotaSpots, fetchSummitCoordsBatch, summitCache, loadAssociations, getAssociationName, SotaUploader } = require('./lib/sota');
+const sotaUploader = new SotaUploader();
 const { CatClient, RigctldClient, listSerialPorts } = require('./lib/cat');
 const { gridToLatLon, haversineDistanceMiles, bearing } = require('./lib/grid');
 const { freqToBand } = require('./lib/bands');
@@ -18,14 +19,16 @@ const { RbnClient } = require('./lib/rbn');
 const { appendQso, buildAdifRecord, appendImportedQso, appendRawQso, rewriteAdifFile, ADIF_HEADER, adifField } = require('./lib/adif-writer');
 const { SmartSdrClient, setColorblindMode: setSmartSdrColorblind } = require('./lib/smartsdr');
 const { TciClient, setTciColorblindMode } = require('./lib/tci');
+const { AntennaGeniusClient } = require('./lib/antenna-genius');
 const { IambicKeyer } = require('./lib/keyer');
 const { parsePotaParksCSV } = require('./lib/pota-parks');
-const { WsjtxClient } = require('./lib/wsjtx');
+const { WsjtxClient, encodeHeartbeat, encodeLoggedAdif, encodeQsoLogged } = require('./lib/wsjtx');
 const { PskrClient } = require('./lib/pskreporter');
 const { RemoteServer } = require('./lib/remote-server');
 const { fetchSpots: fetchWwffSpots } = require('./lib/wwff');
 const { fetchSpots: fetchLlotaSpots } = require('./lib/llota');
 const { postWwffRespot } = require('./lib/wwff-respot');
+const { fetchNets: fetchDirectoryNets, fetchSwl: fetchDirectorySwl } = require('./lib/directory');
 const { QrzClient } = require('./lib/qrz');
 const { callsignToProgram, fetchParksForProgram, loadParksCache, saveParksCache, isCacheStale, searchParks: searchParksDb, getPark: getParkDb, buildParksMap } = require('./lib/pota-parks-db');
 const { fetchDxCalExpeditions } = require('./lib/dxcal');
@@ -80,6 +83,8 @@ let smartSdr = null;
 let smartSdrPushTimer = null; // throttle timer for SmartSDR spot pushes
 let tciClient = null;
 let tciPushTimer = null; // throttle timer for TCI spot pushes
+let agClient = null; // 4O3A Antenna Genius client
+let agLastBand = null; // last band we switched to (avoid redundant commands)
 let workedQsos = new Map(); // callsign → [{date, ref}] from QSO log (all QSOs, not just confirmed)
 let workedParks = new Map(); // reference → park data from POTA parks CSV
 let wsjtx = null;
@@ -90,6 +95,9 @@ let expeditionCallsigns = new Set(); // active DX expeditions from Club Log + da
 let expeditionMeta = new Map(); // callsign → { entity, startDate, endDate, description }
 let activeEvents = [];                // events fetched from remote endpoint
 const EVENTS_CACHE_PATH = path.join(app.getPath('userData'), 'events-cache.json');
+let directoryNets = [];               // HF nets from community Google Sheet
+let directorySwl = [];                // SWL broadcasts from community Google Sheet
+const DIRECTORY_CACHE_PATH = path.join(app.getPath('userData'), 'directory-cache.json');
 let pskr = null;
 let pskrSpots = [];       // streaming PSKReporter FreeDV spots (FIFO, max 500)
 let pskrFlushTimer = null; // throttle timer for PSKReporter → renderer updates
@@ -153,7 +161,6 @@ function getRigCapabilities(rigType) {
 
 // --- Watchlist notifications ---
 const recentNotifications = new Map(); // callsign → timestamp for dedup (5-min window)
-let lastNotifiedPotaSota = new Set(); // callsigns seen in previous POTA/SOTA refresh
 
 function parseWatchlist(str) {
   if (!str) return new Set();
@@ -217,19 +224,25 @@ function findRigctld() {
   }
 
   // Check bundled path (packaged app vs dev)
+  const isWin = process.platform === 'win32';
+  const rigBin = isWin ? 'rigctld.exe' : 'rigctld';
   const bundledPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'hamlib', 'rigctld.exe')
-    : path.join(__dirname, 'assets', 'hamlib', 'rigctld.exe');
+    ? path.join(process.resourcesPath, 'hamlib', rigBin)
+    : path.join(__dirname, 'assets', 'hamlib', rigBin);
   try {
     fs.accessSync(bundledPath, fs.constants.X_OK);
     return bundledPath;
   } catch { /* fall through */ }
 
-  // Check common install directories (Windows)
-  const candidates = [
+  // Check common install directories
+  const candidates = isWin ? [
     'C:\\Program Files\\hamlib\\bin\\rigctld.exe',
     'C:\\Program Files (x86)\\hamlib\\bin\\rigctld.exe',
     'C:\\hamlib\\bin\\rigctld.exe',
+  ] : [
+    '/usr/bin/rigctld',
+    '/usr/local/bin/rigctld',
+    '/snap/bin/rigctld',
   ];
   for (const p of candidates) {
     try {
@@ -284,7 +297,7 @@ function spawnRigctld(target, portOverride) {
     const args = [
       '-m', String(target.rigId),
       '-r', target.serialPort,
-      '-s', String(target.baudRate),
+      '-s', String(target.baudRate || 9600),
       '-t', port,
     ];
     if (target.dtrOff) args.push('--set-conf=dtr_state=OFF,rts_state=OFF');
@@ -1082,8 +1095,11 @@ async function saveQsoRecord(qsoData) {
   // but external logbooks only need one QSO per physical contact
   if (settings.sendToLogbook && settings.logbookType && !qsoData.skipLogbookForward) {
     try {
+      sendCatLog(`[Logbook] Forwarding QSO to ${settings.logbookType}: ${qsoData.callsign} ${qsoData.frequency}kHz ${qsoData.mode}`);
       await forwardToLogbook(qsoData);
+      sendCatLog(`[Logbook] QSO forwarded successfully`);
     } catch (fwdErr) {
+      sendCatLog(`[Logbook] Forwarding failed: ${fwdErr.message}`);
       console.error('Logbook forwarding failed:', fwdErr.message);
       return { success: true, logbookError: fwdErr.message };
     }
@@ -1173,6 +1189,23 @@ async function saveQsoRecord(qsoData) {
     } catch (respotErr) {
       console.error('DX Cluster spot failed:', respotErr.message);
       return { success: true, dxcRespotError: respotErr.message };
+    }
+  }
+
+  // Auto-upload chaser QSO to SOTAdata if enabled
+  if (settings.sotaUpload && qsoData.sig === 'SOTA' && qsoData.sigInfo && sotaUploader.configured) {
+    try {
+      sendCatLog(`[SOTA] Uploading chase: ${qsoData.callsign} @ ${qsoData.sigInfo}`);
+      const sotaResult = await sotaUploader.uploadChase(qsoData);
+      if (sotaResult.success) {
+        sendCatLog(`[SOTA] Chase uploaded successfully`);
+      } else {
+        sendCatLog(`[SOTA] Upload failed: ${sotaResult.error}`);
+        console.error('SOTA upload failed:', sotaResult.error);
+      }
+    } catch (sotaErr) {
+      sendCatLog(`[SOTA] Upload error: ${sotaErr.message}`);
+      console.error('SOTA upload error:', sotaErr.message);
     }
   }
 
@@ -1495,6 +1528,93 @@ function disconnectTci() {
     tciClient.disconnect();
     tciClient = null;
   }
+}
+
+// --- 4O3A Antenna Genius ---
+function connectAntennaGenius() {
+  disconnectAntennaGenius();
+  if (!settings.enableAntennaGenius || !settings.agHost) return;
+  agClient = new AntennaGeniusClient();
+  agLastBand = null;
+  agClient.on('connected', () => {
+    sendCatLog('[AG] Connected to Antenna Genius');
+    agClient.subscribePortStatus();
+    sendAgStatus();
+  });
+  agClient.on('disconnected', () => {
+    sendCatLog('[AG] Disconnected from Antenna Genius');
+    sendAgStatus();
+  });
+  agClient.on('port-status', (status) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('ag-port-status', status);
+    }
+  });
+  agClient.on('antenna-list', (names) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('ag-antenna-names', names);
+    }
+  });
+  agClient.on('error', (err) => {
+    // Suppress ECONNREFUSED noise during reconnect
+    if (err.code !== 'ECONNREFUSED') {
+      console.error('AG:', err.message);
+    }
+  });
+  agClient.connect(settings.agHost, 9007);
+}
+
+function disconnectAntennaGenius() {
+  agLastBand = null;
+  if (agClient) {
+    agClient.removeAllListeners();
+    agClient.disconnect();
+    agClient = null;
+  }
+}
+
+function sendAgStatus() {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('ag-status', {
+      connected: !!(agClient && agClient.connected),
+    });
+  }
+}
+
+/**
+ * Switch antenna based on frequency. Called from tuneRadio().
+ * @param {number} freqKhz - Frequency in kHz
+ */
+function agSwitchForFreq(freqKhz) {
+  if (!agClient || !agClient.connected) {
+    sendCatLog('[AG] Skip switch — not connected');
+    return;
+  }
+  if (!settings.agBandMap || typeof settings.agBandMap !== 'object') {
+    sendCatLog('[AG] Skip switch — no band map configured');
+    return;
+  }
+
+  const freqMhz = freqKhz / 1000;
+  const band = freqToBand(freqMhz);
+  if (!band) {
+    sendCatLog(`[AG] Skip switch — freq ${freqKhz} kHz not in any band`);
+    return;
+  }
+
+  // Don't re-send if already on this band
+  if (band === agLastBand) return;
+  agLastBand = band;
+
+  const antenna = settings.agBandMap[band];
+  if (!antenna) {
+    sendCatLog(`[AG] No antenna mapped for ${band}`);
+    return;
+  }
+
+  const radioPort = settings.agRadioPort || 1;
+  sendCatLog(`[AG] Band ${band} → antenna ${antenna} (port ${radioPort === 1 ? 'A' : 'B'})`);
+  agClient.selectAntenna(radioPort, antenna);
 }
 
 // --- ECHOCAT ---
@@ -2777,13 +2897,12 @@ async function refreshSpots() {
       scheduleWsjtxHighlights();
     }
 
-    // Watchlist notifications for newly-appeared POTA/SOTA spots
+    // Watchlist notifications for POTA/SOTA spots (5-min dedup in notifyWatchlistSpot)
     const potaSotaWatchSet = parseWatchlist(settings.watchlist);
     if (potaSotaWatchSet.size > 0) {
-      const currentCallsigns = new Set(lastPotaSotaSpots.map(s => s.callsign.toUpperCase()));
       for (const spot of lastPotaSotaSpots) {
         const csUpper = spot.callsign.toUpperCase();
-        if (potaSotaWatchSet.has(csUpper) && !lastNotifiedPotaSota.has(csUpper)) {
+        if (potaSotaWatchSet.has(csUpper)) {
           notifyWatchlistSpot({
             callsign: spot.callsign,
             frequency: spot.frequency,
@@ -2794,7 +2913,6 @@ async function refreshSpots() {
           });
         }
       }
-      lastNotifiedPotaSota = currentCallsigns;
     }
 
     // Report errors from rejected fetches
@@ -2917,6 +3035,92 @@ function loadWorkedParks() {
   }
 }
 
+// --- HamRS bridge (WSJT-X binary protocol) ---
+// HamRS expects WSJT-X binary UDP messages, not plain ADIF text.
+// We send periodic heartbeats so HamRS shows "connected", and Logged ADIF (type 12) for QSOs.
+const hamrsBridge = {
+  socket: null,
+  heartbeatTimer: null,
+  host: '127.0.0.1',
+  port: 2333,
+  id: 'POTACAT',
+
+  start(host, port) {
+    this.stop();
+    this.host = host || '127.0.0.1';
+    this.port = port || 2333;
+    const dgram = require('dgram');
+    this.socket = dgram.createSocket('udp4');
+    this.socket.on('error', (err) => {
+      console.error('[HamRS] UDP error:', err.message);
+    });
+    // Send heartbeat immediately, then every 15 seconds
+    this._sendHeartbeat();
+    this.heartbeatTimer = setInterval(() => this._sendHeartbeat(), 15000);
+    console.log(`[HamRS] Bridge started → ${this.host}:${this.port}`);
+  },
+
+  stop() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.socket) {
+      try { this.socket.close(); } catch { /* ignore */ }
+      this.socket = null;
+    }
+  },
+
+  _sendHeartbeat() {
+    if (!this.socket) return;
+    const buf = encodeHeartbeat(this.id, 3);
+    this.socket.send(buf, 0, buf.length, this.port, this.host);
+  },
+
+  sendQso(qsoData, adifText) {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        reject(new Error('HamRS bridge not started'));
+        return;
+      }
+      const freqHz = Math.round((parseFloat(qsoData.frequency) || 0) * 1000);
+      sendCatLog(`[HamRS] Sending QSO: ${qsoData.callsign} ${freqHz}Hz ${qsoData.mode} → ${this.host}:${this.port}`);
+
+      // Send QSO_LOGGED (type 5) — the primary message most apps listen for
+      const qsoMsg = encodeQsoLogged(this.id, {
+        dxCall: qsoData.callsign || '',
+        dxGrid: qsoData.grid || '',
+        txFrequency: freqHz,
+        mode: qsoData.mode || '',
+        reportSent: qsoData.rstSent || '59',
+        reportReceived: qsoData.rstRcvd || '59',
+        txPower: qsoData.txPower || '',
+        comments: qsoData.comment || '',
+        name: qsoData.name || '',
+        operatorCall: qsoData.operator || '',
+        myCall: qsoData.stationCallsign || '',
+        myGrid: qsoData.myGridsquare || '',
+      });
+      this.socket.send(qsoMsg, 0, qsoMsg.length, this.port, this.host, (err) => {
+        if (err) sendCatLog(`[HamRS] QSO_LOGGED send error: ${err.message}`);
+        else sendCatLog(`[HamRS] QSO_LOGGED (type 5) sent (${qsoMsg.length} bytes)`);
+      });
+
+      // Also send LOGGED_ADIF (type 12) as supplementary
+      const adifBuf = encodeLoggedAdif(this.id, adifText);
+      this.socket.send(adifBuf, 0, adifBuf.length, this.port, this.host, (err) => {
+        if (err) {
+          sendCatLog(`[HamRS] LOGGED_ADIF send error: ${err.message}`);
+          reject(err);
+        } else {
+          sendCatLog(`[HamRS] LOGGED_ADIF (type 12) sent (${adifBuf.length} bytes)`);
+          resolve();
+        }
+      });
+    });
+  },
+};
+
 // --- Logbook forwarding ---
 function forwardToLogbook(qsoData) {
   const type = settings.logbookType;
@@ -2927,10 +3131,20 @@ function forwardToLogbook(qsoData) {
     return sendUdpAdif(qsoData, host, port || 2237);
   }
   if (type === 'hamrs') {
-    return sendUdpAdif(qsoData, host, port || 2333);
+    const record = buildAdifRecord(qsoData);
+    const adifText = `<adif_ver:5>3.1.4\n<programid:7>POTACAT\n<EOH>\n${record}\n`;
+    // Start bridge if not running (or if host/port changed)
+    const hp = port || 2333;
+    if (!hamrsBridge.socket || hamrsBridge.host !== host || hamrsBridge.port !== hp) {
+      hamrsBridge.start(host, hp);
+    }
+    return hamrsBridge.sendQso(qsoData, adifText);
   }
   if (type === 'hrd') {
     return sendUdpAdif(qsoData, host, port || 2333);
+  }
+  if (type === 'macloggerdx') {
+    return sendUdpAdif(qsoData, host, port || 9090);
   }
   if (type === 'n3fjp') {
     return sendN3fjpTcp(qsoData, host, port || 1100);
@@ -2938,12 +3152,15 @@ function forwardToLogbook(qsoData) {
   if (type === 'dxkeeper') {
     return sendDxkeeperTcp(qsoData, host, port || 52001);
   }
+  if (type === 'wavelog') {
+    return sendWavelogHttp(qsoData);
+  }
   return Promise.resolve();
 }
 
 /**
  * Send a QSO via plain UDP ADIF packet.
- * Used by Log4OM 2 (port 2237) and HRD Logbook (port 2333).
+ * Used by Log4OM 2 (port 2237), HRD Logbook (port 2333), and MacLoggerDX (port 9090).
  */
 function sendUdpAdif(qsoData, host, port) {
   return new Promise((resolve, reject) => {
@@ -3024,6 +3241,66 @@ function sendDxkeeperTcp(qsoData, host, port) {
     sock.on('error', (err) => {
       reject(new Error(`DXKeeper: ${err.message}`));
     });
+  });
+}
+
+/**
+ * Send a QSO to Wavelog via HTTP POST.
+ * POST {url}/index.php/api/qso with JSON body { key, station_profile_id, type: 'adif', string: adifRecord }
+ */
+function sendWavelogHttp(qsoData) {
+  return new Promise((resolve, reject) => {
+    let baseUrl = (settings.wavelogUrl || '').trim().replace(/\/+$/, '');
+    if (!baseUrl) return reject(new Error('Wavelog URL not configured'));
+    const apiKey = settings.wavelogApiKey;
+    if (!apiKey) return reject(new Error('Wavelog API key not configured'));
+    const stationId = settings.wavelogStationId || '1';
+
+    const record = buildAdifRecord(qsoData);
+    const body = JSON.stringify({
+      key: apiKey,
+      station_profile_id: String(stationId),
+      type: 'adif',
+      string: record,
+    });
+
+    const url = new URL(baseUrl + '/index.php/api/qso');
+    const isHttps = url.protocol === 'https:';
+    const httpMod = isHttps ? require('https') : require('http');
+
+    const req = httpMod.request({
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 10000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.status === 'created') {
+            resolve();
+          } else {
+            reject(new Error(`Wavelog: ${json.reason || json.status || 'unknown error'}`));
+          }
+        } catch {
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+          else reject(new Error(`Wavelog HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+        }
+      });
+    });
+
+    req.on('error', (err) => reject(new Error(`Wavelog: ${err.message}`)));
+    req.on('timeout', () => { req.destroy(); reject(new Error('Wavelog request timed out')); });
+    req.write(body);
+    req.end();
   });
 }
 
@@ -3166,6 +3443,15 @@ function createWindow() {
     // Push cached events to renderer immediately + scan log for matches
     pushEventsToRenderer();
     scanLogForEvents();
+    // Load directory cache and fetch fresh data (only if enabled)
+    if (settings.enableDirectory) {
+      const dirCache = loadDirectoryCache();
+      directoryNets = dirCache.nets || [];
+      directorySwl = dirCache.swl || [];
+      pushDirectoryToRenderer();
+      fetchDirectory();
+    }
+    setInterval(() => { if (settings.enableDirectory) fetchDirectory(); }, 4 * 3600000);
     // Auto-reopen pop-out map if it was open when the app last closed
     if (settings.mapPopoutOpen) {
       ipcMain.emit('popout-map-open');
@@ -3410,6 +3696,32 @@ function pushEventsToRenderer() {
     progress: (eventStates[ev.id] && eventStates[ev.id].progress) || {},
   }));
   win.webContents.send('active-events', payload);
+}
+
+// --- Directory (HF Nets & SWL Broadcasts from Google Sheet) ---
+
+function loadDirectoryCache() {
+  try {
+    return JSON.parse(fs.readFileSync(DIRECTORY_CACHE_PATH, 'utf-8'));
+  } catch { /* fall through */ }
+  return { nets: [], swl: [], timestamp: 0 };
+}
+
+function saveDirectoryCache(data) {
+  try { fs.writeFileSync(DIRECTORY_CACHE_PATH, JSON.stringify(data)); } catch { /* ignore */ }
+}
+
+async function fetchDirectory() {
+  const results = await Promise.allSettled([fetchDirectoryNets(), fetchDirectorySwl()]);
+  if (results[0].status === 'fulfilled') directoryNets = results[0].value;
+  if (results[1].status === 'fulfilled') directorySwl = results[1].value;
+  saveDirectoryCache({ nets: directoryNets, swl: directorySwl, timestamp: Date.now() });
+  pushDirectoryToRenderer();
+}
+
+function pushDirectoryToRenderer() {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('directory-data', { nets: directoryNets, swl: directorySwl });
 }
 
 function getEventProgress(eventId) {
@@ -3909,6 +4221,7 @@ function migrateRigSettings(s) {
 // --- Tune radio (shared by IPC and protocol handler) ---
 let _lastTuneFreq = 0;
 let _lastTuneTime = 0;
+let _lastTuneBand = null; // for ATU auto-tune on band change
 
 function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
   let freqHz = Math.round(parseFloat(freqKhz) * 1000); // kHz → Hz
@@ -3936,6 +4249,11 @@ function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
     sendRotorBearing(Math.round(brng));
   }
 
+  // Antenna Genius: switch antenna based on band
+  if (settings.enableAntennaGenius) {
+    agSwitchForFreq(freqKhz);
+  }
+
   if (settings.enableWsjtx && (!cat || !cat.connected)) {
     if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
       const sliceIndex = (settings.catTarget.port || 5002) - 5002;
@@ -3950,13 +4268,35 @@ function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
       } else if (shouldClearXit) {
         smartSdr.setSliceXit(sliceIndex, false);
       }
+      // ATU: auto-tune on band change (SmartSDR-only path)
+      if (settings.enableAtu) {
+        const freqMhzSdr = freqHz / 1e6;
+        const tuneBandSdr = freqToBand(freqMhzSdr);
+        if (tuneBandSdr && tuneBandSdr !== _lastTuneBand) {
+          _lastTuneBand = tuneBandSdr;
+          setTimeout(() => {
+            sendCatLog(`[ATU] Band changed to ${tuneBandSdr} → starting SmartSDR ATU tune`);
+            smartSdr.setAtu(true);
+          }, 1500);
+        } else if (!_lastTuneBand && tuneBandSdr) {
+          _lastTuneBand = tuneBandSdr;
+        }
+      }
     }
     return;
   }
 
   if (!cat || !cat.connected) return;
-  sendCatLog(`tune: freq=${freqKhz}kHz → ${freqHz}Hz mode=${mode} split=${!!settings.enableSplit} filter=${filterWidth}`);
-  cat.tune(freqHz, mode, { split: settings.enableSplit, filterWidth });
+
+  // For non-Flex radios (serial/rigctld), apply CW XIT offset directly to tune frequency
+  // (Flex radios use SmartSDR setSliceXit API instead)
+  let tuneFreqHz = freqHz;
+  if (wantXit && !(smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp')) {
+    tuneFreqHz = freqHz + settings.cwXit;
+  }
+
+  sendCatLog(`tune: freq=${freqKhz}kHz → ${tuneFreqHz}Hz mode=${mode} split=${!!settings.enableSplit} filter=${filterWidth}${wantXit ? ` xit=${settings.cwXit}` : ''}`);
+  cat.tune(tuneFreqHz, mode, { split: settings.enableSplit, filterWidth });
 
   // Set or clear XIT via SmartSDR API (works even when tuning via CAT)
   if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
@@ -3965,6 +4305,28 @@ function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
       smartSdr.setSliceXit(sliceIndex, true, settings.cwXit);
     } else if (shouldClearXit) {
       smartSdr.setSliceXit(sliceIndex, false);
+    }
+  }
+
+  // ATU: auto-tune on band change
+  if (settings.enableAtu) {
+    const freqMhz = freqKhz / 1000;
+    const tuneBand = freqToBand(freqMhz);
+    if (tuneBand && tuneBand !== _lastTuneBand) {
+      _lastTuneBand = tuneBand;
+      // Delay ATU trigger to let the radio settle on the new frequency first
+      setTimeout(() => {
+        if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
+          sendCatLog(`[ATU] Band changed to ${tuneBand} → starting SmartSDR ATU tune`);
+          smartSdr.setAtu(true);
+        } else if (cat && cat.connected) {
+          sendCatLog(`[ATU] Band changed to ${tuneBand} → starting ATU tune`);
+          cat.startTune();
+        }
+      }, 1500);
+    } else if (!_lastTuneBand && tuneBand) {
+      // First tune — just record the band, don't trigger ATU
+      _lastTuneBand = tuneBand;
     }
   }
 }
@@ -4038,10 +4400,14 @@ app.whenReady().then(() => {
   if (settings.enableRbn) connectRbn();
   connectSmartSdr(); // connects if smartSdrSpots, CW keyer, or WSJT-X+Flex
   connectTci();
+  connectAntennaGenius();
   if (settings.enableRemote) connectRemote();
   if (settings.enableCwKeyer) connectKeyer();
   if (settings.enableWsjtx) connectWsjtx();
   if (settings.enablePskr) connectPskr();
+  if (settings.sendToLogbook && settings.logbookType === 'hamrs') {
+    hamrsBridge.start(settings.logbookHost || '127.0.0.1', parseInt(settings.logbookPort, 10) || 2333);
+  }
 
   // Cold start: check if app was launched via potacat:// URL
   const protocolUrl = process.argv.find(a => a.startsWith('potacat://'));
@@ -4052,6 +4418,10 @@ app.whenReady().then(() => {
   // Configure QRZ client from saved credentials
   if (settings.enableQrz && settings.qrzUsername && settings.qrzPassword) {
     qrz.configure(settings.qrzUsername, settings.qrzPassword);
+  }
+  // Configure SOTA uploader
+  if (settings.sotaUpload && settings.sotaUsername && settings.sotaPassword) {
+    sotaUploader.configure(settings.sotaUsername, settings.sotaPassword);
   }
   // Load QRZ disk cache
   const qrzCachePath = path.join(app.getPath('userData'), 'qrz-cache.json');
@@ -4619,7 +4989,7 @@ app.whenReady().then(() => {
       return;
     }
     // Only allow known URLs
-    if (url.startsWith('https://www.qrz.com/') || url.startsWith('https://caseystanton.com/') || url.startsWith('https://github.com/Waffleslop/POTACAT/') || url.startsWith('https://hamlib.github.io/') || url.startsWith('https://github.com/Hamlib/') || url.startsWith('https://discord.gg/') || url.startsWith('https://potacat.com/') || url.startsWith('https://buymeacoffee.com/potacat')) {
+    if (url.startsWith('https://www.qrz.com/') || url.startsWith('https://caseystanton.com/') || url.startsWith('https://github.com/Waffleslop/POTACAT/') || url.startsWith('https://hamlib.github.io/') || url.startsWith('https://github.com/Hamlib/') || url.startsWith('https://discord.gg/') || url.startsWith('https://potacat.com/') || url.startsWith('https://buymeacoffee.com/potacat') || url.startsWith('https://docs.google.com/spreadsheets/')) {
       shell.openExternal(url);
     }
   });
@@ -4652,6 +5022,10 @@ app.whenReady().then(() => {
       console.error('[Echo CAT Audio] Error:', status.error);
     }
   });
+
+  // --- Directory IPC ---
+  ipcMain.on('fetch-directory', () => { fetchDirectory(); });
+  ipcMain.handle('get-directory', () => ({ nets: directoryNets, swl: directorySwl }));
 
   // --- Events IPC ---
   ipcMain.handle('get-active-events', () => {
@@ -4774,6 +5148,9 @@ app.whenReady().then(() => {
       (has('tciHost') && newSettings.tciHost !== settings.tciHost) ||
       (has('tciPort') && newSettings.tciPort !== settings.tciPort);
 
+    const agChanged = (has('enableAntennaGenius') && newSettings.enableAntennaGenius !== settings.enableAntennaGenius) ||
+      (has('agHost') && newSettings.agHost !== settings.agHost);
+
     const wsjtxChanged = (has('enableWsjtx') && newSettings.enableWsjtx !== settings.enableWsjtx) ||
       (has('wsjtxPort') && newSettings.wsjtxPort !== settings.wsjtxPort);
 
@@ -4836,6 +5213,11 @@ app.whenReady().then(() => {
       connectTci();
     }
 
+    // Reconnect Antenna Genius if settings changed
+    if (agChanged) {
+      connectAntennaGenius();
+    }
+
     // Reconnect ECHOCAT if settings changed
     if (remoteChanged) {
       if (settings.enableRemote) {
@@ -4884,6 +5266,17 @@ app.whenReady().then(() => {
       }
     }
 
+    // Start/stop HamRS bridge (WSJT-X binary heartbeats)
+    if (settings.sendToLogbook && settings.logbookType === 'hamrs') {
+      const hp = parseInt(settings.logbookPort, 10) || 2233;
+      const hh = settings.logbookHost || '127.0.0.1';
+      if (!hamrsBridge.socket || hamrsBridge.host !== hh || hamrsBridge.port !== hp) {
+        hamrsBridge.start(hh, hp);
+      }
+    } else {
+      hamrsBridge.stop();
+    }
+
     // Auto-parse ADIF and send DXCC data if enabled
     if (settings.enableDxcc) {
       sendDxccData();
@@ -4905,6 +5298,11 @@ app.whenReady().then(() => {
     // Reconfigure QRZ client if credentials changed
     if (newSettings.enableQrz) {
       qrz.configure(newSettings.qrzUsername || '', newSettings.qrzPassword || '');
+    }
+
+    // Reconfigure SOTA uploader if credentials changed
+    if (newSettings.sotaUpload && newSettings.sotaUsername) {
+      sotaUploader.configure(newSettings.sotaUsername, newSettings.sotaPassword || '');
     }
 
     return settings;
@@ -5732,8 +6130,10 @@ function gracefulCleanup() {
   try { disconnectWsjtx(); } catch {}
   try { disconnectSmartSdr(); } catch {}
   try { disconnectTci(); } catch {}
+  try { disconnectAntennaGenius(); } catch {}
   try { disconnectRemote(); } catch {}
   try { disconnectKeyer(); } catch {}
+  try { hamrsBridge.stop(); } catch {}
   killRigctld();
 }
 

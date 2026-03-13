@@ -2339,10 +2339,8 @@ function startRemoteAudio() {
 
 function destroyRemoteAudioWindow() {
   if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
-    remoteAudioWin.webContents.send('remote-audio-stop');
-    setTimeout(() => {
-      if (remoteAudioWin && !remoteAudioWin.isDestroyed()) remoteAudioWin.close();
-    }, 500);
+    try { remoteAudioWin.webContents.send('remote-audio-stop'); } catch { /* may be destroyed */ }
+    try { remoteAudioWin.close(); } catch { /* ignore */ }
   }
 }
 
@@ -3402,6 +3400,8 @@ function createWindow() {
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.close();
     if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.close();
     if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) clusterPopoutWin.close();
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.close();
+    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) remoteAudioWin.close();
   });
 
   // Once the renderer is actually ready to listen, send current state
@@ -4539,6 +4539,13 @@ app.whenReady().then(() => {
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.webContents.send('colorblind-mode', enabled);
     if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.webContents.send('colorblind-mode', enabled);
     if (remoteServer) remoteServer.setColorblindMode(enabled);
+  });
+
+  // Relay WCAG mode to pop-outs
+  ipcMain.on('wcag-mode', (_e, enabled) => {
+    if (popoutWin && !popoutWin.isDestroyed()) popoutWin.webContents.send('wcag-mode', enabled);
+    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.webContents.send('wcag-mode', enabled);
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.webContents.send('wcag-mode', enabled);
   });
 
   // Relay theme changes to pop-out
@@ -6145,10 +6152,10 @@ app.on('before-quit', gracefulCleanup);
 process.on('SIGINT', () => { gracefulCleanup(); process.exit(0); });
 process.on('SIGTERM', () => { gracefulCleanup(); process.exit(0); });
 
-app.on('window-all-closed', async () => {
-  // Send session duration telemetry before quitting — await so the request flushes
+app.on('window-all-closed', () => {
+  // Fire-and-forget telemetry — don't await; delaying app.quit() causes SIGABRT on macOS
   const sessionSeconds = Math.round((Date.now() - sessionStartTime) / 1000);
-  await sendTelemetry(sessionSeconds);
+  sendTelemetry(sessionSeconds);
 
   gracefulCleanup();
   app.quit();

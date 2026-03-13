@@ -546,9 +546,9 @@
       modeBadge.textContent = s.mode;
       currentMode = s.mode;
       const m = s.mode.toUpperCase();
-      const isSSB = (m === 'SSB' || m === 'USB' || m === 'LSB');
-      pttBtn.classList.toggle('hidden', !isSSB);
-      estopBtn.classList.toggle('hidden', !isSSB);
+      const isVoice = (m === 'SSB' || m === 'USB' || m === 'LSB' || m === 'FM' || m === 'AM');
+      pttBtn.classList.toggle('hidden', !isVoice);
+      estopBtn.classList.toggle('hidden', !isVoice);
     }
     if (s.catConnected !== undefined) {
       catDot.classList.toggle('connected', s.catConnected);

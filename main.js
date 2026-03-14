@@ -3348,7 +3348,8 @@ async function sendToQrzLogbook(qsoData) {
         park.locationDesc || '',
       ].filter(Boolean);
       const parkComment = parts.join(' ');
-      const userComment = (qsoData.comment || '').trim();
+      // Strip the auto-appended [SIG REF] tag from the base comment to avoid duplication
+      const userComment = (qsoData.comment || '').replace(/\s*\[.+?\]\s*$/, '').trim();
       // Combine park info with any user-typed comment
       const fullComment = userComment ? `${parkComment} - ${userComment}` : parkComment;
       enriched = { ...qsoData, comment: fullComment };

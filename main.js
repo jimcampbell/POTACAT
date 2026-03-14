@@ -2819,10 +2819,8 @@ function sendMergedSpots() {
   const netSpots = getActiveNetSpots();
   const merged = [...netSpots, ...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
   win.webContents.send('spots', merged);
-  // Filter net spots out of panadapter pushes (no lat/lon, not real signals)
-  const realSpots = merged.filter(s => s.source !== 'net');
-  pushSpotsToSmartSdr(realSpots);
-  pushSpotsToTci(realSpots);
+  pushSpotsToSmartSdr(merged);
+  pushSpotsToTci(merged);
   // Forward to ECHOCAT — SSB only (net spots always pass), respect max spot age
   if (remoteServer && remoteServer.running) {
     const maxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;

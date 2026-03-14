@@ -4663,21 +4663,29 @@ function render() {
         star.className = 'watchlist-star';
         callTd.appendChild(star);
       }
-      const callLink = document.createElement('a');
-      callLink.textContent = s.callsign;
-      callLink.href = '#';
-      callLink.className = 'qrz-link';
-      const qrzHover = qrzData.get(s.callsign.toUpperCase().split('/')[0]);
-      if (qrzHover) {
-        const hoverName = qrzDisplayName(qrzHover);
-        if (hoverName) callLink.title = hoverName;
+      if (s.source === 'net') {
+        // Net spots use the net name as callsign — no QRZ link
+        const callSpan = document.createElement('span');
+        callSpan.textContent = s.callsign;
+        callSpan.className = 'qrz-link';
+        callTd.appendChild(callSpan);
+      } else {
+        const callLink = document.createElement('a');
+        callLink.textContent = s.callsign;
+        callLink.href = '#';
+        callLink.className = 'qrz-link';
+        const qrzHover = qrzData.get(s.callsign.toUpperCase().split('/')[0]);
+        if (qrzHover) {
+          const hoverName = qrzDisplayName(qrzHover);
+          if (hoverName) callLink.title = hoverName;
+        }
+        callLink.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          window.api.openExternal(`https://www.qrz.com/db/${encodeURIComponent(s.callsign.split('/')[0])}`);
+        });
+        callTd.appendChild(callLink);
       }
-      callLink.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        window.api.openExternal(`https://www.qrz.com/db/${encodeURIComponent(s.callsign.split('/')[0])}`);
-      });
-      callTd.appendChild(callLink);
       if (donorCallsigns.has(s.callsign.toUpperCase())) {
         const paw = document.createElement('span');
         paw.className = 'donor-paw';
@@ -4755,8 +4763,8 @@ function render() {
         { val: (s.lat != null && s.lon != null) ? latLonToGridLocal(s.lat, s.lon).slice(0, 4) : '', col: 'grid' },
         { val: formatDistance(s.distance), col: 'distance' },
         { val: formatBearing(s.bearing), cls: 'bearing-col', col: 'bearing' },
-        { val: s.source === 'net' ? (s.comments || '') : formatAge(s.spotTime), col: 'spotTime' },
-        { val: s.source === 'net' ? '' : (s.comments || ''), col: 'comments' },
+        { val: formatAge(s.spotTime), col: 'spotTime' },
+        { val: s.comments || '', col: 'comments' },
       ];
 
       for (const cell of cells) {

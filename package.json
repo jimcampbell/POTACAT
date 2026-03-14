@@ -1,6 +1,6 @@
 {
   "name": "potacat",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Amateur radio spot aggregator with CAT control, QSO logging, and panadapter integration",
   "author": {
     "name": "Casey Stanton",
@@ -75,7 +75,9 @@
     "protocols": [
       {
         "name": "POTACAT Protocol",
-        "schemes": ["potacat"]
+        "schemes": [
+          "potacat"
+        ]
       }
     ],
     "extraResources": [

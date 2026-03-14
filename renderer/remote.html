@@ -19,8 +19,18 @@
     <div class="connect-box">
       <h1 class="connect-title">ECHOCAT</h1>
       <p class="connect-subtitle">Remote Radio</p>
-      <input type="text" id="token-input" placeholder="Access Token" maxlength="10"
-             autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+      <!-- Token login (default) -->
+      <div id="token-login">
+        <input type="text" id="token-input" placeholder="Access Token" maxlength="10"
+               autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+      </div>
+      <!-- Club login (shown when server sends auth-mode: club) -->
+      <div id="club-login" class="hidden">
+        <input type="text" id="club-callsign" placeholder="Callsign"
+               autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+        <input type="password" id="club-password" placeholder="Password"
+               autocomplete="off">
+      </div>
       <button id="connect-btn" type="button">Connect</button>
       <div id="connect-error" class="hidden"></div>
       <p class="connect-help">
@@ -43,6 +53,7 @@
           <button id="freq-go" type="button">Go</button>
         </div>
       </div>
+      <div id="member-badge" class="member-badge hidden"></div>
       <div class="status-right">
         <button type="button" id="scan-btn" class="scan-status-btn" title="Scan spots">Scan</button>
         <span id="cat-dot" class="cat-dot disconnected" title="Radio disconnected"></span>

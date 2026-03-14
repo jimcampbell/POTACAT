@@ -82,6 +82,40 @@ html, body {
   border-color: var(--accent);
 }
 
+/* Club login inputs */
+#club-callsign, #club-password {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 18px;
+  background: var(--bg-card);
+  border: 2px solid #333;
+  border-radius: 12px;
+  color: var(--text);
+  outline: none;
+  margin-bottom: 10px;
+  box-sizing: border-box;
+}
+#club-callsign {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+#club-callsign:focus, #club-password:focus {
+  border-color: var(--accent);
+}
+
+/* Member badge in status bar */
+.member-badge {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  padding: 2px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
 #connect-btn {
   display: block;
   width: 100%;
@@ -1701,6 +1735,8 @@ html, body {
 
 /* Token input */
 [data-theme="light"] #token-input { border-color: #ccc; }
+[data-theme="light"] #club-callsign,
+[data-theme="light"] #club-password { border-color: #ccc; }
 
 /* Mode picker */
 [data-theme="light"] #mode-picker { border-color: #ccc; box-shadow: 0 4px 20px rgba(0,0,0,0.12); }

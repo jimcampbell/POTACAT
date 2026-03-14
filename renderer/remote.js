@@ -11,6 +11,8 @@
   let storedToken = '';
   let reconnectTimer = null;
   let wasKicked = false;
+  let authMode = 'token'; // 'token' | 'club' | 'none'
+  let clubMember = null;  // { callsign, firstname, role, licenseClass }
   let pingInterval = null;
   let lastPingSent = 0;
 
@@ -290,45 +292,59 @@
   soThemeLight.addEventListener('click', () => applyTheme(true));
 
   // --- Connect ---
+  var clubCallInput = document.getElementById('club-callsign');
+  var clubPassInput = document.getElementById('club-password');
+  var tokenLoginDiv = document.getElementById('token-login');
+  var clubLoginDiv = document.getElementById('club-login');
+  var memberBadge = document.getElementById('member-badge');
+
   connectBtn.addEventListener('click', () => {
-    const token = tokenInput.value.trim().toUpperCase();
-    if (!token) return;
-    storedToken = token;
-    connectError.classList.add('hidden');
-    connectBtn.textContent = 'Connecting...';
-    connectBtn.disabled = true;
-    connect(token);
+    if (authMode === 'club') {
+      var call = clubCallInput.value.trim().toUpperCase();
+      var pass = clubPassInput.value;
+      if (!call || !pass) return;
+      connectError.classList.add('hidden');
+      connectBtn.textContent = 'Connecting...';
+      connectBtn.disabled = true;
+      connectClub(call, pass);
+    } else {
+      var token = tokenInput.value.trim().toUpperCase();
+      if (!token) return;
+      storedToken = token;
+      connectError.classList.add('hidden');
+      connectBtn.textContent = 'Connecting...';
+      connectBtn.disabled = true;
+      connect(token);
+    }
   });
 
   tokenInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') connectBtn.click();
   });
+  clubCallInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') clubPassInput.focus();
+  });
+  clubPassInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') connectBtn.click();
+  });
 
-  function connect(token) {
+  function openWs(onOpen) {
     wasKicked = false;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       ws.close();
     }
-
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}`);
-
-    ws.onopen = () => {
-      if (token) {
-        ws.send(JSON.stringify({ type: 'auth', token }));
-      }
-    };
-
-    ws.onmessage = (event) => {
-      let msg;
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host);
+    ws.onopen = onOpen;
+    ws.onmessage = function(event) {
+      var msg;
       try { msg = JSON.parse(event.data); } catch { return; }
       handleMessage(msg);
     };
-
-    ws.onclose = () => {
+    ws.onclose = function() {
       clearInterval(pingInterval);
       pingInterval = null;
-      if (wasKicked) return; // don't auto-reconnect after kick
+      if (wasKicked) return;
       if (mainUI.classList.contains('hidden')) {
         connectBtn.textContent = 'Connect';
         connectBtn.disabled = false;
@@ -336,18 +352,62 @@
         scheduleReconnect();
       }
     };
+    ws.onerror = function() {};
+  }
 
-    ws.onerror = () => {};
+  function connect(token) {
+    openWs(function() {
+      if (token) {
+        ws.send(JSON.stringify({ type: 'auth', token: token }));
+      }
+    });
+  }
+
+  function connectClub(callsign, password) {
+    openWs(function() {
+      ws.send(JSON.stringify({ type: 'auth', callsign: callsign, password: password }));
+    });
   }
 
   function handleMessage(msg) {
     switch (msg.type) {
+      case 'auth-mode':
+        // Server tells us which login form to show
+        authMode = msg.mode || 'token';
+        if (authMode === 'club') {
+          tokenLoginDiv.classList.add('hidden');
+          clubLoginDiv.classList.remove('hidden');
+          connectBtn.textContent = 'Log In';
+        } else if (authMode === 'none') {
+          tokenLoginDiv.classList.add('hidden');
+          clubLoginDiv.classList.add('hidden');
+        } else {
+          tokenLoginDiv.classList.remove('hidden');
+          clubLoginDiv.classList.add('hidden');
+          connectBtn.textContent = 'Connect';
+        }
+        break;
+
       case 'auth-ok':
         connectScreen.classList.add('hidden');
         mainUI.classList.remove('hidden');
         tabBar.classList.remove('hidden');
-        connectBtn.textContent = 'Connect';
+        connectBtn.textContent = authMode === 'club' ? 'Log In' : 'Connect';
         connectBtn.disabled = false;
+        // Club member info
+        if (msg.member) {
+          clubMember = msg.member;
+          memberBadge.textContent = msg.member.firstname + ' (' + msg.member.callsign + ')';
+          memberBadge.classList.remove('hidden');
+        } else {
+          clubMember = null;
+          memberBadge.classList.add('hidden');
+        }
+        // Schedule advisory
+        if (msg.scheduleAdvisory) {
+          var sa = msg.scheduleAdvisory;
+          showToast(sa.scheduledName + ' (' + sa.scheduledCallsign + ') is scheduled on ' + sa.radio + ' ' + sa.time, 6000);
+        }
         startPing();
         showWelcome();
         drainOfflineQueue();
@@ -376,6 +436,14 @@
         }
         break;
 
+      case 'tune-blocked':
+        showToast(msg.reason || 'Tune blocked by license restrictions', 4000);
+        break;
+
+      case 'rig-blocked':
+        showToast(msg.reason || 'You do not have access to this radio', 4000);
+        break;
+
       case 'colorblind-mode':
         applyRemoteColorblind(!!msg.enabled);
         break;
@@ -383,7 +451,7 @@
       case 'auth-fail':
         connectError.textContent = msg.reason || 'Authentication failed';
         connectError.classList.remove('hidden');
-        connectBtn.textContent = 'Connect';
+        connectBtn.textContent = authMode === 'club' ? 'Log In' : 'Connect';
         connectBtn.disabled = false;
         break;
 
@@ -1482,9 +1550,15 @@
   function scheduleReconnect() {
     if (reconnectTimer) return;
     latencyEl.textContent = '--ms';
-    reconnectTimer = setTimeout(() => {
+    reconnectTimer = setTimeout(function() {
       reconnectTimer = null;
-      connect(storedToken || '');
+      if (authMode === 'club') {
+        var call = clubCallInput.value.trim().toUpperCase();
+        var pass = clubPassInput.value;
+        if (call && pass) connectClub(call, pass);
+      } else {
+        connect(storedToken || '');
+      }
     }, 3000);
   }
 
@@ -1840,17 +1914,20 @@
 
   let toastTimer = null;
   function showLogToast(msg, isError) {
+    showToast(msg, isError ? 3000 : 2500, isError);
+  }
+  function showToast(msg, duration, isError) {
     if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
     logToast.textContent = msg;
     logToast.classList.remove('hidden', 'fade-out', 'error');
     if (isError) logToast.classList.add('error');
-    toastTimer = setTimeout(() => {
+    toastTimer = setTimeout(function() {
       logToast.classList.add('fade-out');
-      setTimeout(() => {
+      setTimeout(function() {
         logToast.classList.add('hidden');
         logToast.classList.remove('fade-out', 'error');
       }, 400);
-    }, 2500);
+    }, duration || 2500);
   }
 
   // =============================================

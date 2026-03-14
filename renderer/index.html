@@ -722,8 +722,9 @@
           <label>Serial Port:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="set-serialcat-port" style="flex:1;"></select>
-              <input type="text" id="set-serialcat-port-manual" placeholder="COM5" style="width:70px;" title="Type a port manually if not listed">
+              <input type="text" id="set-serialcat-port-manual" placeholder="or type COM port" style="width:120px;" title="Type a port manually if not listed (e.g. virtual COM port from Win4Icom)">
             </div>
+            <span class="help-text" style="margin-top:2px;display:block;">Port not listed? Type it in the box — virtual COM ports from Win4Icom/Win4Yaesu may not appear in the dropdown.</span>
           </label>
           <label>Baud Rate:
             <select id="set-serialcat-baud">
@@ -755,10 +756,10 @@
           <label>Port / Address:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="set-rig-port" style="flex:1;"></select>
-              <input type="text" id="set-rig-port-manual" placeholder="COM5 or 127.0.0.1" style="width:110px;" title="Serial port or network address (for FLRig, etc.)">
+              <input type="text" id="set-rig-port-manual" placeholder="or type COM port" style="width:120px;" title="Serial port or network address (for FLRig, etc.)">
             </div>
+            <span class="help-text" style="margin-top:2px;display:block;">Port not listed? Type it in the box. For FLRig or OmniRig: enter the host IP and port (e.g. 127.0.0.1:12345).</span>
           </label>
-          <span class="help-text" style="margin-top:2px;display:block;">For FLRig or OmniRig: select the FLRig/OmniRig rig model above, then enter the host IP and port here (e.g. 127.0.0.1:12345). This lets multiple apps share your radio.</span>
           <label>Baud Rate:
             <select id="set-rig-baud">
               <option value="4800">4800</option>
@@ -1330,7 +1331,7 @@
       <button id="settings-cancel">Cancel</button>
     </div>
     <div class="settings-footer">
-      <div class="settings-version">v1.0.7 &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
+      <div class="settings-version">v1.0.8 &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
       <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
       <div class="settings-links">
         <a href="#" id="discord-link">Discord</a>
@@ -1629,8 +1630,9 @@
           <label>Serial Port:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="welcome-serialcat-port" style="flex:1;"></select>
-              <input type="text" id="welcome-serialcat-port-manual" placeholder="COM5" style="width:70px;">
+              <input type="text" id="welcome-serialcat-port-manual" placeholder="or type COM port" style="width:120px;">
             </div>
+            <span class="help-text" style="margin-top:2px;display:block;">Port not listed? Type it in the box.</span>
           </label>
           <label>Baud Rate:
             <select id="welcome-serialcat-baud">
@@ -1655,8 +1657,9 @@
           <label>Port / Address:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="welcome-rig-port" style="flex:1;"></select>
-              <input type="text" id="welcome-rig-port-manual" placeholder="COM5 or 127.0.0.1" style="width:110px;">
+              <input type="text" id="welcome-rig-port-manual" placeholder="or type COM port" style="width:120px;">
             </div>
+            <div style="font-size:11px;color:#888;margin-top:2px;">Port not listed? Type it in the box — virtual COM ports from Win4Icom/Win4Yaesu may not appear in the dropdown.</div>
           </label>
           <label>Baud Rate:
             <select id="welcome-rig-baud">

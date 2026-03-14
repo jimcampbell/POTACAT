@@ -291,13 +291,76 @@ POTACAT  ←→  COM19 ──(COM0COM)── COM18  ←→  Win4Yaesu  ←→  R
 
 ---
 
+## Using POTACAT with Win4IcomSuites
+
+**Best for:** Running POTACAT alongside Win4IcomSuites without CAT port conflicts (IC-7300, IC-7610, IC-9700, IC-705, and other Icom radios)
+
+If you use Win4IcomSuites to control your Icom radio, both programs will fight for the serial port if they try to connect directly. The solution is to let Win4Icom own the real serial port and route POTACAT's CAT commands through a **virtual COM port** using COM0COM.
+
+Win4Icom exposes CI-V CAT commands through virtual ports, so external programs like POTACAT can read frequency/mode and send tune commands without conflicting with Win4Icom's own connection to the radio.
+
+### What You Need
+
+- **Win4IcomSuites** connected to your radio
+- **COM0COM** (free, open-source virtual COM port driver for Windows)
+
+### Setup
+
+#### 1. Install COM0COM
+
+Download the **signed 64-bit version** of COM0COM from SourceForge. Install it and let it run on startup (it must be running before Win4Icom starts).
+
+> **Important:** Only use the signed version. Unsigned versions can cause driver issues on 64-bit Windows.
+
+#### 2. Create a Virtual COM Port Pair
+
+Open the COM0COM Setup utility (from Start Menu → COM0COM → Setup). Create a new pair and rename them to regular COM port names that don't already exist on your system (e.g., `COM18` and `COM19`). Make sure neither port name shows in red — red means the name is already in use.
+
+#### 3. Configure Win4IcomSuites
+
+1. In Win4Icom, go to **Setup → CI-V Interface**
+2. Under **Virtual COM Ports**, enable one of the virtual port slots and set it to one end of your COM0COM pair (e.g., `COM18`)
+3. Make sure the CI-V address matches your radio (default `94` for IC-7300, `98` for IC-7610, `A2` for IC-9700)
+4. Save and restart Win4Icom if prompted
+
+#### 4. Configure POTACAT
+
+1. In POTACAT Settings, add a new rig (or edit your existing Icom rig)
+2. Select **Hamlib** as the connection type
+3. Search for and select your radio model (e.g., `Icom IC-7300`)
+4. The COM port dropdown may not list virtual COM ports — **type the port name directly** in the text field next to the dropdown (e.g., `COM19`)
+5. Set the baud rate to match your radio (typically 19200 for IC-7300)
+6. Save
+
+> **Why Hamlib?** Icom radios use the CI-V protocol, which is different from the Kenwood/Yaesu FA/MD command set. Hamlib translates POTACAT's commands into CI-V format automatically.
+
+### How It Works
+
+```
+POTACAT  ←→  COM19 ──(COM0COM)── COM18  ←→  Win4Icom  ←→  Radio
+```
+
+- POTACAT talks to Hamlib, which sends CI-V commands to `COM19`
+- COM0COM bridges `COM19` to `COM18`, where Win4Icom is listening
+- Win4Icom forwards tune commands to the radio and returns frequency/mode data
+- Win4Icom, WSJT-X, and other programs can all run simultaneously — each on its own virtual port
+
+### Troubleshooting
+
+- **POTACAT can't open the port:** Make sure COM0COM is running and the port names match exactly. If the port doesn't appear in the dropdown, type it manually in the text field — virtual COM ports often don't show up in Windows' port enumeration.
+- **No frequency updates:** Verify you're using the correct ends of the pair — one end goes to Win4Icom, the other to POTACAT. If they're swapped, neither will connect.
+- **Wrong rig model in Hamlib:** The rig model must match your actual radio. Using a generic "Icom" model may work for basic frequency/mode but can cause issues with some commands.
+- **Stale COM ports:** If a port name shows in red in COM0COM Setup, it's already claimed by another device. Open Device Manager → View → Show Hidden Devices → Ports (COM & LPT) to find and uninstall stale entries.
+
+---
+
 ## General Tips
 
 ### Only One Program Per COM Port
 
 Serial ports can only be used by one program at a time. If POTACAT can't connect, make sure you've closed any other software using the same port: WSJT-X, fldigi, N3FJP, HRD, PuTTY, etc.
 
-> **Exception:** If you use Win4Yaesu Suite, you don't need to close it — see the [Win4Yaesu section](#using-potacat-with-win4yaesu-suite) above for how to run both programs at the same time.
+> **Exception:** If you use Win4Yaesu Suite or Win4IcomSuites, you don't need to close them — see the [Win4Yaesu](#using-potacat-with-win4yaesu-suite) or [Win4Icom](#using-potacat-with-win4icomsuites) sections above for how to run both programs at the same time.
 
 ### Finding Your COM Port
 

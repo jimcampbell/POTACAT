@@ -248,6 +248,12 @@
     '160m': 1843, '80m': 3578, '60m': 5360, '40m': 7052, '30m': 10144,
     '20m': 14084, '17m': 18108, '15m': 21144, '12m': 24923, '10m': 28184,
   };
+  // FT4 dial frequencies (kHz) per band
+  const FT4_BAND_FREQS = {
+    '160m': 1840, '80m': 3568, '60m': 5357, '40m': 7047.5, '30m': 10140,
+    '20m': 14080, '17m': 18104, '15m': 21140, '12m': 24919, '10m': 28180,
+    '6m': 50318,
+  };
   // FT8 dial frequencies (kHz) per band
   const FT8_BAND_FREQS = {
     '160m': 1840, '80m': 3573, '60m': 5357, '40m': 7074, '30m': 10136,
@@ -257,7 +263,7 @@
 
   /** Update band button data-freq attributes for current mode */
   function updateBandFreqs() {
-    const table = ft8Mode === 'FT2' ? FT2_BAND_FREQS : FT8_BAND_FREQS;
+    const table = ft8Mode === 'FT2' ? FT2_BAND_FREQS : ft8Mode === 'FT4' ? FT4_BAND_FREQS : FT8_BAND_FREQS;
     ft8BandBar.querySelectorAll('.ft8-band-btn').forEach(btn => {
       const band = btn.dataset.band;
       if (table[band]) btn.dataset.freq = table[band];
@@ -3257,7 +3263,7 @@
     // Retune to the active band's new frequency for the selected mode
     const activeBtn = ft8BandBar.querySelector('.ft8-band-btn.active');
     if (activeBtn) {
-      const freqKhz = parseInt(activeBtn.dataset.freq, 10);
+      const freqKhz = parseFloat(activeBtn.dataset.freq);
       ft8Send({ type: 'jtcat-set-band', band: activeBtn.dataset.band, freqKhz });
     }
   });
@@ -3267,7 +3273,7 @@
     const btn = e.target.closest('.ft8-band-btn');
     if (!btn) return;
     const band = btn.dataset.band;
-    const freqKhz = parseInt(btn.dataset.freq, 10);
+    const freqKhz = parseFloat(btn.dataset.freq);
     ft8BandBar.querySelectorAll('.ft8-band-btn').forEach(b => b.classList.toggle('active', b === btn));
     ft8Send({ type: 'jtcat-set-band', band, freqKhz });
     // Clear decode log on band change

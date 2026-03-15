@@ -618,13 +618,20 @@
     '160m': 1843, '80m': 3578, '60m': 5360, '40m': 7052, '30m': 10144,
     '20m': 14084, '17m': 18108, '15m': 21144, '12m': 24923, '10m': 28184,
   };
+  // FT4 dial frequencies (kHz) per band
+  var FT4_BAND_FREQS = {
+    '160m': 1840, '80m': 3568, '60m': 5357, '40m': 7047.5, '30m': 10140,
+    '20m': 14080, '17m': 18104, '15m': 21140, '12m': 24919, '10m': 28180,
+    '6m': 50318,
+  };
   var FT8_BAND_FREQS = {
     '160m': 1840, '80m': 3573, '60m': 5357, '40m': 7074, '30m': 10136,
     '20m': 14074, '17m': 18100, '15m': 21074, '12m': 24915, '10m': 28074,
     '6m': 50313,
   };
   function updateBandFreqs() {
-    var table = modeSelect.value === 'FT2' ? FT2_BAND_FREQS : FT8_BAND_FREQS;
+    var m = modeSelect.value;
+    var table = m === 'FT2' ? FT2_BAND_FREQS : m === 'FT4' ? FT4_BAND_FREQS : FT8_BAND_FREQS;
     document.querySelectorAll('.jtcat-band-btn').forEach(function(btn) {
       var band = btn.dataset.band;
       if (table[band]) btn.dataset.freq = table[band];
@@ -673,7 +680,7 @@
 
   // Band buttons
   function selectBand(btn, save) {
-    var freq = parseInt(btn.dataset.freq, 10);
+    var freq = parseFloat(btn.dataset.freq);
     window.api.tune(freq, modeSelect.value);
     document.querySelectorAll('.jtcat-band-btn').forEach(function(b) { b.classList.remove('active'); });
     btn.classList.add('active');

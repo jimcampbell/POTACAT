@@ -1460,7 +1460,6 @@ function needsSmartSdr() {
   // or CW XIT offset is configured (XIT is applied via SmartSDR slice commands)
   if (settings.smartSdrSpots) return true;
   if (settings.enableCwKeyer) return true;
-  if (settings.enableRemote && settings.remoteCwEnabled) return true;
   if (settings.enableWsjtx && settings.catTarget && settings.catTarget.type === 'tcp') return true;
   if (settings.enableRemote && settings.catTarget && settings.catTarget.type === 'tcp') return true;
   if (settings.cwXit && settings.catTarget && settings.catTarget.type === 'tcp') return true;
@@ -1482,7 +1481,7 @@ function connectSmartSdr() {
   }
   smartSdr.setPersistentId(settings.smartSdrClientId);
   // Tell SmartSDR whether CW keyer needs GUI auth
-  smartSdr.setNeedsCw(!!(settings.enableCwKeyer || (settings.enableRemote && settings.remoteCwEnabled)));
+  smartSdr.setNeedsCw(!!settings.enableCwKeyer);
   // Bind to GUI client for ECHOCAT rig controls (ATU, etc.)
   smartSdr.setNeedsBind(!!settings.enableRemote);
   // Log CW auth results
@@ -1730,36 +1729,8 @@ function connectRemote() {
     if (win && !win.isDestroyed()) {
       win.webContents.send('remote-status', { connected: false });
     }
-    // CW safety: ensure PTT released on disconnect (keyer.stop() is handled in RemoteServer)
-    if (smartSdr && smartSdr.connected) {
-      smartSdr.cwPttRelease();
-    }
     destroyRemoteAudioWindow();
   });
-
-  // CW keyer output: route IambicKeyer key events to SmartSDR
-  remoteServer.setCwKeyerOutput(({ down }) => {
-    if (smartSdr && smartSdr.connected) {
-      if (down) {
-        smartSdr.cwPttOn(); // activate CW PTT (with holdoff auto-release)
-      }
-      smartSdr.cwKey(down);
-    }
-  });
-
-  // CW config changes from phone (WPM)
-  remoteServer.on('cw-config', ({ wpm }) => {
-    if (smartSdr && smartSdr.connected) {
-      smartSdr.setCwSpeed(wpm);
-    }
-  });
-
-  // Enable remote CW if setting is on and SmartSDR is available
-  if (settings.remoteCwEnabled) {
-    remoteServer.setCwEnabled(true);
-    // Ensure SmartSDR knows we need CW auth
-    if (smartSdr) smartSdr.setNeedsCw(true);
-  }
 
   remoteServer.on('set-sources', (sources) => {
     if (!sources) return;
@@ -5336,8 +5307,7 @@ app.whenReady().then(() => {
       (has('remoteToken') && newSettings.remoteToken !== settings.remoteToken) ||
       (has('remoteRequireToken') && newSettings.remoteRequireToken !== settings.remoteRequireToken) ||
       (has('clubMode') && newSettings.clubMode !== settings.clubMode) ||
-      (has('clubCsvPath') && newSettings.clubCsvPath !== settings.clubCsvPath) ||
-      (has('remoteCwEnabled') && newSettings.remoteCwEnabled !== settings.remoteCwEnabled);
+      (has('clubCsvPath') && newSettings.clubCsvPath !== settings.clubCsvPath);
 
     const iconChanged = has('lightIcon') && newSettings.lightIcon !== settings.lightIcon;
 
@@ -5382,7 +5352,7 @@ app.whenReady().then(() => {
     }
 
     // Reconnect SmartSDR if settings changed (also needed for WSJT-X+Flex and CW keyer)
-    if (smartSdrChanged || wsjtxChanged || cwKeyerChanged || remoteChanged) {
+    if (smartSdrChanged || wsjtxChanged || cwKeyerChanged) {
       connectSmartSdr(); // needsSmartSdr() decides whether to actually connect
     }
 

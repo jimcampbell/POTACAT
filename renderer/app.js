@@ -3469,7 +3469,7 @@ function updateNightOverlay() {
       interactive: false,
     }).addTo(map);
   }
-  if (markerLayer) markerLayer.bringToFront();
+  if (markerLayer && markerLayer.bringToFront) markerLayer.bringToFront();
 }
 
 const MAP_STATE_KEY = 'pota-cat-map-state';
@@ -3495,7 +3495,7 @@ function initMap() {
     className: 'dark-tiles',
   }).addTo(map);
 
-  markerLayer = L.layerGroup().addTo(map);
+  markerLayer = L.featureGroup().addTo(map);
 
   // Bind tune/QRZ handlers inside popups
   bindPopupClickHandlers(map);

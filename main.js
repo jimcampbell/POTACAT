@@ -2483,7 +2483,8 @@ function connectRemote() {
         broadcastRigState();
         break;
       case 'power-on':
-        if (cat && cat.connected && rigType !== 'flex') cat.setPowerState(true);
+        // Power-on: radio may be off, so don't require cat.connected — just need transport open
+        if (cat && rigType !== 'flex') cat.setPowerState(true);
         break;
       case 'power-off':
         if (cat && cat.connected && rigType !== 'flex') cat.setPowerState(false);
@@ -3614,38 +3615,42 @@ function getActiveNetSpots() {
 
   for (const net of nets) {
     if (!net.enabled) continue;
-    let active = false;
-    let startMs, endMs, showMs;
+    let startMs, endMs;
+    let scheduled = false;
     // Check today
     if (isNetScheduledToday(net, today)) {
       const t = getNetTimes(net, today);
-      if (now >= t.showMs && now < t.endMs) {
-        active = true;
-        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      if (now < t.endMs) {
+        scheduled = true;
+        startMs = t.startMs; endMs = t.endMs;
       }
     }
     // Check yesterday (midnight spanning)
-    if (!active && isNetScheduledToday(net, yesterday)) {
+    if (!scheduled && isNetScheduledToday(net, yesterday)) {
       const t = getNetTimes(net, yesterday);
-      if (now >= t.showMs && now < t.endMs) {
-        active = true;
-        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      if (now < t.endMs) {
+        scheduled = true;
+        startMs = t.startMs; endMs = t.endMs;
       }
     }
-    if (!active) continue;
+    if (!scheduled) continue;
 
     // Build comments string
     let comments;
-    if (now < startMs) {
-      const minsLeft = Math.ceil((startMs - now) / 60000);
-      comments = minsLeft >= 60
-        ? `Starts in ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m`
-        : `Starts in ${minsLeft}m`;
-    } else {
+    if (now >= startMs) {
       const minsLeft = Math.ceil((endMs - now) / 60000);
       comments = minsLeft >= 60
         ? `On air \u2014 ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m left`
         : `On air \u2014 ${minsLeft}m left`;
+    } else {
+      const minsUntil = Math.ceil((startMs - now) / 60000);
+      if (minsUntil >= 60) {
+        const h = Math.floor(minsUntil / 60);
+        const m = minsUntil % 60;
+        comments = m > 0 ? `Starts in ${h}h ${m}m` : `Starts in ${h}h`;
+      } else {
+        comments = `Starts in ${minsUntil}m`;
+      }
     }
 
     spots.push({
@@ -6181,7 +6186,14 @@ app.whenReady().then(() => {
       return;
     }
     // Only allow known URLs
-    if (url.startsWith('https://www.qrz.com/') || url.startsWith('https://caseystanton.com/') || url.startsWith('https://github.com/Waffleslop/POTACAT/') || url.startsWith('https://hamlib.github.io/') || url.startsWith('https://github.com/Hamlib/') || url.startsWith('https://discord.gg/') || url.startsWith('https://potacat.com/') || url.startsWith('https://buymeacoffee.com/potacat') || url.startsWith('https://docs.google.com/spreadsheets/')) {
+    const allowed = [
+      'https://www.qrz.com/', 'https://caseystanton.com/', 'https://github.com/Waffleslop/POTACAT/',
+      'https://hamlib.github.io/', 'https://github.com/Hamlib/', 'https://discord.gg/',
+      'https://potacat.com/', 'https://buymeacoffee.com/potacat', 'https://docs.google.com/spreadsheets/',
+      'https://pota.app/', 'https://www.sotadata.org.uk/', 'https://wwff.co/', 'https://llota.app/',
+      'https://tailscale.com', 'https://worldradioleague.com',
+    ];
+    if (allowed.some(prefix => url.startsWith(prefix))) {
       shell.openExternal(url);
     }
   });
@@ -6231,7 +6243,8 @@ app.whenReady().then(() => {
         break;
       }
       case 'power-on': {
-        if (cat && cat.connected && rigType !== 'flex') {
+        // Power-on: radio may be off, so don't require cat.connected — just need transport open
+        if (cat && rigType !== 'flex') {
           cat.setPowerState(true);
         }
         break;

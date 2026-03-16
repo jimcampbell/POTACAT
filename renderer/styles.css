@@ -4670,7 +4670,7 @@ body.activator-rbn-on #rbn-view {
 #directory-view {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  height: 100%;
   overflow: hidden;
 }
 

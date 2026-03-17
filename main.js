@@ -2231,6 +2231,7 @@ function updateRemoteSettings() {
     distUnit: settings.distUnit || 'mi',
     cwXit: settings.cwXit || 0,
     enableRotor: !!settings.enableRotor,
+    rotorActive: settings.rotorActive !== false,
     remoteCwEnabled: !!(settings.piAccess && settings.remoteCwEnabled),
     remoteCwMacros: settings.remoteCwMacros || null,
   });
@@ -2746,7 +2747,7 @@ function connectRemote() {
   });
 
   remoteServer.on('toggle-rotor', ({ enabled }) => {
-    settings.enableRotor = enabled;
+    settings.rotorActive = enabled;
     saveSettings(settings);
     updateRemoteSettings(); // push updated state back to phone
     console.log('[Echo CAT] Rotor →', enabled ? 'ON' : 'OFF');
@@ -5410,7 +5411,7 @@ function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
     filterWidth = settings.digitalFilterWidth || 0;
   }
 
-  if (settings.enableRotor && brng != null && !isNaN(brng)) {
+  if (settings.enableRotor && settings.rotorActive !== false && brng != null && !isNaN(brng)) {
     sendRotorBearing(Math.round(brng));
   }
 
@@ -6764,6 +6765,11 @@ app.whenReady().then(() => {
       } else {
         disconnectPskrMap();
       }
+    }
+
+    // Push rotor state to ECHOCAT phone when quick-toggled from desktop
+    if (has('rotorActive') || has('enableRotor')) {
+      updateRemoteSettings();
     }
 
     // Start/stop HamRS bridge (WSJT-X binary heartbeats)

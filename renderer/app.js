@@ -786,9 +786,11 @@ async function loadPrefs() {
   enablePskrMap = settings.enablePskrMap === true; // default false
   enableDxe = settings.enableDxe !== false; // default true
   enableSolar = settings.enableSolar === true;   // default false
-  // PSTRotator — mark as configured so quick-toggle and status bar button are visible
-  if (settings.enableRotor) { rotorConfigured = true; rotorEnabled = true; }
-  updateRotorStatusBtn();
+  // PSTRotator — show quick-toggle when rotor is configured
+  rotorConfigured = !!settings.enableRotor;
+  quickRotor.checked = settings.rotorActive !== false; // defaults true when configured
+  quickRotorLabel.classList.toggle('hidden', !rotorConfigured);
+  quickRotorDivider.classList.toggle('hidden', !rotorConfigured);
   // Color rows — default true (on)
   spotsTable.classList.toggle('no-source-tint', settings.colorRows === false);
   enableBandActivity = settings.enableBandActivity === true; // default false
@@ -6103,9 +6105,7 @@ settingsBtn.addEventListener('click', (e) => {
     quickLightMode.checked = document.documentElement.getAttribute('data-theme') === 'light';
     quickActivatorMode.checked = appMode === 'activator';
     quickHideWorkedParks.checked = hideWorkedParks;
-    // Show rotor toggle when rotor has been configured
-    if (setEnableRotor.checked) rotorConfigured = true;
-    quickRotor.checked = setEnableRotor.checked;
+    // Show rotor toggle only when PSTRotator is configured in Settings
     quickRotorLabel.classList.toggle('hidden', !rotorConfigured);
     quickRotorDivider.classList.toggle('hidden', !rotorConfigured);
     refreshEchoCatInfo();
@@ -6146,33 +6146,11 @@ quickHideWorkedParks.addEventListener('change', async () => {
 const quickRotor = document.getElementById('quick-rotor');
 const quickRotorLabel = document.getElementById('quick-rotor-label');
 const quickRotorDivider = document.getElementById('quick-rotor-divider');
-let rotorConfigured = false; // set true when enableRotor is loaded/toggled on
-let rotorEnabled = false; // current rotor state for status bar button
-
-// Status bar rotor button
-const rotorStatusBtn = document.getElementById('rotor-status-btn');
-
-function updateRotorStatusBtn() {
-  rotorStatusBtn.classList.toggle('hidden', !rotorConfigured);
-  rotorStatusBtn.style.background = rotorEnabled ? '#2a6e4e' : '#555';
-  rotorStatusBtn.style.opacity = rotorEnabled ? '1' : '0.7';
-  rotorStatusBtn.title = rotorEnabled ? 'PSTRotator ON — click to disable' : 'PSTRotator OFF — click to enable';
-}
-
-rotorStatusBtn.addEventListener('click', async () => {
-  rotorEnabled = !rotorEnabled;
-  setEnableRotor.checked = rotorEnabled;
-  quickRotor.checked = rotorEnabled;
-  updateRotorStatusBtn();
-  await window.api.saveSettings({ enableRotor: rotorEnabled });
-});
+let rotorConfigured = false; // true when enableRotor is on (user has a PSTRotator)
 
 quickRotor.addEventListener('change', async () => {
-  rotorEnabled = quickRotor.checked;
-  setEnableRotor.checked = rotorEnabled;
-  if (rotorEnabled) rotorConfigured = true;
-  updateRotorStatusBtn();
-  await window.api.saveSettings({ enableRotor: rotorEnabled });
+  // Quick toggle changes rotorActive (operational state), NOT enableRotor (config)
+  await window.api.saveSettings({ rotorActive: quickRotor.checked });
 });
 
 openSettingsBtn.addEventListener('click', () => {
@@ -6907,11 +6885,12 @@ settingsSave.addEventListener('click', async () => {
   updateWsjtxStatusVisibility();
   updateRbnButton();
   updateDirectoryButton();
-  // Sync rotor status bar button
-  rotorEnabled = rotorEnabledVal;
-  if (rotorEnabledVal) rotorConfigured = true;
-  quickRotor.checked = rotorEnabledVal;
-  updateRotorStatusBtn();
+  // Sync rotor quick-toggle visibility
+  rotorConfigured = !!rotorEnabledVal;
+  quickRotorLabel.classList.toggle('hidden', !rotorConfigured);
+  quickRotorDivider.classList.toggle('hidden', !rotorConfigured);
+  // When enabling rotor config, default rotorActive to on
+  if (rotorEnabledVal) quickRotor.checked = true;
   spotsTable.classList.toggle('no-source-tint', !colorRowsEnabled);
   applyColorblindMode(colorblindEnabled);
   applyWcagMode(wcagEnabled);

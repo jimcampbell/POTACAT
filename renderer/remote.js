@@ -538,9 +538,10 @@
           soDistMi.classList.toggle('active', distUnit === 'mi');
           soDistKm.classList.toggle('active', distUnit === 'km');
           if (msg.settings.remoteCwMacros) syncMacrosFromSettings(msg.settings.remoteCwMacros);
-          // PSTRotator toggle
+          // PSTRotator toggle — show when configured, reflect active state
           if (msg.settings.enableRotor != null) {
-            rotorEnabled = !!msg.settings.enableRotor;
+            rotorConfigured = !!msg.settings.enableRotor;
+            rotorEnabled = !!msg.settings.rotorActive;
             updateRotorBtn();
           }
         }

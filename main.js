@@ -4888,6 +4888,10 @@ async function fetchDirectory() {
 function pushDirectoryToRenderer() {
   if (!win || win.isDestroyed()) return;
   win.webContents.send('directory-data', { nets: directoryNets, swl: directorySwl });
+  // Also push to ECHOCAT phone client
+  if (remoteServer && remoteServer.running) {
+    remoteServer.broadcastDirectory({ nets: directoryNets, swl: directorySwl });
+  }
 }
 
 function getEventProgress(eventId) {

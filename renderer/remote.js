@@ -74,6 +74,9 @@
   const scanBtn = document.getElementById('scan-btn');
   const refreshRateBtn = document.getElementById('refresh-rate-btn');
   const filterToolbar = document.getElementById('filter-toolbar');
+  const dirView = document.getElementById('dir-view');
+  const dirList = document.getElementById('dir-list');
+  const dirSearch = document.getElementById('dir-search');
   const sortSelect = document.getElementById('sort-select');
   const spotMapEl = document.getElementById('spot-map');
   const dialPad = document.getElementById('dial-pad');
@@ -103,6 +106,9 @@
   let rigControlsOpen = false;
   let txState = false;
   let rotorEnabled = false;
+  let directoryNets = [];
+  let directorySwl = [];
+  let dirActiveTab = 'nets';
 
   // --- Colorblind mode ---
   const CB_COLORS = {
@@ -571,6 +577,12 @@
         spots = msg.data || [];
         renderSpots();
         if (activeTab === 'map') renderMapSpots();
+        break;
+
+      case 'directory':
+        directoryNets = msg.nets || [];
+        directorySwl = msg.swl || [];
+        if (activeTab === 'dir') renderDirectoryTab();
         break;
 
       case 'status':
@@ -2424,6 +2436,7 @@
     logView.classList.add('hidden');
     logbookView.classList.add('hidden');
     ft8View.classList.add('hidden');
+    if (dirView) dirView.classList.add('hidden');
     if (scanning) stopScan();
     // Show/hide PTT button — hide when FT8 tab is active
     pttBtn.style.display = tab === 'ft8' ? 'none' : '';
@@ -2472,6 +2485,9 @@
         ft8Send({ type: 'jtcat-set-band', band: activeBandBtn.dataset.band, freqKhz: freqKhz });
       }
       ft8StartCountdown();
+    } else if (tab === 'dir') {
+      if (dirView) dirView.classList.remove('hidden');
+      renderDirectoryTab();
     }
   }
 
@@ -4018,6 +4034,179 @@
       sendPaddle('dah', 0);
     }
   });
+
+  // --- Directory (HF Nets & SWL) ---
+  function freqToBandDir(khz) {
+    var f = parseFloat(khz);
+    if (!f) return '';
+    if (f >= 1800 && f <= 2000) return '160m';
+    if (f >= 3500 && f <= 4000) return '80m';
+    if (f >= 5330 && f <= 5410) return '60m';
+    if (f >= 7000 && f <= 7300) return '40m';
+    if (f >= 10100 && f <= 10150) return '30m';
+    if (f >= 14000 && f <= 14350) return '20m';
+    if (f >= 18068 && f <= 18168) return '17m';
+    if (f >= 21000 && f <= 21450) return '15m';
+    if (f >= 24890 && f <= 24990) return '12m';
+    if (f >= 28000 && f <= 29700) return '10m';
+    if (f >= 50000 && f <= 54000) return '6m';
+    if (f >= 144000 && f <= 148000) return '2m';
+    if (f >= 530 && f <= 1700) return 'MW';
+    if (f >= 2300 && f <= 26100) return 'SW';
+    return '';
+  }
+
+  function getNetCountdown(net) {
+    var now = new Date();
+    var nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    var parts = (net.startTimeUtc || '0:0').split(':');
+    var startMin = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
+    var dur = net.duration || 60;
+    var endMin = startMin + dur;
+    var days = (net.days || 'Daily').toLowerCase();
+    var scheduledToday = days === 'daily';
+    if (!scheduledToday) {
+      var dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+      scheduledToday = days.includes(dayNames[now.getUTCDay()]);
+    }
+    if (!scheduledToday) return { status: 'off', label: '', sortKey: 9999 };
+    var onAir = endMin > 1440 ? (nowMin >= startMin || nowMin < endMin - 1440) : (nowMin >= startMin && nowMin < endMin);
+    if (onAir) {
+      var remaining = endMin > 1440 && nowMin < startMin ? (endMin - 1440) - nowMin : (endMin > 1440 ? endMin - 1440 - nowMin : endMin - nowMin);
+      var rh = Math.floor(remaining / 60), rm = remaining % 60;
+      return { status: 'live', label: 'On air \u2014 ' + (rh > 0 ? rh + 'h ' + rm + 'm left' : rm + 'm left'), sortKey: -1000 + nowMin - startMin };
+    }
+    var minsUntil = startMin - nowMin;
+    if (minsUntil < 0) minsUntil += 1440;
+    if (minsUntil <= 60) return { status: 'soon', label: 'in ' + minsUntil + 'm', sortKey: minsUntil };
+    var h = Math.floor(minsUntil / 60), m = minsUntil % 60;
+    var timeStr = m > 0 ? 'in ' + h + 'h ' + m + 'm' : 'in ' + h + 'h';
+    return { status: minsUntil <= 120 ? 'soon' : 'today', label: timeStr, sortKey: minsUntil };
+  }
+
+  function getSwlCountdown(entry) {
+    if (!entry.startTimeUtc || !entry.endTimeUtc) return { status: 'off', label: '', sortKey: 9999 };
+    var now = new Date();
+    var nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    var sp = entry.startTimeUtc.split(':'), ep = entry.endTimeUtc.split(':');
+    var startMin = parseInt(sp[0], 10) * 60 + parseInt(sp[1] || '0', 10);
+    var endMin = entry.endTimeUtc === '24:00' ? 1440 : parseInt(ep[0], 10) * 60 + parseInt(ep[1] || '0', 10);
+    var onAir = endMin <= startMin ? (nowMin >= startMin || nowMin < endMin) : (nowMin >= startMin && nowMin < endMin);
+    if (onAir) {
+      var remaining = endMin > nowMin ? endMin - nowMin : endMin + 1440 - nowMin;
+      var rh = Math.floor(remaining / 60), rm = remaining % 60;
+      return { status: 'live', label: 'On air \u2014 ' + (rh > 0 ? rh + 'h ' + rm + 'm left' : rm + 'm left'), sortKey: -1000 };
+    }
+    var minsUntil = startMin - nowMin;
+    if (minsUntil < 0) minsUntil += 1440;
+    if (minsUntil <= 60) return { status: 'soon', label: 'in ' + minsUntil + 'm', sortKey: minsUntil };
+    var h = Math.floor(minsUntil / 60), m = minsUntil % 60;
+    var timeStr = m > 0 ? 'in ' + h + 'h ' + m + 'm' : 'in ' + h + 'h';
+    return { status: minsUntil <= 120 ? 'soon' : 'today', label: timeStr, sortKey: minsUntil };
+  }
+
+  function renderDirectoryTab() {
+    if (!dirList) return;
+    var search = (dirSearch ? dirSearch.value : '').toLowerCase().trim();
+    dirList.innerHTML = '';
+    if (dirActiveTab === 'nets') {
+      renderDirNets(search);
+    } else {
+      renderDirSwl(search);
+    }
+  }
+
+  function renderDirNets(search) {
+    var entries = directoryNets.map(function(n) {
+      return { n: n, band: freqToBandDir(n.frequency), cd: getNetCountdown(n) };
+    });
+    if (search) {
+      entries = entries.filter(function(e) {
+        return (e.n.name || '').toLowerCase().includes(search) ||
+               (e.n.region || '').toLowerCase().includes(search) ||
+               String(e.n.frequency).includes(search);
+      });
+    }
+    entries.sort(function(a, b) { return a.cd.sortKey - b.cd.sortKey || (a.n.name || '').localeCompare(b.n.name || ''); });
+    if (entries.length === 0) {
+      dirList.innerHTML = '<div class="dir-empty">' + (directoryNets.length === 0 ? 'No directory data \u2014 enable Directory in POTACAT Settings' : 'No matching nets') + '</div>';
+      return;
+    }
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i], n = e.n, cd = e.cd;
+      if (cd.status === 'off') continue;
+      var card = document.createElement('div');
+      card.className = 'dir-card' + (cd.status === 'live' ? ' dir-live' : cd.status === 'soon' ? ' dir-soon' : '');
+      var statusHtml = cd.label ? '<span class="dir-card-status ' + cd.status + '">' + cd.label + '</span>' : '';
+      card.innerHTML = '<div class="dir-card-row"><span class="dir-card-name">' + (n.name || 'Unknown') + '</span>' + statusHtml + '</div>' +
+        '<div class="dir-card-detail"><span class="dir-card-freq">' + (n.frequency || '?') + ' kHz</span> ' + (n.mode || '') + (e.band ? ' \u00b7 ' + e.band : '') +
+        (n.days && n.days !== 'Daily' ? ' \u00b7 ' + n.days : '') + '</div>';
+      (function(net, band) {
+        card.addEventListener('click', function() {
+          if (!net.frequency) return;
+          var mode = (net.mode || '').toUpperCase();
+          if (mode === 'SSB') {
+            var lsbBands = { '160m': 1, '80m': 1, '60m': 1, '40m': 1 };
+            mode = lsbBands[band] ? 'LSB' : 'USB';
+          }
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'tune', freqKhz: String(net.frequency), mode: mode }));
+          }
+        });
+      })(n, e.band);
+      dirList.appendChild(card);
+    }
+  }
+
+  function renderDirSwl(search) {
+    var entries = directorySwl.map(function(s) {
+      return { s: s, band: freqToBandDir(s.frequency), cd: getSwlCountdown(s) };
+    });
+    if (search) {
+      entries = entries.filter(function(e) {
+        return (e.s.station || '').toLowerCase().includes(search) ||
+               (e.s.language || '').toLowerCase().includes(search) ||
+               String(e.s.frequency).includes(search);
+      });
+    }
+    entries.sort(function(a, b) { return a.cd.sortKey - b.cd.sortKey || (a.s.station || '').localeCompare(b.s.station || ''); });
+    if (entries.length === 0) {
+      dirList.innerHTML = '<div class="dir-empty">' + (directorySwl.length === 0 ? 'No directory data \u2014 enable Directory in POTACAT Settings' : 'No matching broadcasts') + '</div>';
+      return;
+    }
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i], s = e.s, cd = e.cd;
+      if (cd.status === 'off') continue;
+      var card = document.createElement('div');
+      card.className = 'dir-card' + (cd.status === 'live' ? ' dir-live' : cd.status === 'soon' ? ' dir-soon' : '');
+      var statusHtml = cd.label ? '<span class="dir-card-status ' + cd.status + '">' + cd.label + '</span>' : '';
+      card.innerHTML = '<div class="dir-card-row"><span class="dir-card-name">' + (s.station || 'Unknown') + '</span>' + statusHtml + '</div>' +
+        '<div class="dir-card-detail"><span class="dir-card-freq">' + (s.frequency || '?') + ' kHz</span>' +
+        (s.language ? ' \u00b7 ' + s.language : '') + (e.band ? ' \u00b7 ' + e.band : '') +
+        (s.powerKw ? ' \u00b7 ' + s.powerKw + 'kW' : '') + '</div>';
+      (function(swl) {
+        card.addEventListener('click', function() {
+          if (!swl.frequency) return;
+          var mode = (swl.mode || 'AM').toUpperCase();
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'tune', freqKhz: String(swl.frequency), mode: mode }));
+          }
+        });
+      })(s);
+      dirList.appendChild(card);
+    }
+  }
+
+  // Dir sub-tab clicks
+  document.querySelectorAll('.dir-tab').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      dirActiveTab = btn.dataset.dtab;
+      document.querySelectorAll('.dir-tab').forEach(function(b) { b.classList.toggle('active', b === btn); });
+      renderDirectoryTab();
+    });
+  });
+
+  if (dirSearch) dirSearch.addEventListener('input', function() { renderDirectoryTab(); });
 
   // --- Screen Wake Lock (keep phone screen on while connected) ---
   var wakeLock = null;

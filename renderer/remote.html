@@ -275,6 +275,7 @@
       <button class="tab" data-tab="logbook">Logbook</button>
       <button class="tab" data-tab="activate">Activate <span id="tab-activate-badge" class="tab-badge hidden">0</span></button>
       <button class="tab" data-tab="ft8">FT8</button>
+      <button class="tab" data-tab="dir">Dir</button>
     </div>
 
     <!-- Filter toolbar -->
@@ -579,6 +580,18 @@
         <button type="button" id="ft8-wf-toggle" class="ft8-ctrl-btn ft8-wf-btn" title="Toggle waterfall">WF</button>
       </div>
       <div id="ft8-qso-exchange" class="ft8-qso-exchange hidden"></div>
+    </div>
+
+    <!-- Directory view (HF Nets & SWL) -->
+    <div id="dir-view" class="hidden">
+      <div class="dir-toolbar">
+        <div class="dir-tabs">
+          <button class="dir-tab active" data-dtab="nets">HF Nets</button>
+          <button class="dir-tab" data-dtab="swl">SWL</button>
+        </div>
+        <input type="text" id="dir-search" placeholder="Search..." class="dir-search">
+      </div>
+      <div id="dir-list" class="dir-list"></div>
     </div>
 
     <div id="bottom-bar">

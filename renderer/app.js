@@ -9652,16 +9652,26 @@ rigPowerOffBtn.addEventListener('click', () => {
 });
 
 // Slider handlers
+// Throttle rig control sliders to prevent flooding serial port
+let rigSliderTimer = null;
+function throttledRigControl(action, value) {
+  if (rigSliderTimer) clearTimeout(rigSliderTimer);
+  rigSliderTimer = setTimeout(() => {
+    rigSliderTimer = null;
+    window.api.rigControl({ action, value });
+  }, 80);
+}
+
 rigRfGain.addEventListener('input', () => {
   const val = parseInt(rigRfGain.value, 10);
   rigRfGainLabel.textContent = val;
-  window.api.rigControl({ action: 'set-rf-gain', value: val });
+  throttledRigControl('set-rf-gain', val);
 });
 
 rigTxPower.addEventListener('input', () => {
   const val = parseInt(rigTxPower.value, 10);
   rigTxPowerLabel.textContent = val + 'W';
-  window.api.rigControl({ action: 'set-tx-power', value: val });
+  throttledRigControl('set-tx-power', val);
 });
 
 // Listen for rig state updates from main process

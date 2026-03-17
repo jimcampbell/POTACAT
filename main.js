@@ -2564,6 +2564,8 @@ function connectRemote() {
   remoteServer.on('set-atu', ({ on }) => {
     if (flexSdr()) {
       smartSdr.setAtu(on);
+    } else if (on && cat && cat.connected) {
+      cat.startTune(); // Yaesu/Kenwood/rigctld ATU
     }
     _currentAtuState = on;
     broadcastRigState();
@@ -2598,11 +2600,12 @@ function connectRemote() {
 
   remoteServer.on('set-rfgain', ({ value }) => {
     if (flexSdr()) {
-      // Flex RF Gain: slider 0–100 maps to -10 to +20 dB
       const dB = (value * 0.3) - 10;
       smartSdr.setRfGain(0, dB);
-    } else if (cat && cat.connected && detectRigType() === 'rigctld') {
-      cat.setRfGain(value / 100);
+    } else if (cat && cat.connected) {
+      const rigType = detectRigType();
+      if (rigType === 'rigctld') cat.setRfGain(value / 100);
+      else cat.setRfGain(value); // Yaesu/Kenwood: 0-100 directly
     }
     _currentRfGain = value;
     broadcastRigState();
@@ -2612,8 +2615,10 @@ function connectRemote() {
   remoteServer.on('set-txpower', ({ value }) => {
     if (flexSdr()) {
       smartSdr.setTxPower(value);
-    } else if (cat && cat.connected && detectRigType() === 'rigctld') {
-      cat.setTxPower(value / 100);
+    } else if (cat && cat.connected) {
+      const rigType = detectRigType();
+      if (rigType === 'rigctld') cat.setTxPower(value / 100);
+      else cat.setTxPower(value); // Yaesu/Kenwood: 0-100 directly
     }
     _currentTxPower = value;
     broadcastRigState();

@@ -9,7 +9,7 @@ const { execFile, spawn } = require('child_process');
 const { fetchSpots: fetchPotaSpots } = require('./lib/pota');
 const { fetchSpots: fetchSotaSpots, fetchSummitCoordsBatch, summitCache, loadAssociations, getAssociationName, SotaUploader } = require('./lib/sota');
 const sotaUploader = new SotaUploader();
-const { CatClient, RigctldClient, listSerialPorts } = require('./lib/cat');
+const { CatClient, RigctldClient, CivClient, listSerialPorts } = require('./lib/cat');
 const { gridToLatLon, haversineDistanceMiles, bearing } = require('./lib/grid');
 const { freqToBand } = require('./lib/bands');
 const { loadCtyDat, resolveCallsign, getAllEntities } = require('./lib/cty');
@@ -24,7 +24,10 @@ const { IambicKeyer } = require('./lib/keyer');
 const { parsePotaParksCSV } = require('./lib/pota-parks');
 const { WsjtxClient, encodeHeartbeat, encodeLoggedAdif, encodeQsoLogged } = require('./lib/wsjtx');
 const { PskrClient } = require('./lib/pskreporter');
+const { Ft8Engine } = require('./lib/ft8-engine');
 const { RemoteServer } = require('./lib/remote-server');
+const { loadClubUsers, hashPasswords, hasPlaintextPasswords } = require('./lib/club-users');
+const { createAuditLogger } = require('./lib/club-audit');
 const { fetchSpots: fetchWwffSpots } = require('./lib/wwff');
 const { fetchSpots: fetchLlotaSpots } = require('./lib/llota');
 const { postWwffRespot } = require('./lib/wwff-respot');
@@ -32,6 +35,7 @@ const { fetchNets: fetchDirectoryNets, fetchSwl: fetchDirectorySwl } = require('
 const { QrzClient } = require('./lib/qrz');
 const { callsignToProgram, fetchParksForProgram, loadParksCache, saveParksCache, isCacheStale, searchParks: searchParksDb, getPark: getParkDb, buildParksMap } = require('./lib/pota-parks-db');
 const { fetchDxCalExpeditions } = require('./lib/dxcal');
+const { getModel, getModelList } = require('./lib/rig-models');
 const { autoUpdater } = require('electron-updater');
 
 // --- QRZ.com callsign lookup ---
@@ -68,6 +72,9 @@ let qsoPopoutWin = null; // pop-out QSO log window
 let actmapPopoutWin = null; // pop-out activation map window
 let spotsPopoutWin = null; // pop-out spots window (activator mode)
 let clusterPopoutWin = null; // pop-out DX cluster terminal window
+let jtcatPopoutWin = null;   // pop-out JTCAT window
+let jtcatMapPopoutWin = null; // pop-out JTCAT map window
+let popoutJtcatQso = null;   // QSO state for popout (like remoteJtcatQso for ECHOCAT)
 let cat = null;
 let spotTimer = null;
 let solarTimer = null;
@@ -101,8 +108,12 @@ const DIRECTORY_CACHE_PATH = path.join(app.getPath('userData'), 'directory-cache
 let pskr = null;
 let pskrSpots = [];       // streaming PSKReporter FreeDV spots (FIFO, max 500)
 let pskrFlushTimer = null; // throttle timer for PSKReporter → renderer updates
+let pskrMap = null;            // PskrClient for dedicated PSKReporter Map view
+let pskrMapSpots = [];         // receiver spots for PSKReporter Map (FIFO, max 500)
+let pskrMapFlushTimer = null;  // throttle timer for PSKReporter Map → renderer
 let keyer = null;          // IambicKeyer instance for CW MIDI keying
 let remoteServer = null;   // RemoteServer instance for phone remote access
+let cwKeyPort = null;      // Dedicated SerialPort for DTR CW keying (external USB-serial adapter)
 let remoteAudioWin = null; // hidden BrowserWindow for WebRTC audio bridge
 let _currentFreqHz = 0;    // tracked for remote radio status
 let _currentMode = '';
@@ -112,7 +123,7 @@ let _currentAtuState = false;
 let _currentVfo = 'A';
 let _currentFilterWidth = 0;
 let _currentRfGain = 0;
-let _currentTxPower = 100;
+let _currentTxPower = 0; // 0 = unknown until radio reports actual power
 
 // Filter preset tables for rig controls (Hz values)
 const FILTER_PRESETS = {
@@ -140,6 +151,7 @@ function findNearestPreset(presets, currentWidth) {
 function detectRigType() {
   const target = settings.catTarget;
   if (!target) return 'unknown';
+  if (target.type === 'icom') return 'icom';
   if (target.type === 'rigctld' || target.type === 'rigctldnet') return 'rigctld';
   if (target.type === 'tcp') return 'flex'; // TCP CAT ports 5002-5005 are always FlexRadio
   if (target.type === 'serial') {
@@ -149,13 +161,26 @@ function detectRigType() {
   return 'unknown';
 }
 
+/** Get the active rig's model entry from rig-models.js, or null */
+function getActiveRigModel() {
+  const activeRig = (settings.rigs || []).find(r => r.id === settings.activeRigId);
+  const modelName = activeRig?.model || null;
+  const rigType = detectRigType();
+  return getModel(modelName, rigType);
+}
+
 function getRigCapabilities(rigType) {
+  // Try model-specific capabilities first
+  const model = getActiveRigModel();
+  if (model && model.caps) return { ...model.caps };
+  // Fallback to generic per-type
   switch (rigType) {
-    case 'flex':    return { nb: true, atu: true, vfo: false, filter: true, filterType: 'arbitrary', rfgain: true, txpower: true };
-    case 'yaesu':   return { nb: true, atu: false, vfo: true, filter: true, filterType: 'indexed', rfgain: false, txpower: false };
-    case 'kenwood': return { nb: true, atu: false, vfo: true, filter: true, filterType: 'direct', rfgain: false, txpower: false };
-    case 'rigctld': return { nb: true, atu: false, vfo: true, filter: true, filterType: 'passband', rfgain: true, txpower: true };
-    default:        return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none', rfgain: false, txpower: false };
+    case 'flex':    return { nb: true, atu: true, vfo: false, filter: true, filterType: 'arbitrary', rfgain: true, txpower: true, power: false };
+    case 'yaesu':   return { nb: true, atu: true, vfo: true, filter: true, filterType: 'indexed', rfgain: true, txpower: true, power: true };
+    case 'kenwood': return { nb: true, atu: true, vfo: true, filter: true, filterType: 'direct', rfgain: true, txpower: true, power: true };
+    case 'icom':    return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none', rfgain: false, txpower: false, power: true };
+    case 'rigctld': return { nb: true, atu: true, vfo: true, filter: true, filterType: 'passband', rfgain: true, txpower: true, power: true };
+    default:        return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none', rfgain: false, txpower: false, power: false };
   }
 }
 
@@ -242,6 +267,8 @@ function findRigctld() {
   ] : [
     '/usr/bin/rigctld',
     '/usr/local/bin/rigctld',
+    '/opt/homebrew/bin/rigctld',    // macOS Apple Silicon (Homebrew)
+    '/opt/local/bin/rigctld',       // macOS MacPorts
     '/snap/bin/rigctld',
   ];
   for (const p of candidates) {
@@ -252,13 +279,18 @@ function findRigctld() {
   }
 
   // Fall back to PATH (just the bare name — execFile will search PATH)
+  console.log('[hamlib] rigctld not found at bundled or system paths — falling back to PATH');
   return 'rigctld';
 }
 
 function listRigs(rigctldPath) {
   return new Promise((resolve, reject) => {
     execFile(rigctldPath, ['-l'], { timeout: 10000 }, (err, stdout) => {
-      if (err) return reject(err);
+      if (err) {
+        console.error('[hamlib] rigctld -l failed:', err.message);
+        sendCatLog(`[hamlib] rigctld not found or failed: ${err.message}. On Linux, install hamlib: sudo apt install libhamlib-utils`);
+        return reject(err);
+      }
       const lines = stdout.split('\n');
       const rigs = [];
       const SKIP_IDS = new Set([1, 2, 6]);
@@ -360,6 +392,8 @@ function sendCatStatus(s) {
       win.webContents.send('remote-tx-state', false);
     }
   }
+  // Broadcast rig state on connect/disconnect so the Rig panel updates
+  broadcastRigState();
 }
 
 function sendCatFrequency(hz) {
@@ -375,11 +409,13 @@ function sendCatFrequency(hz) {
 function sendCatMode(mode) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-mode', mode);
   _currentMode = mode;
-  broadcastRemoteRadioStatus();
+  broadcastRigState();
 }
 
 function sendCatPower(watts) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-power', watts);
+  _currentTxPower = watts;
+  broadcastRigState();
 }
 
 function sendCatNb(on) {
@@ -387,6 +423,23 @@ function sendCatNb(on) {
   // responses which can fight with the API state (stale/different values)
   if (detectRigType() === 'flex' && smartSdr && smartSdr.connected) return;
   _currentNbState = on;
+  broadcastRigState();
+}
+
+// Broadcast full rig control state to renderer and ECHOCAT
+function broadcastRigState() {
+  const rigType = detectRigType();
+  const caps = getRigCapabilities(rigType);
+  const state = {
+    nb: _currentNbState,
+    rfGain: _currentRfGain,
+    txPower: _currentTxPower,
+    filterWidth: _currentFilterWidth,
+    atuActive: _currentAtuState,
+    mode: _currentMode,
+    capabilities: caps,
+  };
+  if (win && !win.isDestroyed()) win.webContents.send('rig-state', state);
   broadcastRemoteRadioStatus();
 }
 
@@ -459,6 +512,16 @@ async function connectCat() {
     const port = target.port || 4532;
     sendCatLog(`Connecting to remote rigctld on ${host}:${port}`);
     cat.connect({ type: 'rigctldnet', host, port });
+  } else if (target && target.type === 'icom') {
+    // Icom CI-V binary protocol over USB serial
+    cat = new CivClient();
+    cat._debug = true;
+    cat.on('log', sendCatLog);
+    cat.on('status', sendCatStatus);
+    cat.on('frequency', sendCatFrequency);
+    cat.on('mode', sendCatMode);
+    cat.on('power', sendCatPower);
+    cat.connect(target);
   } else {
     cat = new CatClient();
     cat._debug = true;
@@ -599,6 +662,11 @@ function connectCluster() {
   // Migrate legacy settings if needed
   if (!settings.clusterNodes) {
     migrateClusterNodes();
+  }
+  // Force piAccess off on upgrade — users must re-authorize via π
+  if (settings.piAccess !== false && settings.piAccess !== true) {
+    settings.piAccess = false;
+    saveSettings(settings);
   }
 
   const enabledNodes = (settings.clusterNodes || []).filter(n => n.enabled).slice(0, 3);
@@ -1054,6 +1122,131 @@ function disconnectPskr() {
   sendPskrStatus({ connected: false });
 }
 
+// --- PSKReporter Map view ---
+function sendPskrMapStatus(s) {
+  if (win && !win.isDestroyed()) win.webContents.send('pskr-map-status', s);
+}
+
+function sendPskrMapSpots() {
+  if (win && !win.isDestroyed()) win.webContents.send('pskr-map-spots', pskrMapSpots);
+}
+
+function connectPskrMap() {
+  if (pskrMap) {
+    pskrMap.disconnect();
+    pskrMap.removeAllListeners();
+    pskrMap = null;
+  }
+  pskrMapSpots = [];
+
+  if (!settings.enablePskrMap || !settings.myCallsign) {
+    sendPskrMapStatus({ connected: false });
+    return;
+  }
+
+  pskrMap = new PskrClient();
+  const myPos = gridToLatLon(settings.grid);
+  const myCall = settings.myCallsign.toUpperCase();
+
+  pskrMap.on('spot', (raw) => {
+    // Only keep spots where WE are the sender
+    if (raw.callsign.toUpperCase() !== myCall) return;
+
+    // Resolve receiver location: prefer receiverGrid, fallback to cty.dat
+    let lat = null, lon = null, locationDesc = '';
+    if (raw.receiverGrid && raw.receiverGrid.length >= 4) {
+      const pos = gridToLatLon(raw.receiverGrid);
+      if (pos) { lat = pos.lat; lon = pos.lon; }
+    }
+    if (ctyDb) {
+      const entity = resolveCallsign(raw.spotter, ctyDb);
+      if (entity) {
+        locationDesc = entity.name;
+        if (lat == null && entity.lat != null && entity.lon != null) {
+          lat = entity.lat;
+          lon = entity.lon;
+        }
+      }
+    }
+
+    let distance = null, bear = null;
+    if (myPos && lat != null && lon != null) {
+      distance = Math.round(haversineDistanceMiles(myPos.lat, myPos.lon, lat, lon));
+      bear = Math.round(bearing(myPos.lat, myPos.lon, lat, lon));
+    }
+
+    const spot = {
+      receiver: raw.spotter,
+      callsign: raw.callsign,
+      frequency: raw.frequency,
+      freqMHz: raw.freqMHz,
+      mode: raw.mode,
+      band: raw.band,
+      snr: raw.snr,
+      spotTime: raw.spotTime,
+      lat, lon,
+      locationDesc,
+      distance,
+      bearing: bear,
+      receiverGrid: raw.receiverGrid || '',
+    };
+
+    // Dedupe: keep latest per receiver+band
+    const idx = pskrMapSpots.findIndex(s => s.receiver === spot.receiver && s.band === spot.band);
+    if (idx !== -1) pskrMapSpots.splice(idx, 1);
+    pskrMapSpots.push(spot);
+    if (pskrMapSpots.length > 500) {
+      pskrMapSpots = pskrMapSpots.slice(-500);
+    }
+
+    // Throttle: flush to renderer at most once every 2s
+    if (!pskrMapFlushTimer) {
+      pskrMapFlushTimer = setTimeout(() => {
+        pskrMapFlushTimer = null;
+        sendPskrMapSpots();
+      }, 2000);
+    }
+  });
+
+  pskrMap.on('status', (s) => {
+    sendPskrMapStatus({ ...s, spotCount: pskrMapSpots.length, nextPollAt: pskrMap.nextPollAt });
+    if (s.connected && pskrMapSpots.length > 0) {
+      if (pskrMapFlushTimer) { clearTimeout(pskrMapFlushTimer); pskrMapFlushTimer = null; }
+      sendPskrMapSpots();
+    }
+  });
+
+  pskrMap.on('pollDone', () => {
+    sendPskrMapStatus({ connected: pskrMap.connected, nextPollAt: pskrMap.nextPollAt, spotCount: pskrMapSpots.length, pollUpdate: true });
+  });
+
+  pskrMap.on('log', (msg) => {
+    sendCatLog(`[PSKRMap] ${msg}`);
+  });
+
+  pskrMap.on('error', (msg) => {
+    console.error(msg);
+    sendCatLog(`[PSKRMap] ${msg}`);
+    sendPskrMapStatus({ connected: false, error: msg });
+  });
+
+  pskrMap.connect({ senderCallsign: myCall });
+}
+
+function disconnectPskrMap() {
+  if (pskrMapFlushTimer) {
+    clearTimeout(pskrMapFlushTimer);
+    pskrMapFlushTimer = null;
+  }
+  if (pskrMap) {
+    pskrMap.disconnect();
+    pskrMap.removeAllListeners();
+    pskrMap = null;
+  }
+  pskrMapSpots = [];
+  sendPskrMapStatus({ connected: false });
+}
+
 // --- Shared QSO save logic ---
 // Module-scoped so WSJT-X, Echo CAT, and IPC handlers can all use it
 async function saveQsoRecord(qsoData) {
@@ -1061,6 +1254,25 @@ async function saveQsoRecord(qsoData) {
   if (settings.myCallsign && !qsoData.operator) {
     qsoData.operator = settings.myCallsign.toUpperCase();
   }
+
+  // Enrich COMMENT with park name + location for POTA/WWFF/LLOTA QSOs
+  const parkRef = qsoData.potaRef || qsoData.wwffRef || (qsoData.sig && qsoData.sigInfo ? qsoData.sigInfo : '');
+  if (parkRef) {
+    const park = getParkDb(parksMap, parkRef);
+    if (park && park.name) {
+      const parts = [
+        qsoData.sig || 'POTA',
+        parkRef,
+        park.locationDesc || '',
+        park.name || '',
+      ].filter(Boolean);
+      const parkTag = `[${parts.join(' ')}]`;
+      // Strip the auto-appended [SIG REF] tag from the base comment to avoid duplication
+      const userComment = (qsoData.comment || '').replace(/\s*\[.+?\]\s*$/, '').trim();
+      qsoData.comment = userComment ? `${userComment} ${parkTag}` : parkTag;
+    }
+  }
+
   const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
   appendQso(logPath, qsoData);
 
@@ -1195,7 +1407,7 @@ async function saveQsoRecord(qsoData) {
   // Auto-upload chaser QSO to SOTAdata if enabled
   if (settings.sotaUpload && qsoData.sig === 'SOTA' && qsoData.sigInfo && sotaUploader.configured) {
     try {
-      sendCatLog(`[SOTA] Uploading chase: ${qsoData.callsign} @ ${qsoData.sigInfo}`);
+      sendCatLog(`[SOTA] Uploading chase: ${qsoData.callsign} @ ${qsoData.sigInfo} RST S${qsoData.rstSent || '?'} R${qsoData.rstRcvd || '?'}`);
       const sotaResult = await sotaUploader.uploadChase(qsoData);
       if (sotaResult.success) {
         sendCatLog(`[SOTA] Chase uploaded successfully`);
@@ -1316,6 +1528,14 @@ function connectWsjtx() {
           allQsoData.push(parkQso);
           await saveQsoRecord(parkQso);
         }
+        // Cross-program references (WWFF, LLOTA for same park)
+        const crossRefs = (settings.activatorCrossRefs || []).filter(xr => xr && xr.ref);
+        for (const xr of crossRefs) {
+          const xrQso = { ...qsoData, mySig: xr.program.toUpperCase(), mySigInfo: xr.ref, myGridsquare: settings.grid || '', skipLogbookForward: true };
+          if (xr.program === 'WWFF') xrQso.myWwffRef = xr.ref;
+          allQsoData.push(xrQso);
+          await saveQsoRecord(xrQso);
+        }
         // Notify renderer so activator view gets the contact
         if (win && !win.isDestroyed()) {
           const freqKhz = Math.round(freqMHz * 1000);
@@ -1422,13 +1642,376 @@ function updateWsjtxHighlights() {
   }
 }
 
+// --- JTCAT (FT8/FT4 native decode engine) ---
+let ft8Engine = null;
+let remoteJtcatQso = null;
+let jtcatQuietFreq = 1500; // auto-detected quiet TX frequency from FFT analysis
+const JTCAT_MAX_CQ_RETRIES = 15;
+const JTCAT_MAX_QSO_RETRIES = 6;
+
+function remoteJtcatMyCall() { return (settings.myCallsign || '').toUpperCase(); }
+function remoteJtcatMyGrid() { return (settings.grid || '').toUpperCase().substring(0, 4); }
+
+function remoteJtcatBroadcastQso() {
+  if (remoteServer) remoteServer.broadcastJtcatQsoState(remoteJtcatQso || { phase: 'idle' });
+}
+
+async function remoteJtcatSetTxMsg(msg) {
+  if (ft8Engine) await ft8Engine.setTxMessage(msg);
+  remoteJtcatBroadcastQso();
+}
+
+function popoutBroadcastQso() {
+  if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+    jtcatPopoutWin.webContents.send('jtcat-qso-state', popoutJtcatQso || { phase: 'idle' });
+  }
+}
+
+function jtcatAutoLog(qso) {
+  const q = qso || remoteJtcatQso;
+  if (!q || !q.call) return;
+  const now = new Date();
+  const qsoDate = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const qsoTime = now.toISOString().slice(11, 16).replace(/:/g, '');
+  const freqKhz = _currentFreqHz ? _currentFreqHz / 1000 : 0;
+  const freqMhz = freqKhz / 1000;
+  const band = freqToBand(freqMhz) || '';
+  const mode = ft8Engine ? ft8Engine._mode : 'FT8';
+  const qsoData = {
+    callsign: q.call.toUpperCase(),
+    frequency: String(freqKhz),
+    mode,
+    band,
+    qsoDate,
+    timeOn: qsoTime,
+    rstSent: q.sentReport || '-00',
+    rstRcvd: q.report || '-00',
+    gridsquare: q.grid || '',
+    comment: 'JTCAT ' + mode,
+  };
+  saveQsoRecord(qsoData).then(result => {
+    console.log('[JTCAT] Auto-logged QSO:', q.call, result && result.success !== false ? 'OK' : (result && result.error || 'unknown'));
+    // Notify the popout window
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-qso-logged', {
+        callsign: q.call.toUpperCase(),
+        grid: q.grid || '',
+        band,
+        mode,
+        rstSent: q.sentReport || '',
+        rstRcvd: q.report || '',
+      });
+    }
+  }).catch(err => {
+    console.error('[JTCAT] Auto-log failed:', err.message);
+  });
+}
+
+// Shared QSO state machine — advance on decodes
+// setTxMsg: fn(msg) to set TX message and broadcast state
+// onDone: fn() called when QSO completes
+function advanceJtcatQso(q, results, setTxMsg, onDone) {
+  if (!q || q.phase === 'done' || q.phase === 'idle') return;
+  const myCall = q.myCall;
+
+  if (q.mode === 'cq') {
+    // Final courtesy TX: wait one decode cycle so the RR73 has a chance to transmit
+    if (q.phase === 'cq-rr73') {
+      if (!q._courtesySent) {
+        q._courtesySent = true;
+        return; // first decode in this phase — TX boundary hasn't fired yet
+      }
+      q.phase = 'done';
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      ft8Engine.setTxSlot('auto');
+      return;
+    }
+
+    if (q.phase === 'cq') {
+      const reply = results.find(d => {
+        const t = (d.text || '').toUpperCase();
+        return t.indexOf(myCall) >= 0 && !t.startsWith('CQ ');
+      });
+      if (!reply) return;
+      const m = (reply.text || '').toUpperCase().match(new RegExp(myCall.replace(/[/]/g, '\\/') + '\\s+([A-Z0-9/]+)\\s+([A-R]{2}\\d{2})', 'i'));
+      if (!m) return;
+      q.call = m[1]; q.grid = m[2];
+      const dbRounded = Math.round(reply.db);
+      const rpt = dbRounded >= 0 ? '+' + String(dbRounded).padStart(2, '0') : '-' + String(Math.abs(dbRounded)).padStart(2, '0');
+      q.sentReport = rpt;
+      q.txMsg = q.call + ' ' + myCall + ' ' + rpt;
+      q.phase = 'cq-report';
+      ft8Engine.setRxFreq(reply.df);
+      setTxMsg(q.txMsg);
+    } else if (q.phase === 'cq-report') {
+      const resp = results.find(d => { const t = (d.text || '').toUpperCase(); return t.indexOf(myCall) >= 0 && t.indexOf(q.call) >= 0; });
+      if (!resp) { return; }
+      const rptM = (resp.text || '').toUpperCase().match(/R([+-]\d{2})/);
+      if (!rptM) {
+        q._heardThisCycle = true; // they responded but haven't sent R+report yet
+        return;
+      }
+      q.report = rptM[1];
+      q.txMsg = q.call + ' ' + myCall + ' RR73';
+      q.phase = 'cq-rr73';
+      setTxMsg(q.txMsg);
+      // QSO confirmed — both reports exchanged. Log now, send RR73 as courtesy.
+      onDone();
+    }
+  } else {
+    // Reply mode
+    const theirCall = q.call;
+
+    // Final courtesy TX: wait one decode cycle so the 73 has a chance to transmit
+    if (q.phase === '73') {
+      if (!q._courtesySent) {
+        q._courtesySent = true;
+        return; // first decode in this phase — TX boundary hasn't fired yet
+      }
+      q.phase = 'done';
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      ft8Engine.setTxSlot('auto');
+      return;
+    }
+
+    // Detect if the station we're calling started a QSO with someone else.
+    // e.g. we're calling K3SBP but we decode "W1ABC K3SBP FN20" or "W1ABC K3SBP R-12" — K3SBP picked someone else.
+    const theyPickedOther = results.find(d => {
+      const t = (d.text || '').toUpperCase();
+      if (t.startsWith('CQ ')) return false; // ignore their CQ
+      if (t.indexOf(myCall) >= 0) return false; // directed at us — not "someone else"
+      // Check if theirCall appears as the sender (second token) replying to a different station
+      // e.g. "N2XYZ W1ABC -12" means W1ABC (theirCall) is sending to N2XYZ, not us
+      const parts = t.split(/\s+/);
+      return parts.length >= 2 && parts[1] === theirCall;
+    });
+    if (theyPickedOther) {
+      console.log('[JTCAT] Station', theirCall, 'started QSO with someone else:', theyPickedOther.text, '— aborting');
+      q.phase = 'done';
+      q.error = theirCall + ' picked another station';
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      ft8Engine.setTxSlot('auto');
+      if (ft8Engine._txActive) ft8Engine.txComplete();
+      return;
+    }
+
+    const resp = results.find(d => { const t = (d.text || '').toUpperCase(); return t.indexOf(myCall) >= 0 && t.indexOf(theirCall) >= 0; });
+    if (!resp) return;
+    const text = (resp.text || '').toUpperCase();
+    if (q.phase === 'reply') {
+      const rptM = text.match(/[R]?([+-]\d{2})/);
+      if (!rptM) return;
+      q.report = rptM[1];
+      const dbRounded = Math.round(resp.db);
+      const ourRpt = dbRounded >= 0 ? '+' + String(dbRounded).padStart(2, '0') : '-' + String(Math.abs(dbRounded)).padStart(2, '0');
+      q.sentReport = ourRpt;
+      if (text.indexOf('R' + rptM[1]) >= 0 || text.indexOf('R+') >= 0 || text.indexOf('R-') >= 0) {
+        // They sent R+report — both reports exchanged. Send RR73, log now.
+        q.txMsg = theirCall + ' ' + myCall + ' RR73'; q.phase = '73';
+        setTxMsg(q.txMsg);
+        onDone();
+      } else {
+        q.txMsg = theirCall + ' ' + myCall + ' R' + ourRpt; q.phase = 'r+report';
+        setTxMsg(q.txMsg);
+      }
+    } else if (q.phase === 'r+report') {
+      if (text.indexOf('RR73') >= 0 || text.indexOf('RRR') >= 0 || text.indexOf(' 73') >= 0) {
+        // They confirmed — QSO complete. Send 73 as courtesy, log now.
+        q.txMsg = theirCall + ' ' + myCall + ' 73'; q.phase = '73';
+        setTxMsg(q.txMsg);
+        onDone();
+      } else {
+        // They're still responding (e.g. repeating report) — mark as heard so retries don't expire
+        q._heardThisCycle = true;
+      }
+    }
+  }
+}
+
+// Server-side QSO state machine wrappers
+function processRemoteJtcatQso(results) {
+  advanceJtcatQso(remoteJtcatQso, results, remoteJtcatSetTxMsg, () => {
+    jtcatAutoLog(remoteJtcatQso);
+    remoteJtcatBroadcastQso();
+  });
+}
+
+function processPopoutJtcatQso(results) {
+  advanceJtcatQso(popoutJtcatQso, results, (msg) => {
+    if (ft8Engine) ft8Engine.setTxMessage(msg);
+    popoutBroadcastQso();
+  }, () => {
+    jtcatAutoLog(popoutJtcatQso);
+    popoutBroadcastQso();
+  });
+}
+
+function startJtcat(mode) {
+  stopJtcat();
+  ft8Engine = new Ft8Engine();
+  ft8Engine.setMode(mode || 'FT8');
+
+  ft8Engine.on('decode', (data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-decode', data);
+    }
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-decode', data);
+    }
+    if (jtcatMapPopoutWin && !jtcatMapPopoutWin.isDestroyed()) {
+      jtcatMapPopoutWin.webContents.send('jtcat-decode', data);
+    }
+    // Broadcast to phone + advance remote QSO state machine
+    if (remoteServer && remoteServer.hasClient()) {
+      const now = new Date();
+      const timeStr = String(now.getUTCHours()).padStart(2, '0') + ':' +
+                      String(now.getUTCMinutes()).padStart(2, '0') + ':' +
+                      String(now.getUTCSeconds()).padStart(2, '0');
+      remoteServer.broadcastJtcatDecode({ ...data, time: timeStr });
+    }
+    if (remoteJtcatQso && remoteJtcatQso.phase !== 'done') {
+      const phaseBefore = remoteJtcatQso.phase;
+      remoteJtcatQso._heardThisCycle = false;
+      processRemoteJtcatQso(data.results || []);
+      // Count retries — only increment when other station was NOT heard at all
+      if (remoteJtcatQso && remoteJtcatQso.phase === phaseBefore && remoteJtcatQso.phase !== 'done') {
+        if (remoteJtcatQso._heardThisCycle) {
+          remoteJtcatQso.txRetries = 0; // they're still responding, keep trying
+        } else {
+          remoteJtcatQso.txRetries = (remoteJtcatQso.txRetries || 0) + 1;
+        }
+        const max = (remoteJtcatQso.phase === 'cq') ? JTCAT_MAX_CQ_RETRIES : JTCAT_MAX_QSO_RETRIES;
+        if (remoteJtcatQso.txRetries >= max) {
+          console.log('[JTCAT Remote] TX retry limit reached (' + max + ') in phase ' + remoteJtcatQso.phase + ' — giving up');
+          ft8Engine._txEnabled = false;
+          ft8Engine.setTxMessage('');
+          ft8Engine.setTxSlot('auto');
+          if (ft8Engine._txActive) ft8Engine.txComplete();
+          remoteJtcatQso = null;
+          remoteJtcatBroadcastQso();
+          if (remoteServer.hasClient()) {
+            remoteServer.broadcastJtcatQsoState({ phase: 'error', error: 'No response — TX stopped' });
+          }
+        }
+      } else if (remoteJtcatQso && remoteJtcatQso.phase !== phaseBefore) {
+        remoteJtcatQso.txRetries = 0;
+      }
+    }
+    // Advance popout QSO state machine
+    if (popoutJtcatQso && popoutJtcatQso.phase !== 'done') {
+      const phaseBefore = popoutJtcatQso.phase;
+      popoutJtcatQso._heardThisCycle = false;
+      processPopoutJtcatQso(data.results || []);
+      if (popoutJtcatQso && popoutJtcatQso.phase === phaseBefore && popoutJtcatQso.phase !== 'done') {
+        if (popoutJtcatQso._heardThisCycle) {
+          popoutJtcatQso.txRetries = 0; // they're still responding, keep trying
+        } else {
+          popoutJtcatQso.txRetries = (popoutJtcatQso.txRetries || 0) + 1;
+        }
+        const max = (popoutJtcatQso.phase === 'cq') ? JTCAT_MAX_CQ_RETRIES : JTCAT_MAX_QSO_RETRIES;
+        if (popoutJtcatQso.txRetries >= max) {
+          console.log('[JTCAT Popout] TX retry limit reached (' + max + ') in phase ' + popoutJtcatQso.phase + ' — giving up');
+          ft8Engine._txEnabled = false;
+          ft8Engine.setTxMessage('');
+          ft8Engine.setTxSlot('auto');
+          if (ft8Engine._txActive) ft8Engine.txComplete();
+          popoutJtcatQso = null;
+          popoutBroadcastQso();
+          if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+            jtcatPopoutWin.webContents.send('jtcat-qso-state', { phase: 'error', error: 'No response — TX stopped' });
+          }
+        }
+      } else if (popoutJtcatQso && popoutJtcatQso.phase !== phaseBefore) {
+        popoutJtcatQso.txRetries = 0;
+      }
+    }
+  });
+
+  ft8Engine.on('cycle', (data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-cycle', data);
+    }
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-cycle', data);
+    }
+    if (remoteServer && remoteServer.hasClient()) remoteServer.broadcastJtcatCycle(data);
+  });
+
+  ft8Engine.on('status', (data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-status', data);
+    }
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-status', data);
+    }
+    if (remoteServer && remoteServer.hasClient()) remoteServer.broadcastJtcatStatus(data);
+  });
+
+  ft8Engine.on('tx-start', (data) => {
+    console.log('[JTCAT] TX start — PTT on, message:', data.message);
+    handleRemotePtt(true);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-tx-status', { state: 'tx', message: data.message, slot: data.slot });
+    }
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-tx-status', { state: 'tx', message: data.message, slot: data.slot, txFreq: ft8Engine._txFreq });
+    }
+    if (jtcatMapPopoutWin && !jtcatMapPopoutWin.isDestroyed()) {
+      jtcatMapPopoutWin.webContents.send('jtcat-tx-status', { state: 'tx', message: data.message, slot: data.slot, txFreq: ft8Engine._txFreq });
+      if (popoutJtcatQso) jtcatMapPopoutWin.webContents.send('jtcat-qso-state', popoutJtcatQso);
+    }
+    if (remoteServer && remoteServer.hasClient()) {
+      remoteServer.broadcastJtcatTxStatus({ state: 'tx', message: data.message, slot: data.slot, txFreq: ft8Engine._txFreq });
+    }
+    setTimeout(() => {
+      if (win && !win.isDestroyed() && ft8Engine && ft8Engine._txActive) {
+        win.webContents.send('jtcat-tx-audio', { samples: Array.from(data.samples), offsetMs: data.offsetMs || 0 });
+      }
+    }, 200);
+  });
+
+  ft8Engine.on('tx-end', () => {
+    console.log('[JTCAT] TX end — PTT off');
+    handleRemotePtt(false);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('jtcat-tx-status', { state: 'rx' });
+    }
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-tx-status', { state: 'rx', txFreq: ft8Engine ? ft8Engine._txFreq : 0 });
+    }
+    if (remoteServer && remoteServer.hasClient()) {
+      remoteServer.broadcastJtcatTxStatus({ state: 'rx', txFreq: ft8Engine ? ft8Engine._txFreq : 0 });
+    }
+  });
+
+  ft8Engine.on('error', (err) => {
+    console.error('[JTCAT] Engine error:', err.message);
+  });
+
+  ft8Engine.start();
+  console.log('[JTCAT] Engine started, mode:', mode || 'FT8');
+}
+
+function stopJtcat() {
+  if (ft8Engine) {
+    ft8Engine.stop();
+    ft8Engine.removeAllListeners();
+    ft8Engine = null;
+    console.log('[JTCAT] Engine stopped');
+  }
+}
+
 // --- SmartSDR panadapter spots ---
 function needsSmartSdr() {
   // Connect SmartSDR API if panadapter spots are enabled, CW keyer is active,
   // WSJT-X is active with a Flex, ECHOCAT remote needs rig controls,
   // or CW XIT offset is configured (XIT is applied via SmartSDR slice commands)
   if (settings.smartSdrSpots) return true;
-  if (settings.enableCwKeyer) return true;
+  if (settings.piAccess && settings.enableCwKeyer) return true;
+  if (settings.piAccess && settings.enableRemote && settings.remoteCwEnabled) return true;
   if (settings.enableWsjtx && settings.catTarget && settings.catTarget.type === 'tcp') return true;
   if (settings.enableRemote && settings.catTarget && settings.catTarget.type === 'tcp') return true;
   if (settings.cwXit && settings.catTarget && settings.catTarget.type === 'tcp') return true;
@@ -1450,7 +2033,7 @@ function connectSmartSdr() {
   }
   smartSdr.setPersistentId(settings.smartSdrClientId);
   // Tell SmartSDR whether CW keyer needs GUI auth
-  smartSdr.setNeedsCw(!!settings.enableCwKeyer);
+  smartSdr.setNeedsCw(!!(settings.piAccess && (settings.enableCwKeyer || (settings.enableRemote && settings.remoteCwEnabled))));
   // Bind to GUI client for ECHOCAT rig controls (ATU, etc.)
   smartSdr.setNeedsBind(!!settings.enableRemote);
   // Log CW auth results
@@ -1533,9 +2116,17 @@ function disconnectTci() {
 // --- 4O3A Antenna Genius ---
 function connectAntennaGenius() {
   disconnectAntennaGenius();
-  if (!settings.enableAntennaGenius || !settings.agHost) return;
+  if (!settings.enableAntennaGenius) {
+    sendCatLog('[AG] Antenna Genius disabled in settings');
+    return;
+  }
+  if (!settings.agHost) {
+    sendCatLog('[AG] Antenna Genius enabled but no host configured');
+    return;
+  }
   agClient = new AntennaGeniusClient();
   agLastBand = null;
+  sendCatLog(`[AG] Connecting to Antenna Genius at ${settings.agHost}:9007`);
   agClient.on('connected', () => {
     sendCatLog('[AG] Connected to Antenna Genius');
     agClient.subscribePortStatus();
@@ -1555,11 +2146,14 @@ function connectAntennaGenius() {
       win.webContents.send('ag-antenna-names', names);
     }
   });
+  agClient.on('log', (msg) => {
+    sendCatLog(`[AG] ${msg}`);
+  });
   agClient.on('error', (err) => {
-    // Suppress ECONNREFUSED noise during reconnect
-    if (err.code !== 'ECONNREFUSED') {
-      console.error('AG:', err.message);
-    }
+    sendCatLog(`[AG] Error: ${err.message}`);
+  });
+  agClient.on('reconnecting', () => {
+    sendCatLog(`[AG] Reconnecting to ${settings.agHost}:9007...`);
   });
   agClient.connect(settings.agHost, 9007);
 }
@@ -1644,7 +2238,55 @@ function updateRemoteSettings() {
     maxAgeMin: settings.maxAgeMin != null ? settings.maxAgeMin : 5,
     distUnit: settings.distUnit || 'mi',
     cwXit: settings.cwXit || 0,
+    enableRotor: !!settings.enableRotor,
+    rotorActive: settings.rotorActive !== false,
+    remoteCwEnabled: !!(settings.piAccess && settings.remoteCwEnabled),
+    remoteCwMacros: settings.remoteCwMacros || null,
   });
+}
+
+// --- CW Key Port (dedicated DTR keying via external USB-serial adapter) ---
+function connectCwKeyPort() {
+  disconnectCwKeyPort();
+  if (!settings.piAccess) return; // CW key port requires pi access
+  const portPath = settings.cwKeyPort;
+  if (!portPath) return;
+  const { SerialPort } = require('serialport');
+  const port = new SerialPort({
+    path: portPath,
+    baudRate: 38400, // CDC-ACM ignores baud, but match QMX default just in case
+    autoOpen: false,
+    rtscts: false,
+    hupcl: false,
+  });
+  cwKeyPort = port;
+  port.on('open', () => {
+    // Force DTR low initially (key up), RTS low too
+    port.set({ dtr: false, rts: false }, () => {});
+    console.log(`[CW Key Port] Opened ${portPath} for DTR keying`);
+  });
+  port.on('error', (err) => {
+    console.log(`[CW Key Port] Error: ${err.message}`);
+  });
+  port.on('close', () => {
+    console.log(`[CW Key Port] Closed ${portPath}`);
+    cwKeyPort = null;
+  });
+  port.open((err) => {
+    if (err) {
+      console.log(`[CW Key Port] Open failed: ${err.message}`);
+      cwKeyPort = null;
+    }
+  });
+}
+
+function disconnectCwKeyPort() {
+  if (cwKeyPort) {
+    // Force key up before closing
+    try { cwKeyPort.set({ dtr: false }, () => {}); } catch {}
+    if (cwKeyPort.isOpen) cwKeyPort.close();
+    cwKeyPort = null;
+  }
 }
 
 function connectRemote() {
@@ -1656,7 +2298,8 @@ function connectRemote() {
 
   remoteServer.on('tune', ({ freqKhz, mode, bearing }) => {
     console.log('[Echo CAT] Tune request:', freqKhz, 'kHz, mode:', mode || '(keep)');
-    tuneRadio(freqKhz, mode, bearing, { clearXit: true });
+    // Only clear XIT for manual freq entry (no mode); apply CW XIT for spot clicks
+    tuneRadio(freqKhz, mode, bearing, { clearXit: !mode });
   });
 
   remoteServer.on('ptt', ({ state }) => {
@@ -1686,6 +2329,10 @@ function connectRemote() {
     if (workedQsos.size > 0) {
       remoteServer.sendWorkedQsos([...workedQsos.entries()]);
     }
+    // Restore saved ECHOCAT filters (bands, modes, regions, sort, etc.)
+    if (settings.echoFilters) {
+      remoteServer.sendFiltersToClient(settings.echoFilters);
+    }
     // Push settings needed by phone (callsign, grid, respot defaults, cluster state)
     updateRemoteSettings();
     if (win && !win.isDestroyed()) {
@@ -1697,8 +2344,126 @@ function connectRemote() {
     if (win && !win.isDestroyed()) {
       win.webContents.send('remote-status', { connected: false });
     }
+    // CW safety: ensure PTT released on disconnect (keyer.stop() is handled in RemoteServer)
+    if (detectRigType() === 'flex' && smartSdr && smartSdr.connected) {
+      smartSdr.cwPttRelease();
+    }
+    // Icom: force DTR low (CW key up) on disconnect
+    if (detectRigType() === 'icom' && cat && cat.connected) {
+      cat.setCwKeyDtr(false);
+    }
+    // Force CW key port DTR low (key up) on disconnect
+    if (cwKeyPort && cwKeyPort.isOpen) {
+      cwKeyPort.set({ dtr: false }, () => {});
+    }
     destroyRemoteAudioWindow();
+    // Safety: disable JTCAT TX if phone was driving a QSO
+    if (ft8Engine && remoteJtcatQso) {
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      if (ft8Engine._txActive) ft8Engine.txComplete();
+      console.log('[JTCAT] Phone disconnected — TX disabled, QSO cleared');
+    }
+    remoteJtcatQso = null;
   });
+
+  // CW keyer output: route IambicKeyer key events to radio
+  let _cwPollResumeTimer = null;
+  remoteServer.setCwKeyerOutput(({ down }) => {
+    // FlexRadio via SmartSDR TCP API — only when Flex is the active CAT rig
+    if (detectRigType() === 'flex' && smartSdr && smartSdr.connected) {
+      if (down) {
+        smartSdr.cwPttOn();
+      }
+      smartSdr.cwKey(down);
+    }
+    // Serial CAT keying — method depends on radio model
+    const rigType = detectRigType();
+    const rigModel = getActiveRigModel();
+    const cwCaps = rigModel?.cw || {};
+    if (cat && cat.connected && (rigType === 'kenwood' || rigType === 'yaesu' || rigType === 'icom')) {
+      // Pause polling so commands don't interleave with CW keying
+      if (down) {
+        if (_cwPollResumeTimer) { clearTimeout(_cwPollResumeTimer); _cwPollResumeTimer = null; }
+        cat.pausePolling();
+      } else {
+        // Resume polling 1.5s after last key-up
+        if (_cwPollResumeTimer) clearTimeout(_cwPollResumeTimer);
+        _cwPollResumeTimer = setTimeout(() => {
+          _cwPollResumeTimer = null;
+          cat.resumePolling();
+        }, 1500);
+      }
+      // Route keying based on model's preferred paddle method
+      const paddleMethod = cwCaps.paddleKey || (rigType === 'icom' ? 'dtr' : 'txrx');
+      if (paddleMethod === 'dtr') {
+        cat.setCwKeyDtr(down, cwCaps.dtrPins);
+      } else if (paddleMethod === 'ta' && cwCaps.taKey) {
+        cat.setCwKeyTa(down);
+      } else {
+        cat.setCwKeyTxRx(down);
+      }
+    }
+    // Dedicated CW Key Port — DTR keying via external USB-serial adapter (FTDI/CH340/CP2102)
+    if (cwKeyPort && cwKeyPort.isOpen) {
+      cwKeyPort.set({ dtr: !!down }, (err) => {
+        if (err) console.log(`[CW Key Port] DTR error: ${err.message}`);
+      });
+    }
+  });
+
+  // CW config changes from phone (WPM)
+  remoteServer.on('cw-config', ({ wpm }) => {
+    if (detectRigType() === 'flex' && smartSdr && smartSdr.connected) {
+      smartSdr.setCwSpeed(wpm);
+    }
+    // Also set KS on serial CAT (QMX etc.)
+    if (cat && cat.connected) {
+      cat.setCwSpeed(wpm);
+    }
+  });
+
+  // CW text macros/freeform from phone — route to radio
+  remoteServer.on('cw-text', ({ text }) => {
+    if (!text) return;
+    // Substitute {MYCALL} with the user's callsign
+    const expanded = text.replace(/\{MYCALL\}/gi, settings.myCallsign || '');
+    console.log(`[Echo CAT] CW text: ${expanded}`);
+    // Serial CAT (QMX/QDX/Kenwood): use KY command
+    if (cat && cat.connected) {
+      cat.sendCwText(expanded);
+    }
+    // SmartSDR: use cw send command (Flex supports text sending too)
+    // Note: SmartSDR's `cw send` is character-level like KY
+    // For now, route through CAT. If no CAT but SmartSDR, we could add
+    // smartSdr.sendCwText() in the future.
+  });
+
+  // Phone requests to toggle remote CW on/off
+  remoteServer.on('cw-enable-request', ({ enabled }) => {
+    settings.remoteCwEnabled = !!enabled;
+    saveSettings(settings);
+    remoteServer.setCwEnabled(!!enabled);
+    if (enabled && smartSdr) {
+      smartSdr.setNeedsCw(true);
+    }
+    // Notify desktop UI
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('settings-changed', { remoteCwEnabled: !!enabled });
+    }
+    console.log(`[Echo CAT] Remote CW ${enabled ? 'enabled' : 'disabled'} by phone`);
+  });
+
+  // Enable remote CW if setting is on
+  if (settings.remoteCwEnabled) {
+    remoteServer.setCwEnabled(true);
+    if (smartSdr) smartSdr.setNeedsCw(true);
+  }
+
+  // Open dedicated CW Key Port if configured
+  if (settings.cwKeyPort) {
+    connectCwKeyPort();
+  }
 
   remoteServer.on('set-sources', (sources) => {
     if (!sources) return;
@@ -1723,6 +2488,12 @@ function connectRemote() {
     console.log('[Echo CAT] Sources updated:', newSettings);
   });
 
+  remoteServer.on('set-echo-filters', (filters) => {
+    if (!filters) return;
+    settings.echoFilters = filters;
+    saveSettings(settings);
+  });
+
   remoteServer.on('switch-rig', ({ rigId }) => {
     const rig = (settings.rigs || []).find(r => r.id === rigId);
     if (!rig) return;
@@ -1741,6 +2512,8 @@ function connectRemote() {
     if (win && !win.isDestroyed()) {
       win.webContents.send('reload-prefs');
     }
+    // Track active rig for club schedule advisory
+    if (remoteServer._clubMode) remoteServer._activeRigId = rig.id;
     // Confirm back to phone
     const rigs = (settings.rigs || []).map(r => ({ id: r.id, name: r.name }));
     remoteServer.sendRigsToClient(rigs, rig.id);
@@ -1767,7 +2540,7 @@ function connectRemote() {
       cat.setFilterWidth(width);
     }
     _currentFilterWidth = width;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
   }
 
   remoteServer.on('set-filter', ({ width }) => {
@@ -1792,16 +2565,18 @@ function connectRemote() {
       cat.setNb(on);
     }
     _currentNbState = on;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
     console.log('[Echo CAT] NB:', on ? 'ON' : 'OFF');
   });
 
   remoteServer.on('set-atu', ({ on }) => {
     if (flexSdr()) {
       smartSdr.setAtu(on);
+    } else if (on && cat && cat.connected) {
+      cat.startTune(); // Yaesu/Kenwood/rigctld ATU
     }
     _currentAtuState = on;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
     console.log('[Echo CAT] ATU:', on ? 'ON' : 'OFF');
   });
 
@@ -1812,7 +2587,7 @@ function connectRemote() {
       cat.setVfo(vfo);
     }
     _currentVfo = vfo;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
     console.log('[Echo CAT] VFO:', vfo);
   });
 
@@ -1827,32 +2602,101 @@ function connectRemote() {
       cat.setVfo(newVfo);
     }
     _currentVfo = newVfo;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
     console.log('[Echo CAT] Swap VFO →', newVfo);
   });
 
   remoteServer.on('set-rfgain', ({ value }) => {
     if (flexSdr()) {
-      // Flex RF Gain: slider 0–100 maps to -10 to +20 dB
       const dB = (value * 0.3) - 10;
       smartSdr.setRfGain(0, dB);
-    } else if (cat && cat.connected && detectRigType() === 'rigctld') {
-      cat.setRfGain(value / 100);
+    } else if (cat && cat.connected) {
+      const rigType = detectRigType();
+      if (rigType === 'rigctld') cat.setRfGain(value / 100);
+      else cat.setRfGain(value); // Yaesu/Kenwood: 0-100 directly
     }
     _currentRfGain = value;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
     console.log('[Echo CAT] RF Gain →', value);
   });
 
   remoteServer.on('set-txpower', ({ value }) => {
     if (flexSdr()) {
       smartSdr.setTxPower(value);
-    } else if (cat && cat.connected && detectRigType() === 'rigctld') {
-      cat.setTxPower(value / 100);
+    } else if (cat && cat.connected) {
+      const rigType = detectRigType();
+      if (rigType === 'rigctld') cat.setTxPower(value / 100);
+      else cat.setTxPower(value); // Yaesu/Kenwood: 0-100 directly
     }
     _currentTxPower = value;
-    broadcastRemoteRadioStatus();
+    broadcastRigState();
     console.log('[Echo CAT] TX Power →', value);
+  });
+
+  // Unified rig-control from ECHOCAT phone (same dispatch as desktop IPC)
+  remoteServer.on('rig-control', (data) => {
+    if (!data || !data.action) return;
+    const rigType = detectRigType();
+    switch (data.action) {
+      case 'set-nb': {
+        const on = !!data.value;
+        if (flexSdr()) smartSdr.setSliceNb(0, on);
+        else if (cat && cat.connected) cat.setNb(on);
+        _currentNbState = on;
+        broadcastRigState();
+        break;
+      }
+      case 'atu-tune':
+        if (flexSdr()) smartSdr.setAtu(true);
+        else if (cat && cat.connected) cat.startTune();
+        _currentAtuState = true;
+        broadcastRigState();
+        break;
+      case 'power-on':
+        // Power-on: radio may be off, so don't require cat.connected — just need transport open
+        if (cat && rigType !== 'flex') cat.setPowerState(true);
+        break;
+      case 'power-off':
+        if (cat && cat.connected && rigType !== 'flex') cat.setPowerState(false);
+        break;
+      case 'set-rf-gain': {
+        const value = Number(data.value) || 0;
+        if (flexSdr()) smartSdr.setRfGain(0, (value * 0.3) - 10);
+        else if (cat && cat.connected) {
+          if (rigType === 'rigctld') cat.setRfGain(value / 100);
+          else cat.setRfGain(value);
+        }
+        _currentRfGain = value;
+        broadcastRigState();
+        break;
+      }
+      case 'set-tx-power': {
+        const value = Number(data.value) || 0;
+        if (flexSdr()) smartSdr.setTxPower(value);
+        else if (cat && cat.connected) {
+          if (rigType === 'rigctld') cat.setTxPower(value / 100);
+          else cat.setTxPower(value);
+        }
+        _currentTxPower = value;
+        broadcastRigState();
+        break;
+      }
+      case 'set-filter-width': {
+        const width = Number(data.value) || 0;
+        if (width <= 0) break;
+        if (flexSdr()) {
+          const m = (_currentMode || '').toUpperCase();
+          let lo, hi;
+          if (m === 'CW') { lo = Math.max(0, 600 - Math.round(width / 2)); hi = 600 + Math.round(width / 2); }
+          else { lo = 100; hi = 100 + width; }
+          smartSdr.setSliceFilter(0, lo, hi);
+        } else if (cat && cat.connected) cat.setFilterWidth(width);
+        _currentFilterWidth = width;
+        broadcastRigState();
+        break;
+      }
+    }
+    console.log('[Echo CAT] rig-control:', data.action, data.value != null ? data.value : '');
   });
 
   remoteServer.on('set-activator-park', async ({ parkRef, activationType, activationName: actName, sig }) => {
@@ -1905,10 +2749,21 @@ function connectRemote() {
 
   remoteServer.on('set-mode', ({ mode }) => {
     if (!mode) return;
+    if (!_currentFreqHz) {
+      console.log('[Echo CAT] Set mode ignored — no frequency from radio yet');
+      return;
+    }
     console.log('[Echo CAT] Set mode →', mode);
     // Reset rate limiter so mode-only change goes through
     _lastTuneFreq = 0;
     tuneRadio(_currentFreqHz / 1000, mode);
+  });
+
+  remoteServer.on('toggle-rotor', ({ enabled }) => {
+    settings.rotorActive = enabled;
+    saveSettings(settings);
+    updateRemoteSettings(); // push updated state back to phone
+    console.log('[Echo CAT] Rotor →', enabled ? 'ON' : 'OFF');
   });
 
   remoteServer.on('set-scan-dwell', ({ value }) => {
@@ -2124,6 +2979,13 @@ function connectRemote() {
       if (settings.myCallsign) {
         qsoData.stationCallsign = settings.myCallsign.toUpperCase();
       }
+      // Club mode: OPERATOR = individual member callsign
+      if (settings.clubMode && remoteServer) {
+        const member = remoteServer.getAuthenticatedMember();
+        if (member) {
+          qsoData.operator = member.callsign;
+        }
+      }
       if (settings.txPower) {
         qsoData.txPower = String(settings.txPower);
       }
@@ -2152,6 +3014,13 @@ function connectRemote() {
           const r = await saveQsoRecord(qsoData);
           if (r) Object.assign(result, r);
         }
+        // Cross-program references (WWFF, LLOTA for same park)
+        const crossRefs1 = (settings.activatorCrossRefs || []).filter(xr => xr && xr.ref);
+        for (const xr of crossRefs1) {
+          const xrQso = { ...qsoData, mySig: xr.program.toUpperCase(), mySigInfo: xr.ref, myGridsquare: myGrid, skipLogbookForward: true };
+          if (xr.program === 'WWFF') xrQso.myWwffRef = xr.ref;
+          await saveQsoRecord(xrQso);
+        }
       } else if (settings.appMode === 'activator') {
         // Desktop is in activator mode but phone didn't send mySig — use desktop park refs
         const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref);
@@ -2161,6 +3030,13 @@ function connectRemote() {
             if (i > 0) parkQso.skipLogbookForward = true;
             const r = await saveQsoRecord(parkQso);
             if (r) Object.assign(result, r);
+          }
+          // Cross-program references (WWFF, LLOTA for same park)
+          const crossRefs2 = (settings.activatorCrossRefs || []).filter(xr => xr && xr.ref);
+          for (const xr of crossRefs2) {
+            const xrQso = { ...qsoData, mySig: xr.program.toUpperCase(), mySigInfo: xr.ref, myGridsquare: myGrid, skipLogbookForward: true };
+            if (xr.program === 'WWFF') xrQso.myWwffRef = xr.ref;
+            await saveQsoRecord(xrQso);
           }
         } else {
           const r = await saveQsoRecord(qsoData);
@@ -2210,6 +3086,154 @@ function connectRemote() {
     }
   });
 
+  // --- JTCAT remote control (event handlers — helpers are at file level) ---
+
+  remoteServer.on('jtcat-start', ({ mode }) => {
+    startJtcat(mode);
+    // Start audio capture in desktop renderer
+    if (win && !win.isDestroyed()) win.webContents.send('jtcat-start-for-remote');
+  });
+
+  remoteServer.on('jtcat-stop', () => {
+    stopJtcat();
+    remoteJtcatQso = null;
+    if (win && !win.isDestroyed()) win.webContents.send('jtcat-stop-for-remote');
+  });
+
+  remoteServer.on('jtcat-call-cq', async () => {
+    if (!ft8Engine) return;
+    const myCall = remoteJtcatMyCall();
+    const myGrid = remoteJtcatMyGrid();
+    if (!myCall || !myGrid) {
+      // Send error back to phone
+      if (remoteServer.hasClient()) {
+        remoteServer.broadcastJtcatQsoState({ phase: 'error', error: 'Set callsign & grid in POTACAT Settings first' });
+      }
+      console.warn('[JTCAT Remote] CQ aborted — callsign or grid not configured');
+      return;
+    }
+    // Auto-place TX on quiet frequency from FFT analysis
+    ft8Engine.setTxFreq(jtcatQuietFreq);
+    if (remoteServer.hasClient()) {
+      remoteServer.broadcastJtcatTxStatus({ state: 'rx', txFreq: jtcatQuietFreq });
+    }
+    const txMsg = 'CQ ' + myCall + ' ' + myGrid;
+    // TX on next available slot
+    const nextSlot = ft8Engine._lastRxSlot === 'even' ? 'odd' : (ft8Engine._lastRxSlot === 'odd' ? 'even' : 'even');
+    ft8Engine.setTxSlot(nextSlot);
+    remoteJtcatQso = { mode: 'cq', call: null, grid: null, phase: 'cq', txMsg, report: null, sentReport: null, myCall, myGrid, txRetries: 0 };
+    ft8Engine._txEnabled = true;
+    await remoteJtcatSetTxMsg(txMsg);
+    ft8Engine.tryImmediateTx();
+    console.log('[JTCAT Remote] CQ:', txMsg, '@ quiet freq', jtcatQuietFreq, 'Hz slot:', nextSlot);
+  });
+
+  remoteServer.on('jtcat-reply', async ({ call, grid, df, slot }) => {
+    if (!ft8Engine) return;
+    const myCall = remoteJtcatMyCall();
+    const myGrid = remoteJtcatMyGrid();
+    if (!myCall) return;
+    // Halt any active TX (e.g. CQ) so reply goes out on next boundary
+    if (ft8Engine._txActive) ft8Engine.txComplete();
+    const txMsg = call + ' ' + myCall + ' ' + myGrid;
+    ft8Engine.setTxFreq(df);
+    ft8Engine.setRxFreq(df);
+    // TX on opposite slot from the station we're replying to (use slot from decode data)
+    const targetSlot = slot || ft8Engine._lastRxSlot;
+    ft8Engine.setTxSlot(targetSlot === 'even' ? 'odd' : (targetSlot === 'odd' ? 'even' : 'auto'));
+    remoteJtcatQso = { mode: 'reply', call, grid, phase: 'reply', txMsg, report: null, sentReport: null, myCall, myGrid, txRetries: 0 };
+    ft8Engine._txEnabled = true;
+    await remoteJtcatSetTxMsg(txMsg);
+    ft8Engine.tryImmediateTx();
+    console.log('[JTCAT Remote] Reply to', call, ':', txMsg, 'slot:', ft8Engine._txSlot);
+  });
+
+  remoteServer.on('jtcat-enable-tx', ({ enabled }) => {
+    if (ft8Engine) ft8Engine._txEnabled = enabled;
+  });
+
+  remoteServer.on('jtcat-halt-tx', () => {
+    if (ft8Engine) {
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      if (ft8Engine._txActive) ft8Engine.txComplete();
+    }
+    remoteJtcatQso = null;
+    remoteJtcatBroadcastQso();
+  });
+
+  remoteServer.on('jtcat-set-mode', ({ mode }) => {
+    if (ft8Engine) ft8Engine.setMode(mode);
+  });
+
+  remoteServer.on('jtcat-set-tx-freq', ({ hz }) => {
+    if (ft8Engine) {
+      ft8Engine.setTxFreq(hz);
+      if (remoteServer.hasClient()) {
+        remoteServer.broadcastJtcatTxStatus({ state: ft8Engine._txActive ? 'tx' : 'rx', txFreq: ft8Engine._txFreq });
+      }
+    }
+  });
+
+  remoteServer.on('jtcat-set-tx-slot', ({ slot }) => {
+    if (ft8Engine) ft8Engine.setTxSlot(slot);
+  });
+
+  remoteServer.on('jtcat-cancel-qso', () => {
+    if (ft8Engine) {
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      ft8Engine.setTxSlot('auto');
+      if (ft8Engine._txActive) ft8Engine.txComplete();
+    }
+    remoteJtcatQso = null;
+    remoteJtcatBroadcastQso();
+  });
+
+  remoteServer.on('jtcat-set-band', ({ band, freqKhz }) => {
+    if (freqKhz) tuneRadio(freqKhz, 'DIGU');
+  });
+
+  remoteServer.on('jtcat-log-qso', async () => {
+    if (!remoteJtcatQso || !remoteJtcatQso.call) {
+      console.log('[JTCAT Remote] Log QSO requested but no active QSO');
+      return;
+    }
+    try {
+      const q = remoteJtcatQso;
+      const now = new Date();
+      const qsoDate = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const qsoTime = now.toISOString().slice(11, 16).replace(/:/g, '');
+      const freqKhz = _currentFreqHz ? _currentFreqHz / 1000 : 0;
+      const freqMhz = freqKhz / 1000;
+      const band = freqToBand(freqMhz) || '';
+      const mode = ft8Engine ? ft8Engine._mode : 'FT8';
+
+      const qsoData = {
+        callsign: q.call.toUpperCase(),
+        frequency: String(freqKhz),
+        mode,
+        band,
+        qsoDate,
+        timeOn: qsoTime,
+        rstSent: q.sentReport || '-00',
+        rstRcvd: q.report || '-00',
+        gridsquare: q.grid || '',
+        comment: 'JTCAT FT8',
+      };
+
+      const result = await saveQsoRecord(qsoData);
+      console.log('[JTCAT Remote] QSO logged:', q.call, result.success ? 'OK' : result.error);
+
+      // Broadcast updated worked QSOs so the phone's spot list updates
+      if (result.success && win && !win.isDestroyed()) {
+        win.webContents.send('jtcat-decode', { cycle: 0, mode, results: [] }); // trigger UI refresh
+      }
+    } catch (err) {
+      console.error('[JTCAT Remote] Log QSO failed:', err.message);
+    }
+  });
+
   remoteServer.on('signal-from-client', (data) => {
     if (data && data.type === 'start-audio') {
       // Phone requested audio — create or restart hidden audio window
@@ -2233,8 +3257,16 @@ function connectRemote() {
     settings.remoteToken = token;
     saveSettings(settings);
   }
+  // Club Station Mode
+  if (settings.clubMode && settings.clubCsvPath) {
+    const auditPath = settings.clubAuditPath ||
+      path.join(app.getPath('userData'), 'club-audit.csv');
+    const auditLogger = createAuditLogger(auditPath);
+    remoteServer.setClubMode(true, settings.clubCsvPath, auditLogger, settings.rigs || [], settings.activeRigId);
+  }
+
   remoteServer.start(port, token, {
-    requireToken,
+    requireToken: settings.clubMode ? true : requireToken, // club mode always requires auth
     pttSafetyTimeout: settings.remotePttTimeout || 180,
     rendererPath: path.join(app.getAppPath(), 'renderer'),
     certDir: app.getPath('userData'),
@@ -2242,6 +3274,7 @@ function connectRemote() {
 }
 
 function disconnectRemote() {
+  disconnectCwKeyPort();
   if (remoteServer) {
     remoteServer.removeAllListeners();
     remoteServer.stop();
@@ -2296,7 +3329,21 @@ function broadcastRemoteRadioStatus() {
 }
 
 // --- Remote Audio (hidden BrowserWindow for WebRTC) ---
-function startRemoteAudio() {
+async function startRemoteAudio() {
+  // On macOS, request microphone permission before creating the audio window.
+  // Without this, getUserMedia() silently returns an empty/silent stream.
+  if (process.platform === 'darwin') {
+    const { systemPreferences } = require('electron');
+    const micStatus = systemPreferences.getMediaAccessStatus('microphone');
+    if (micStatus !== 'granted') {
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      if (!granted) {
+        console.error('[Echo CAT] Microphone permission denied by macOS');
+        return;
+      }
+    }
+  }
+
   // If window already exists, tell it to restart a fresh WebRTC session
   if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
     remoteAudioWin.webContents.send('remote-audio-start', {
@@ -2317,6 +3364,9 @@ function startRemoteAudio() {
     },
   });
 
+  // Grant media permissions to the audio window's session
+  remoteAudioWin.webContents.session.setPermissionRequestHandler((_wc, perm, cb) => cb(true));
+
   remoteAudioWin.loadFile(path.join(__dirname, 'renderer', 'remote-audio.html'));
 
   remoteAudioWin.webContents.on('did-finish-load', () => {
@@ -2335,10 +3385,8 @@ function startRemoteAudio() {
 
 function destroyRemoteAudioWindow() {
   if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
-    remoteAudioWin.webContents.send('remote-audio-stop');
-    setTimeout(() => {
-      if (remoteAudioWin && !remoteAudioWin.isDestroyed()) remoteAudioWin.close();
-    }, 500);
+    try { remoteAudioWin.webContents.send('remote-audio-stop'); } catch { /* may be destroyed */ }
+    try { remoteAudioWin.close(); } catch { /* ignore */ }
   }
 }
 
@@ -2515,7 +3563,11 @@ async function processSotaSpots(raw) {
   // Batch-fetch summit coordinates (cached across refreshes)
   await fetchSummitCoordsBatch(raw);
 
-  const all = raw.map((s) => {
+  const all = raw.filter((s) => {
+    // Skip spots with no frequency (pre-announced activations with no QRG)
+    const f = parseFloat(s.frequency);
+    return !isNaN(f) && f > 0;
+  }).map((s) => {
     const freqMHz = parseFloat(s.frequency);
     const freqKHz = Math.round(freqMHz * 1000); // SOTA gives MHz → convert to kHz
     const assoc = s.associationCode || '';
@@ -2740,38 +3792,42 @@ function getActiveNetSpots() {
 
   for (const net of nets) {
     if (!net.enabled) continue;
-    let active = false;
-    let startMs, endMs, showMs;
+    let startMs, endMs;
+    let scheduled = false;
     // Check today
     if (isNetScheduledToday(net, today)) {
       const t = getNetTimes(net, today);
-      if (now >= t.showMs && now < t.endMs) {
-        active = true;
-        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      if (now < t.endMs) {
+        scheduled = true;
+        startMs = t.startMs; endMs = t.endMs;
       }
     }
     // Check yesterday (midnight spanning)
-    if (!active && isNetScheduledToday(net, yesterday)) {
+    if (!scheduled && isNetScheduledToday(net, yesterday)) {
       const t = getNetTimes(net, yesterday);
-      if (now >= t.showMs && now < t.endMs) {
-        active = true;
-        startMs = t.startMs; endMs = t.endMs; showMs = t.showMs;
+      if (now < t.endMs) {
+        scheduled = true;
+        startMs = t.startMs; endMs = t.endMs;
       }
     }
-    if (!active) continue;
+    if (!scheduled) continue;
 
     // Build comments string
     let comments;
-    if (now < startMs) {
-      const minsLeft = Math.ceil((startMs - now) / 60000);
-      comments = minsLeft >= 60
-        ? `Starts in ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m`
-        : `Starts in ${minsLeft}m`;
-    } else {
+    if (now >= startMs) {
       const minsLeft = Math.ceil((endMs - now) / 60000);
       comments = minsLeft >= 60
         ? `On air \u2014 ${Math.floor(minsLeft / 60)}h ${minsLeft % 60}m left`
         : `On air \u2014 ${minsLeft}m left`;
+    } else {
+      const minsUntil = Math.ceil((startMs - now) / 60000);
+      if (minsUntil >= 60) {
+        const h = Math.floor(minsUntil / 60);
+        const m = minsUntil % 60;
+        comments = m > 0 ? `Starts in ${h}h ${m}m` : `Starts in ${h}h`;
+      } else {
+        comments = `Starts in ${minsUntil}m`;
+      }
     }
 
     spots.push({
@@ -2796,20 +3852,15 @@ function sendMergedSpots() {
   const netSpots = getActiveNetSpots();
   const merged = [...netSpots, ...lastPotaSotaSpots, ...clusterSpots, ...rbnWatchSpots, ...pskrSpots];
   win.webContents.send('spots', merged);
-  // Filter net spots out of panadapter pushes (no lat/lon, not real signals)
-  const realSpots = merged.filter(s => s.source !== 'net');
-  pushSpotsToSmartSdr(realSpots);
-  pushSpotsToTci(realSpots);
-  // Forward to ECHOCAT — SSB only (net spots always pass), respect max spot age
+  pushSpotsToSmartSdr(merged);
+  pushSpotsToTci(merged);
+  // Forward to ECHOCAT — all modes (phone-side Mode dropdown handles filtering), respect max spot age
   if (remoteServer && remoteServer.running) {
     const maxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
     const now = Date.now();
     const echoSpots = merged.filter(s => {
       // Net spots always pass through to ECHOCAT
       if (s.source === 'net') return true;
-      // SSB only
-      const m = (s.mode || '').toUpperCase();
-      if (m !== 'SSB' && m !== 'USB' && m !== 'LSB') return false;
       // Age filter
       if (s.spotTime) {
         const t = s.spotTime.endsWith('Z') ? s.spotTime : s.spotTime + 'Z';
@@ -3042,13 +4093,13 @@ const hamrsBridge = {
   socket: null,
   heartbeatTimer: null,
   host: '127.0.0.1',
-  port: 2333,
+  port: 2237,
   id: 'POTACAT',
 
   start(host, port) {
     this.stop();
     this.host = host || '127.0.0.1';
-    this.port = port || 2333;
+    this.port = port || 2237;
     const dgram = require('dgram');
     this.socket = dgram.createSocket('udp4');
     this.socket.on('error', (err) => {
@@ -3086,10 +4137,23 @@ const hamrsBridge = {
       const freqHz = Math.round((parseFloat(qsoData.frequency) || 0) * 1000);
       sendCatLog(`[HamRS] Sending QSO: ${qsoData.callsign} ${freqHz}Hz ${qsoData.mode} → ${this.host}:${this.port}`);
 
+      // Build proper Date objects from qsoData date/time fields
+      let dateTimeOff;
+      if (qsoData.qsoDate) {
+        const d = qsoData.qsoDate; // YYYYMMDD
+        const t = qsoData.timeOn || '0000'; // HHMM or HHMMSS
+        dateTimeOff = new Date(Date.UTC(
+          parseInt(d.slice(0, 4), 10), parseInt(d.slice(4, 6), 10) - 1, parseInt(d.slice(6, 8), 10),
+          parseInt(t.slice(0, 2), 10), parseInt(t.slice(2, 4), 10), t.length >= 6 ? parseInt(t.slice(4, 6), 10) : 0
+        ));
+      }
+
       // Send QSO_LOGGED (type 5) — the primary message most apps listen for
       const qsoMsg = encodeQsoLogged(this.id, {
+        dateTimeOff,
+        dateTimeOn: dateTimeOff,
         dxCall: qsoData.callsign || '',
-        dxGrid: qsoData.grid || '',
+        dxGrid: qsoData.gridsquare || '',
         txFrequency: freqHz,
         mode: qsoData.mode || '',
         reportSent: qsoData.rstSent || '59',
@@ -3122,6 +4186,44 @@ const hamrsBridge = {
 };
 
 // --- Logbook forwarding ---
+
+/**
+ * Convert raw ADIF fields (uppercase keys from parseAllRawQsos) to the
+ * qsoData format that buildAdifRecord() / forwardToLogbook() expect.
+ */
+function rawQsoToQsoData(raw) {
+  const freqMhz = parseFloat(raw.FREQ || '0');
+  return {
+    callsign: raw.CALL || '',
+    frequency: (freqMhz * 1000).toFixed(1), // MHz → kHz
+    mode: raw.MODE || '',
+    qsoDate: raw.QSO_DATE || '',
+    timeOn: raw.TIME_ON || '',
+    rstSent: raw.RST_SENT || '',
+    rstRcvd: raw.RST_RCVD || '',
+    txPower: raw.TX_PWR || '',
+    band: raw.BAND || '',
+    sig: raw.SIG || '',
+    sigInfo: raw.SIG_INFO || '',
+    potaRef: raw.POTA_REF || '',
+    sotaRef: raw.SOTA_REF || '',
+    wwffRef: raw.WWFF_REF || '',
+    operator: raw.OPERATOR || '',
+    name: raw.NAME || '',
+    state: raw.STATE || '',
+    county: raw.CNTY || '',
+    gridsquare: raw.GRIDSQUARE || '',
+    country: raw.COUNTRY || '',
+    comment: raw.COMMENT || '',
+    mySig: raw.MY_SIG || '',
+    mySigInfo: raw.MY_SIG_INFO || '',
+    myPotaRef: raw.MY_POTA_REF || '',
+    mySotaRef: raw.MY_SOTA_REF || '',
+    myGridsquare: raw.MY_GRIDSQUARE || '',
+    stationCallsign: raw.STATION_CALLSIGN || '',
+  };
+}
+
 function forwardToLogbook(qsoData) {
   const type = settings.logbookType;
   const host = settings.logbookHost || '127.0.0.1';
@@ -3134,7 +4236,7 @@ function forwardToLogbook(qsoData) {
     const record = buildAdifRecord(qsoData);
     const adifText = `<adif_ver:5>3.1.4\n<programid:7>POTACAT\n<EOH>\n${record}\n`;
     // Start bridge if not running (or if host/port changed)
-    const hp = port || 2333;
+    const hp = port || 2237;
     if (!hamrsBridge.socket || hamrsBridge.host !== host || hamrsBridge.port !== hp) {
       hamrsBridge.start(host, hp);
     }
@@ -3144,7 +4246,14 @@ function forwardToLogbook(qsoData) {
     return sendUdpAdif(qsoData, host, port || 2333);
   }
   if (type === 'macloggerdx') {
-    return sendUdpAdif(qsoData, host, port || 9090);
+    // MacLoggerDX speaks WSJT-X binary protocol (same as HamRS)
+    const record = buildAdifRecord(qsoData);
+    const adifText = `<adif_ver:5>3.1.4\n<programid:7>POTACAT\n<EOH>\n${record}\n`;
+    const hp = port || 2237;
+    if (!hamrsBridge.socket || hamrsBridge.host !== host || hamrsBridge.port !== hp) {
+      hamrsBridge.start(host, hp);
+    }
+    return hamrsBridge.sendQso(qsoData, adifText);
   }
   if (type === 'n3fjp') {
     return sendN3fjpTcp(qsoData, host, port || 1100);
@@ -3154,6 +4263,9 @@ function forwardToLogbook(qsoData) {
   }
   if (type === 'wavelog') {
     return sendWavelogHttp(qsoData);
+  }
+  if (type === 'wrl') {
+    return sendWrlUdp(qsoData, host, port || 12060);
   }
   return Promise.resolve();
 }
@@ -3176,6 +4288,65 @@ function sendUdpAdif(qsoData, host, port) {
       else resolve();
     });
   });
+}
+
+/**
+ * Send a QSO to World Radio League via N1MM-compatible ContactInfo UDP.
+ * WRL Cat Control listens for these and forwards to the WRL cloud logbook.
+ */
+function sendWrlUdp(qsoData, host, port) {
+  return new Promise((resolve, reject) => {
+    const dgram = require('dgram');
+    const call = qsoData.callsign || '';
+    const mycall = qsoData.operator || settings.myCallsign || '';
+    const freqKhz = parseFloat(qsoData.frequency) || 0;
+    const rxfreq = Math.round(freqKhz * 100).toString(); // N1MM uses 10 Hz units
+    const txfreq = rxfreq;
+    const mode = (qsoData.mode || 'SSB').toUpperCase();
+    const band = (qsoData.band || '').toUpperCase();
+    const snt = qsoData.rstSent || '59';
+    const rcv = qsoData.rstRcvd || '59';
+    const dateStr = qsoData.qsoDate || '';
+    const timeStr = qsoData.timeOn || '';
+    const ts = dateStr.length === 8 && timeStr.length >= 4
+      ? `${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)} ${timeStr.slice(0,2)}:${timeStr.slice(2,4)}:00`
+      : new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const comment = qsoData.comment || '';
+    const grid = qsoData.gridsquare || '';
+    const contestName = qsoData.sig || '';
+    const contestNr = qsoData.sigInfo || '';
+
+    const xml = `<?xml version="1.0" encoding="utf-8"?>\n<contactinfo>\n`
+      + `  <app>POTACAT</app>\n`
+      + `  <contestname>${escXml(contestName)}</contestname>\n`
+      + `  <contestnr>${escXml(contestNr)}</contestnr>\n`
+      + `  <timestamp>${escXml(ts)}</timestamp>\n`
+      + `  <mycall>${escXml(mycall)}</mycall>\n`
+      + `  <operator>${escXml(mycall)}</operator>\n`
+      + `  <band>${escXml(band)}</band>\n`
+      + `  <rxfreq>${rxfreq}</rxfreq>\n`
+      + `  <txfreq>${txfreq}</txfreq>\n`
+      + `  <call>${escXml(call)}</call>\n`
+      + `  <mode>${escXml(mode)}</mode>\n`
+      + `  <snt>${escXml(snt)}</snt>\n`
+      + `  <rcv>${escXml(rcv)}</rcv>\n`
+      + `  <gridsquare>${escXml(grid)}</gridsquare>\n`
+      + `  <comment>${escXml(comment)}</comment>\n`
+      + `</contactinfo>\n`;
+
+    const message = Buffer.from(xml, 'utf-8');
+    const client = dgram.createSocket('udp4');
+    client.send(message, 0, message.length, port, host, (err) => {
+      client.close();
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function escXml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 /**
@@ -3311,6 +4482,8 @@ function sendWavelogHttp(qsoData) {
 async function sendToQrzLogbook(qsoData) {
   const apiKey = settings.qrzApiKey;
   if (!apiKey) throw new Error('QRZ API key not configured');
+
+  // Comment already enriched with park name in saveQsoRecord()
   const record = buildAdifRecord(qsoData);
   await QrzClient.uploadQso(apiKey, record, settings.myCallsign || '');
 }
@@ -3398,6 +4571,8 @@ function createWindow() {
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.close();
     if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.close();
     if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) clusterPopoutWin.close();
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.close();
+    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) remoteAudioWin.close();
   });
 
   // Once the renderer is actually ready to listen, send current state
@@ -3417,6 +4592,10 @@ function createWindow() {
     }
     if (pskr) {
       sendPskrStatus({ connected: pskr.connected });
+    }
+    if (pskrMap) {
+      sendPskrMapStatus({ connected: pskrMap.connected, spotCount: pskrMapSpots.length });
+      if (pskrMapSpots.length > 0) sendPskrMapSpots();
     }
     refreshSpots();
     fetchSolarData();
@@ -3722,6 +4901,10 @@ async function fetchDirectory() {
 function pushDirectoryToRenderer() {
   if (!win || win.isDestroyed()) return;
   win.webContents.send('directory-data', { nets: directoryNets, swl: directorySwl });
+  // Also push to ECHOCAT phone client
+  if (remoteServer && remoteServer.running) {
+    remoteServer.broadcastDirectory({ nets: directoryNets, swl: directorySwl });
+  }
 }
 
 function getEventProgress(eventId) {
@@ -4241,11 +5424,11 @@ function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
     filterWidth = settings.cwFilterWidth || 0;
   } else if (m === 'SSB' || m === 'USB' || m === 'LSB') {
     filterWidth = settings.ssbFilterWidth || 0;
-  } else if (m === 'FT8' || m === 'FT4' || m === 'FT2' || m === 'DIGU' || m === 'DIGL') {
+  } else if (m === 'FT8' || m === 'FT4' || m === 'FT2' || m === 'DIGU' || m === 'DIGL' || m === 'PKTUSB' || m === 'PKTLSB') {
     filterWidth = settings.digitalFilterWidth || 0;
   }
 
-  if (settings.enableRotor && brng != null && !isNaN(brng)) {
+  if (settings.enableRotor && settings.rotorActive !== false && brng != null && !isNaN(brng)) {
     sendRotorBearing(Math.round(brng));
   }
 
@@ -4258,8 +5441,10 @@ function tuneRadio(freqKhz, mode, brng, { clearXit } = {}) {
     if (smartSdr && smartSdr.connected && settings.catTarget && settings.catTarget.type === 'tcp') {
       const sliceIndex = (settings.catTarget.port || 5002) - 5002;
       const freqMhz = freqHz / 1e6;
-      const flexMode = (mode === 'FT8' || mode === 'FT4' || mode === 'FT2' || mode === 'JT65' || mode === 'JT9' || mode === 'WSPR')
-        ? 'DIGU' : (mode === 'CW' ? 'CW' : (mode === 'SSB' || mode === 'USB' ? 'USB' : (mode === 'LSB' ? 'LSB' : null)));
+      const ssbSide = freqHz < 10000000 && !(freqHz >= 5300000 && freqHz <= 5410000) ? 'LSB' : 'USB';
+      const flexMode = (mode === 'FT8' || mode === 'FT4' || mode === 'FT2' || mode === 'JT65' || mode === 'JT9' || mode === 'WSPR' || mode === 'DIGU' || mode === 'PKTUSB')
+        ? 'DIGU' : (mode === 'DIGL' || mode === 'PKTLSB') ? 'DIGL'
+        : (mode === 'CW' ? 'CW' : (mode === 'AM' ? 'AM' : (mode === 'FM' ? 'FM' : (mode === 'SSB' ? ssbSide : (mode === 'USB' ? 'USB' : (mode === 'LSB' ? 'LSB' : null))))));
       sendCatLog(`tune via SmartSDR API: slice=${sliceIndex} freq=${freqMhz.toFixed(6)}MHz mode=${mode}→${flexMode} filter=${filterWidth}`);
       smartSdr.tuneSlice(sliceIndex, freqMhz, flexMode, filterWidth);
       // Set or clear XIT on the slice
@@ -4376,6 +5561,16 @@ app.on('open-url', (event, url) => {
 });
 
 app.whenReady().then(() => {
+  // Add Referer header for OpenStreetMap tile requests (required by OSM usage policy)
+  const { session } = require('electron');
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://*.tile.openstreetmap.org/*'] },
+    (details, callback) => {
+      details.requestHeaders['Referer'] = 'https://potacat.com';
+      callback({ requestHeaders: details.requestHeaders });
+    }
+  );
+
   Menu.setApplicationMenu(null);
   settings = loadSettings();
   migrateRigSettings(settings);
@@ -4405,8 +5600,9 @@ app.whenReady().then(() => {
   if (settings.enableCwKeyer) connectKeyer();
   if (settings.enableWsjtx) connectWsjtx();
   if (settings.enablePskr) connectPskr();
+  if (settings.enablePskrMap) connectPskrMap();
   if (settings.sendToLogbook && settings.logbookType === 'hamrs') {
-    hamrsBridge.start(settings.logbookHost || '127.0.0.1', parseInt(settings.logbookPort, 10) || 2333);
+    hamrsBridge.start(settings.logbookHost || '127.0.0.1', parseInt(settings.logbookPort, 10) || 2237);
   }
 
   // Cold start: check if app was launched via potacat:// URL
@@ -4535,6 +5731,13 @@ app.whenReady().then(() => {
     if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.webContents.send('colorblind-mode', enabled);
     if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.webContents.send('colorblind-mode', enabled);
     if (remoteServer) remoteServer.setColorblindMode(enabled);
+  });
+
+  // Relay WCAG mode to pop-outs
+  ipcMain.on('wcag-mode', (_e, enabled) => {
+    if (popoutWin && !popoutWin.isDestroyed()) popoutWin.webContents.send('wcag-mode', enabled);
+    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.webContents.send('wcag-mode', enabled);
+    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.webContents.send('wcag-mode', enabled);
   });
 
   // Relay theme changes to pop-out
@@ -4923,6 +6126,197 @@ app.whenReady().then(() => {
     }
   });
 
+  // --- JTCAT Pop-out Window ---
+  ipcMain.on('jtcat-popout-open', () => {
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.focus();
+      return;
+    }
+    const isMac = process.platform === 'darwin';
+    jtcatPopoutWin = new BrowserWindow({
+      width: 1100,
+      height: 700,
+      title: 'POTACAT — JTCAT',
+      show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+      icon: getIconPath(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-jtcat-popout.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    const saved = settings.jtcatPopoutBounds;
+    if (saved && saved.width > 400 && saved.height > 300 && isOnScreen(saved)) {
+      jtcatPopoutWin.setBounds(saved);
+    }
+    jtcatPopoutWin.show();
+    jtcatPopoutWin.setMenuBarVisibility(false);
+    jtcatPopoutWin.loadFile(path.join(__dirname, 'renderer', 'jtcat-popout.html'));
+    jtcatPopoutWin.on('close', () => {
+      if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+        if (!jtcatPopoutWin.isMaximized() && !jtcatPopoutWin.isMinimized()) {
+          settings.jtcatPopoutBounds = jtcatPopoutWin.getBounds();
+          saveSettings(settings);
+        }
+      }
+    });
+    jtcatPopoutWin.on('closed', () => {
+      jtcatPopoutWin = null;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('jtcat-popout-status', false);
+      }
+    });
+    jtcatPopoutWin.webContents.on('did-finish-load', () => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('jtcat-popout-status', true);
+      }
+      // Send current theme
+      const theme = settings.lightMode ? 'light' : 'dark';
+      jtcatPopoutWin.webContents.send('jtcat-popout-theme', theme);
+    });
+    jtcatPopoutWin.webContents.on('before-input-event', (_e, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') {
+        jtcatPopoutWin.webContents.toggleDevTools();
+      }
+    });
+  });
+
+  ipcMain.on('jtcat-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
+  ipcMain.on('jtcat-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
+  ipcMain.on('jtcat-popout-maximize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } });
+  ipcMain.on('jtcat-popout-focus-main', () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
+
+  // --- JTCAT Map Pop-out ---
+  ipcMain.on('jtcat-map-popout', () => {
+    if (jtcatMapPopoutWin && !jtcatMapPopoutWin.isDestroyed()) {
+      jtcatMapPopoutWin.focus();
+      return;
+    }
+    jtcatMapPopoutWin = new BrowserWindow({
+      width: 700, height: 500,
+      frame: false,
+      webPreferences: { preload: path.join(__dirname, 'preload-jtcat-popout.js'), contextIsolation: true, nodeIntegration: false },
+    });
+    jtcatMapPopoutWin.loadFile('renderer/jtcat-map-popout.html');
+    jtcatMapPopoutWin.on('closed', () => { jtcatMapPopoutWin = null; });
+    jtcatMapPopoutWin.webContents.on('did-finish-load', () => {
+      const theme = settings.lightMode ? 'light' : 'dark';
+      jtcatMapPopoutWin.webContents.send('jtcat-popout-theme', theme);
+    });
+  });
+  ipcMain.on('jtcat-popout-theme', (_e, theme) => {
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-popout-theme', theme);
+    }
+    if (jtcatMapPopoutWin && !jtcatMapPopoutWin.isDestroyed()) {
+      jtcatMapPopoutWin.webContents.send('jtcat-popout-theme', theme);
+    }
+  });
+
+  // --- Popout QSO state machine (drives engine directly, like ECHOCAT) ---
+  ipcMain.on('jtcat-popout-reply', async (_e, data) => {
+    if (!ft8Engine) return;
+    const myCall = (settings.myCallsign || '').toUpperCase();
+    const myGrid = (settings.grid || '').toUpperCase().substring(0, 4);
+    if (!myCall) return;
+    // Halt any active TX (e.g. CQ) so reply goes out on next boundary
+    if (ft8Engine._txActive) ft8Engine.txComplete();
+    ft8Engine.setTxFreq(data.df || 1500);
+    ft8Engine.setRxFreq(data.df || 1500);
+    // TX on opposite slot from the station we're replying to
+    const targetSlot = data.slot || ft8Engine._lastRxSlot;
+    ft8Engine.setTxSlot(targetSlot === 'even' ? 'odd' : (targetSlot === 'odd' ? 'even' : 'auto'));
+
+    let txMsg, phase;
+    if (data.rr73) {
+      // They sent RR73/73 — send 73 back, log QSO
+      txMsg = data.call + ' ' + myCall + ' 73';
+      phase = '73';
+    } else if (data.report) {
+      // They sent a signal report — pick up at R+report phase
+      const snr = data.snr != null ? data.snr : 0;
+      const ourRpt = snr >= 0 ? '+' + String(Math.round(snr)).padStart(2, '0') : '-' + String(Math.abs(Math.round(snr))).padStart(2, '0');
+      txMsg = data.call + ' ' + myCall + ' R' + ourRpt;
+      phase = 'r+report';
+      popoutJtcatQso = { mode: 'reply', call: data.call, grid: data.grid, phase, txMsg, report: data.report, sentReport: ourRpt, myCall, myGrid, txRetries: 0 };
+    } else {
+      // Fresh reply to CQ — start from beginning
+      txMsg = data.call + ' ' + myCall + ' ' + myGrid;
+      phase = 'reply';
+    }
+
+    if (phase === '73') {
+      // Send 73 courtesy — preserve reports from existing QSO if same call, don't re-log
+      const prev = popoutJtcatQso;
+      const sameCall = prev && prev.call && prev.call.toUpperCase() === data.call.toUpperCase();
+      popoutJtcatQso = { mode: 'reply', call: data.call, grid: data.grid || (sameCall ? prev.grid : ''), phase, txMsg,
+        report: sameCall ? prev.report : null,
+        sentReport: sameCall ? prev.sentReport : null,
+        myCall, myGrid, txRetries: 0 };
+      ft8Engine._txEnabled = true;
+      await ft8Engine.setTxMessage(txMsg);
+      ft8Engine.tryImmediateTx();
+      if (!sameCall) jtcatAutoLog(popoutJtcatQso);
+    } else if (!popoutJtcatQso || popoutJtcatQso.phase !== phase) {
+      // Only set up QSO if not already created above (report case)
+      if (phase === 'reply') {
+        popoutJtcatQso = { mode: 'reply', call: data.call, grid: data.grid, phase, txMsg, report: null, sentReport: null, myCall, myGrid, txRetries: 0 };
+      }
+      ft8Engine._txEnabled = true;
+      await ft8Engine.setTxMessage(txMsg);
+      ft8Engine.tryImmediateTx();
+    } else {
+      ft8Engine._txEnabled = true;
+      await ft8Engine.setTxMessage(txMsg);
+      ft8Engine.tryImmediateTx();
+    }
+
+    popoutBroadcastQso();
+    console.log('[JTCAT Popout] Reply to', data.call, '— phase:', phase, '— slot:', ft8Engine._txSlot, '—', txMsg);
+  });
+
+  ipcMain.on('jtcat-popout-call-cq', async (_e, modifier) => {
+    if (!ft8Engine) {
+      console.log('[JTCAT Popout] CQ aborted — engine not running');
+      sendCatLog('[JTCAT] CQ aborted — engine not running. Open JTCAT first.');
+      return;
+    }
+    const myCall = (settings.myCallsign || '').toUpperCase();
+    const myGrid = (settings.grid || '').toUpperCase().substring(0, 4);
+    if (!myCall || !myGrid) {
+      console.log('[JTCAT Popout] CQ aborted — callsign:', myCall || '(empty)', 'grid:', myGrid || '(empty)');
+      sendCatLog(`[JTCAT] CQ aborted — ${!myCall ? 'callsign not set' : 'grid not set'} in Settings`);
+      return;
+    }
+    const mod = (modifier || '').toUpperCase().replace(/[^A-Z]/g, '').substring(0, 4);
+    const txMsg = mod ? 'CQ ' + mod + ' ' + myCall + ' ' + myGrid : 'CQ ' + myCall + ' ' + myGrid;
+    // TX on next available slot (opposite of last decoded)
+    const nextSlot = ft8Engine._lastRxSlot === 'even' ? 'odd' : (ft8Engine._lastRxSlot === 'odd' ? 'even' : 'even');
+    ft8Engine.setTxSlot(nextSlot);
+    popoutJtcatQso = { mode: 'cq', call: null, grid: null, phase: 'cq', txMsg, report: null, sentReport: null, myCall, myGrid, txRetries: 0 };
+    ft8Engine._txEnabled = true;
+    await ft8Engine.setTxMessage(txMsg);
+    const fired = ft8Engine.tryImmediateTx();
+    if (!fired) {
+      sendCatLog(`[JTCAT] CQ queued for next ${nextSlot} slot: ${txMsg} (samples=${ft8Engine._txSamples ? 'ready' : 'encoding'})`);
+    }
+    popoutBroadcastQso();
+    console.log('[JTCAT Popout] CQ:', txMsg, 'slot:', nextSlot, 'immediate:', fired);
+  });
+
+  ipcMain.on('jtcat-popout-cancel-qso', () => {
+    popoutJtcatQso = null;
+    if (ft8Engine) {
+      ft8Engine._txEnabled = false;
+      ft8Engine.setTxMessage('');
+      ft8Engine.setTxSlot('auto');
+      if (ft8Engine._txActive) ft8Engine.txComplete();
+    }
+    popoutBroadcastQso();
+    console.log('[JTCAT Popout] QSO cancelled');
+  });
+
   // Capture a specific rect of the main window (for inline activation map)
   ipcMain.handle('capture-main-window-rect', async (_e, rect) => {
     if (!win || win.isDestroyed()) return { success: false, error: 'Main window not available' };
@@ -4989,19 +6383,138 @@ app.whenReady().then(() => {
       return;
     }
     // Only allow known URLs
-    if (url.startsWith('https://www.qrz.com/') || url.startsWith('https://caseystanton.com/') || url.startsWith('https://github.com/Waffleslop/POTACAT/') || url.startsWith('https://hamlib.github.io/') || url.startsWith('https://github.com/Hamlib/') || url.startsWith('https://discord.gg/') || url.startsWith('https://potacat.com/') || url.startsWith('https://buymeacoffee.com/potacat') || url.startsWith('https://docs.google.com/spreadsheets/')) {
+    const allowed = [
+      'https://www.qrz.com/', 'https://caseystanton.com/', 'https://github.com/Waffleslop/POTACAT/',
+      'https://hamlib.github.io/', 'https://github.com/Hamlib/', 'https://discord.gg/',
+      'https://potacat.com/', 'https://buymeacoffee.com/potacat', 'https://docs.google.com/spreadsheets/',
+      'https://pota.app/', 'https://www.sotadata.org.uk/', 'https://wwff.co/', 'https://llota.app/',
+      'https://tailscale.com', 'https://worldradioleague.com',
+    ];
+    if (allowed.some(prefix => url.startsWith(prefix))) {
       shell.openExternal(url);
     }
   });
 
-  ipcMain.on('tune', (_e, { frequency, mode, bearing }) => {
+  ipcMain.on('tune', (_e, { frequency, mode, bearing, slicePort }) => {
     markUserActive();
-    tuneRadio(frequency, mode, bearing);
+    if (slicePort && smartSdr && smartSdr.connected) {
+      // JTCAT on a separate Flex slice
+      const sliceIndex = slicePort - 5002;
+      const freqHz = Math.round(parseFloat(frequency) * 1000);
+      const jtSsbSide = freqHz < 10000000 && !(freqHz >= 5300000 && freqHz <= 5410000) ? 'LSB' : 'USB';
+      const flexMode = (mode === 'FT8' || mode === 'FT4' || mode === 'FT2' || mode === 'DIGU')
+        ? 'DIGU' : (mode === 'CW' ? 'CW' : (mode === 'SSB' ? jtSsbSide : (mode === 'USB' ? 'USB' : (mode === 'LSB' ? 'LSB' : null))));
+      const filterWidth = settings.digitalFilterWidth || 0;
+      sendCatLog(`JTCAT tune via SmartSDR: slice=${String.fromCharCode(65 + sliceIndex)} freq=${(freqHz / 1e6).toFixed(6)}MHz mode=${flexMode}`);
+      smartSdr.tuneSlice(sliceIndex, freqHz / 1e6, flexMode, filterWidth);
+    } else {
+      tuneRadio(frequency, mode, bearing);
+    }
+  });
+
+  // --- Rig Control Panel IPC ---
+  ipcMain.handle('rig-control', (_e, data) => {
+    if (!data || !data.action) return;
+    const flexSdr = () => smartSdr && smartSdr.connected;
+    const rigType = detectRigType();
+    switch (data.action) {
+      case 'set-nb': {
+        const on = !!data.value;
+        if (flexSdr()) {
+          smartSdr.setSliceNb(0, on);
+        } else if (cat && cat.connected) {
+          cat.setNb(on);
+        }
+        _currentNbState = on;
+        broadcastRigState();
+        break;
+      }
+      case 'atu-tune': {
+        if (flexSdr()) {
+          smartSdr.setAtu(true); // 'atu start'
+        } else if (cat && cat.connected) {
+          cat.startTune();
+        }
+        _currentAtuState = true;
+        broadcastRigState();
+        break;
+      }
+      case 'power-on': {
+        // Power-on: radio may be off, so don't require cat.connected — just need transport open
+        if (cat && rigType !== 'flex') {
+          cat.setPowerState(true);
+        }
+        break;
+      }
+      case 'power-off': {
+        if (cat && cat.connected && rigType !== 'flex') {
+          cat.setPowerState(false);
+        }
+        break;
+      }
+      case 'set-rf-gain': {
+        const value = Number(data.value) || 0;
+        if (flexSdr()) {
+          const dB = (value * 0.3) - 10;
+          smartSdr.setRfGain(0, dB);
+        } else if (cat && cat.connected) {
+          if (rigType === 'rigctld') {
+            cat.setRfGain(value / 100);
+          } else {
+            cat.setRfGain(value);
+          }
+        }
+        _currentRfGain = value;
+        broadcastRigState();
+        break;
+      }
+      case 'set-tx-power': {
+        const value = Number(data.value) || 0;
+        if (flexSdr()) {
+          smartSdr.setTxPower(value);
+        } else if (cat && cat.connected) {
+          if (rigType === 'rigctld') {
+            cat.setTxPower(value / 100);
+          } else {
+            cat.setTxPower(value);
+          }
+        }
+        _currentTxPower = value;
+        broadcastRigState();
+        break;
+      }
+      case 'set-filter-width': {
+        const width = Number(data.value) || 0;
+        if (width <= 0) break;
+        if (flexSdr()) {
+          const m = (_currentMode || '').toUpperCase();
+          let lo, hi;
+          if (m === 'CW') {
+            lo = Math.max(0, 600 - Math.round(width / 2));
+            hi = 600 + Math.round(width / 2);
+          } else {
+            lo = 100;
+            hi = 100 + width;
+          }
+          smartSdr.setSliceFilter(0, lo, hi);
+        } else if (cat && cat.connected) {
+          cat.setFilterWidth(width);
+        }
+        _currentFilterWidth = width;
+        broadcastRigState();
+        break;
+      }
+      case 'get-state': {
+        broadcastRigState();
+        break;
+      }
+    }
   });
 
   ipcMain.on('refresh', () => { markUserActive(); refreshSpots(); });
 
   ipcMain.handle('get-settings', () => ({ ...settings, appVersion: require('./package.json').version }));
+  ipcMain.handle('get-rig-models', () => getModelList());
 
   // --- ECHOCAT IPC ---
   ipcMain.handle('get-local-ips', () => RemoteServer.getLocalIPs());
@@ -5156,10 +6669,17 @@ app.whenReady().then(() => {
 
     const pskrChanged = has('enablePskr') && newSettings.enablePskr !== settings.enablePskr;
 
+    const pskrMapChanged = (has('enablePskrMap') && newSettings.enablePskrMap !== settings.enablePskrMap) ||
+      (has('myCallsign') && newSettings.myCallsign !== settings.myCallsign);
+
     const remoteChanged = (has('enableRemote') && newSettings.enableRemote !== settings.enableRemote) ||
       (has('remotePort') && newSettings.remotePort !== settings.remotePort) ||
       (has('remoteToken') && newSettings.remoteToken !== settings.remoteToken) ||
-      (has('remoteRequireToken') && newSettings.remoteRequireToken !== settings.remoteRequireToken);
+      (has('remoteRequireToken') && newSettings.remoteRequireToken !== settings.remoteRequireToken) ||
+      (has('clubMode') && newSettings.clubMode !== settings.clubMode) ||
+      (has('clubCsvPath') && newSettings.clubCsvPath !== settings.clubCsvPath) ||
+      (has('remoteCwEnabled') && newSettings.remoteCwEnabled !== settings.remoteCwEnabled) ||
+      (has('cwKeyPort') && newSettings.cwKeyPort !== settings.cwKeyPort);
 
     const iconChanged = has('lightIcon') && newSettings.lightIcon !== settings.lightIcon;
 
@@ -5204,7 +6724,7 @@ app.whenReady().then(() => {
     }
 
     // Reconnect SmartSDR if settings changed (also needed for WSJT-X+Flex and CW keyer)
-    if (smartSdrChanged || wsjtxChanged || cwKeyerChanged) {
+    if (smartSdrChanged || wsjtxChanged || cwKeyerChanged || remoteChanged) {
       connectSmartSdr(); // needsSmartSdr() decides whether to actually connect
     }
 
@@ -5266,9 +6786,23 @@ app.whenReady().then(() => {
       }
     }
 
+    // Reconnect PSKReporter Map if settings changed
+    if (pskrMapChanged) {
+      if (settings.enablePskrMap) {
+        connectPskrMap();
+      } else {
+        disconnectPskrMap();
+      }
+    }
+
+    // Push rotor state to ECHOCAT phone when quick-toggled from desktop
+    if (has('rotorActive') || has('enableRotor')) {
+      updateRemoteSettings();
+    }
+
     // Start/stop HamRS bridge (WSJT-X binary heartbeats)
     if (settings.sendToLogbook && settings.logbookType === 'hamrs') {
-      const hp = parseInt(settings.logbookPort, 10) || 2233;
+      const hp = parseInt(settings.logbookPort, 10) || 2237;
       const hh = settings.logbookHost || '127.0.0.1';
       if (!hamrsBridge.socket || hamrsBridge.host !== hh || hamrsBridge.port !== hp) {
         hamrsBridge.start(hh, hp);
@@ -5401,6 +6935,57 @@ app.whenReady().then(() => {
     return path.join(app.getPath('userData'), 'potacat_qso_log.adi');
   });
 
+  // --- Club Station Mode IPC ---
+  ipcMain.handle('choose-club-csv-file', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Choose Club Users CSV',
+      filters: [
+        { name: 'CSV Files', extensions: ['csv'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle('preview-club-csv', async (_e, csvPath) => {
+    if (!csvPath) return { members: [], radioColumns: [], errors: ['No file path'] };
+    return loadClubUsers(csvPath);
+  });
+
+  ipcMain.handle('hash-club-passwords', async (_e, csvPath) => {
+    if (!csvPath) return { hashed: 0, alreadyHashed: 0, error: 'No file path' };
+    return hashPasswords(csvPath);
+  });
+
+  ipcMain.handle('create-club-csv', async (_e, rigNames) => {
+    // Default to same directory as the logbook file
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    const logDir = path.dirname(logPath);
+    const defaultPath = path.join(logDir, 'club_users.csv');
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Create Club Users CSV',
+      defaultPath,
+      filters: [
+        { name: 'CSV Files', extensions: ['csv'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled) return null;
+    // Build header with fixed columns + rig names + schedule
+    const fixed = ['firstname', 'lastname', 'callsign', 'passwd', 'license', 'admin', 'user'];
+    const header = fixed.concat(rigNames || []).concat(['schedule']).join(',');
+    // Write header + one example row
+    const rigXs = (rigNames || []).map(() => 'x').join(',');
+    const exampleSched = rigNames && rigNames.length > 0
+      ? '"Mon 19:00-21:00 ' + rigNames[0] + '"'
+      : '""';
+    const example = 'Jane,Doe,W1AW,changeme,Extra,x,,' + rigXs + ',' + exampleSched;
+    fs.writeFileSync(result.filePath, header + '\n' + example + '\n');
+    return result.filePath;
+  });
+
   ipcMain.handle('choose-log-file', async (_e, currentPath) => {
     const defaultPath = currentPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
     const result = await dialog.showSaveDialog(win, {
@@ -5441,6 +7026,23 @@ app.whenReady().then(() => {
     } catch (err) {
       return { success: false, error: err.message };
     }
+  });
+
+  ipcMain.handle('resend-qsos-to-logbook', async (_e, rawQsos) => {
+    if (!settings.logbookType) return { success: false, error: 'No logbook configured' };
+    let sent = 0;
+    for (const raw of rawQsos) {
+      try {
+        const qsoData = rawQsoToQsoData(raw);
+        await forwardToLogbook(qsoData);
+        sent++;
+        // Small delay between sends to avoid flooding
+        if (rawQsos.length > 1) await new Promise(r => setTimeout(r, 150));
+      } catch (err) {
+        console.error('Resend QSO failed:', err.message);
+      }
+    }
+    return { success: true, sent, total: rawQsos.length };
   });
 
   ipcMain.handle('test-serial-cat', async (_e, config) => {
@@ -5521,6 +7123,98 @@ app.whenReady().then(() => {
           clearTimeout(timeout);
           resolve({ success: false, error: err.message });
         }
+      });
+    });
+  });
+
+  ipcMain.handle('test-icom-civ', async (_e, config) => {
+    const { portPath, baudRate, civAddress } = config;
+    const { SerialPort } = require('serialport');
+
+    // Temporarily disconnect live CAT to release the serial port
+    if (cat) cat.disconnect();
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const radioAddr = civAddress || 0x94;
+      const ctrlAddr = 0xE0;
+      let buf = Buffer.alloc(0);
+
+      const port = new SerialPort({
+        path: portPath,
+        baudRate: baudRate || 115200,
+        dataBits: 8, stopBits: 1, parity: 'none',
+        autoOpen: false, rtscts: false, hupcl: false,
+      });
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          try { port.close(); } catch {}
+          resolve({ success: false, error: 'No CI-V response. Check baud rate, COM port, and CI-V address.' });
+        }
+      }, 5000);
+
+      port.on('open', () => {
+        try { port.set({ dtr: false, rts: false }); } catch {}
+        // Send CI-V frequency read command (0x03)
+        const cmd = Buffer.from([0xFE, 0xFE, radioAddr, ctrlAddr, 0x03, 0xFD]);
+        setTimeout(() => port.write(cmd), 100);
+        setTimeout(() => { if (!settled) port.write(cmd); }, 1500);
+      });
+
+      port.on('data', (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        // Scan for complete CI-V frames
+        while (buf.length >= 6) {
+          let preamble = -1;
+          for (let i = 0; i < buf.length - 1; i++) {
+            if (buf[i] === 0xFE && buf[i + 1] === 0xFE) { preamble = i; break; }
+          }
+          if (preamble === -1) { buf = Buffer.alloc(0); return; }
+          if (preamble > 0) buf = buf.slice(preamble);
+          const fdIdx = buf.indexOf(0xFD, 4);
+          if (fdIdx === -1) return;
+          const body = buf.slice(2, fdIdx);
+          buf = buf.slice(fdIdx + 1);
+          if (body.length < 3) continue;
+          const toAddr = body[0];
+          const cmd = body[2];
+          const payload = body.slice(3);
+          // Only process frames addressed to us
+          if (toAddr !== ctrlAddr) continue;
+          // Frequency response (cmd 0x03)
+          if (cmd === 0x03 && payload.length >= 5 && !settled) {
+            let hz = 0, mult = 1;
+            for (let i = 0; i < 5; i++) {
+              hz += ((payload[i] >> 4) * 10 + (payload[i] & 0x0F)) * mult;
+              mult *= 100;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            try { port.close(); } catch {}
+            resolve({ success: true, frequency: (hz / 1e6).toFixed(6) });
+            return;
+          }
+          // NAK — wrong address or unsupported command
+          if (cmd === 0xFA && !settled) {
+            settled = true;
+            clearTimeout(timeout);
+            try { port.close(); } catch {}
+            resolve({ success: false, error: 'Radio rejected command (NAK). Check CI-V address matches your radio model.' });
+            return;
+          }
+        }
+      });
+
+      port.on('error', (err) => {
+        if (!settled) { settled = true; clearTimeout(timeout); resolve({ success: false, error: err.message }); }
+      });
+
+      port.open((err) => {
+        if (err && !settled) { settled = true; clearTimeout(timeout); resolve({ success: false, error: err.message }); }
       });
     });
   });
@@ -5702,6 +7396,35 @@ app.whenReady().then(() => {
     if (wsjtx && wsjtx.connected) {
       wsjtx.haltTx(true);
     }
+  });
+
+  // --- JTCAT IPC ---
+  ipcMain.on('jtcat-start', (_e, mode) => startJtcat(mode));
+  ipcMain.on('jtcat-stop', () => stopJtcat());
+  ipcMain.on('jtcat-set-mode', (_e, mode) => { if (ft8Engine) ft8Engine.setMode(mode); });
+  ipcMain.on('jtcat-set-tx-freq', (_e, hz) => { if (ft8Engine) ft8Engine.setTxFreq(hz); });
+  ipcMain.on('jtcat-set-rx-freq', (_e, hz) => { if (ft8Engine) ft8Engine.setRxFreq(hz); });
+  ipcMain.on('jtcat-enable-tx', (_e, enabled) => { if (ft8Engine) ft8Engine._txEnabled = enabled; });
+  ipcMain.on('jtcat-halt-tx', () => {
+    if (ft8Engine) {
+      ft8Engine._txEnabled = false;
+      if (ft8Engine._txActive) {
+        ft8Engine.txComplete(); // force stop if currently transmitting
+      }
+    }
+  });
+  ipcMain.on('jtcat-set-tx-msg', (_e, text) => { if (ft8Engine) ft8Engine.setTxMessage(text); });
+  ipcMain.on('jtcat-set-tx-slot', (_e, slot) => { if (ft8Engine) ft8Engine.setTxSlot(slot); });
+  ipcMain.on('jtcat-tx-complete', () => { if (ft8Engine) ft8Engine.txComplete(); });
+  ipcMain.on('jtcat-audio', (_e, buf) => {
+    if (ft8Engine) ft8Engine.feedAudio(new Float32Array(buf));
+  });
+  ipcMain.on('jtcat-quiet-freq', (_e, hz) => {
+    jtcatQuietFreq = hz;
+  });
+  ipcMain.on('jtcat-spectrum', (_e, bins) => {
+    if (remoteServer && remoteServer.hasClient()) remoteServer.broadcastJtcatSpectrum(bins);
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('jtcat-spectrum', { bins });
   });
 
   // --- QRZ single callsign lookup (for Quick Log) ---
@@ -6057,19 +7780,29 @@ app.whenReady().then(() => {
     sendRbnSpots();
   });
 
+  // --- PSKReporter Map IPC ---
+  ipcMain.on('pskr-map-clear', () => {
+    pskrMapSpots = [];
+    sendPskrMapSpots();
+  });
+
   // --- CW Keyer IPC ---
   // Paddle events go through IambicKeyer, which generates key events → xmit 1/0
   ipcMain.on('cw-paddle-dit', (_e, pressed) => {
+    if (!settings.piAccess) return;
     if (keyer) keyer.paddleDit(pressed);
   });
   ipcMain.on('cw-paddle-dah', (_e, pressed) => {
+    if (!settings.piAccess) return;
     if (keyer) keyer.paddleDah(pressed);
   });
   ipcMain.on('cw-set-wpm', (_e, wpm) => {
+    if (!settings.piAccess) return;
     if (keyer) keyer.setWpm(wpm);
     if (smartSdr && smartSdr.connected) smartSdr.setCwSpeed(wpm);
   });
   ipcMain.on('cw-stop', () => {
+    if (!settings.piAccess) return;
     if (keyer) keyer.stop();
     if (smartSdr && smartSdr.connected) smartSdr.cwStop();
   });
@@ -6133,6 +7866,7 @@ function gracefulCleanup() {
   try { disconnectAntennaGenius(); } catch {}
   try { disconnectRemote(); } catch {}
   try { disconnectKeyer(); } catch {}
+  try { stopJtcat(); } catch {}
   try { hamrsBridge.stop(); } catch {}
   killRigctld();
 }
@@ -6141,10 +7875,10 @@ app.on('before-quit', gracefulCleanup);
 process.on('SIGINT', () => { gracefulCleanup(); process.exit(0); });
 process.on('SIGTERM', () => { gracefulCleanup(); process.exit(0); });
 
-app.on('window-all-closed', async () => {
-  // Send session duration telemetry before quitting — await so the request flushes
+app.on('window-all-closed', () => {
+  // Fire-and-forget telemetry — don't await; delaying app.quit() causes SIGABRT on macOS
   const sessionSeconds = Math.round((Date.now() - sessionStartTime) / 1000);
-  await sendTelemetry(sessionSeconds);
+  sendTelemetry(sessionSeconds);
 
   gracefulCleanup();
   app.quit();

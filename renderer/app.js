@@ -7,7 +7,7 @@ let sortAsc = true;
 
 // Expose for DevTools console debugging
 window._debug = { get spots() { return allSpots; }, get qrz() { return qrzData; }, get expeditions() { return expeditionCallsigns; }, render() { render(); } };
-let currentView = 'table'; // 'table', 'map', 'dxcc', or 'rbn' (for exclusive views)
+let currentView = 'table'; // 'table', 'map', 'dxcc', 'rbn', or 'directory' (for exclusive views)
 let showTable = true;
 let showMap = false;
 let splitOrientation = 'horizontal'; // 'horizontal' (side-by-side) or 'vertical' (stacked)
@@ -17,6 +17,7 @@ let enableSplitView = true; // allow Table+Map simultaneously
 let distUnit = 'mi';    // 'mi' or 'km'
 let watchlist = new Set(); // uppercase callsigns
 let maxAgeMin = 5;       // max spot age in minutes
+let sotaMaxAgeMin = 30;  // SOTA max spot age in minutes
 let scanDwell = 7;       // seconds per frequency during scan
 let enablePota = true;
 let enableSota = false;
@@ -26,12 +27,70 @@ let enableDxcc = false;
 let enableCluster = false;
 let enableRbn = false;
 let enablePskr = false;
+let enablePskrMap = false;
 let enableDxe = true;
 let enableSolar = false;
 let enableBandActivity = false;
 let licenseClass = 'none';
 let hideOutOfBand = false;
+let showHiddenSpots = false;
+// Hidden spots: { CALLSIGN: { "*": expiryMs, "14074": expiryMs, ... } }
+// Legacy compat: bare number values are treated as { "*": expiry }
+const HIDDEN_SPOTS_KEY = 'pota-cat-hidden-spots';
+let hiddenSpots = {};
+try { hiddenSpots = JSON.parse(localStorage.getItem(HIDDEN_SPOTS_KEY)) || {}; } catch { hiddenSpots = {}; }
+// Migrate legacy format (bare number/Infinity → { "*": value })
+for (const call of Object.keys(hiddenSpots)) {
+  if (typeof hiddenSpots[call] === 'number' || hiddenSpots[call] === Infinity) {
+    hiddenSpots[call] = { '*': hiddenSpots[call] };
+  }
+}
+function saveHiddenSpots() { localStorage.setItem(HIDDEN_SPOTS_KEY, JSON.stringify(hiddenSpots)); }
+function pruneHiddenSpots() {
+  const now = Date.now();
+  let changed = false;
+  for (const call of Object.keys(hiddenSpots)) {
+    const entry = hiddenSpots[call];
+    for (const freq of Object.keys(entry)) {
+      if (entry[freq] !== Infinity && entry[freq] < now) { delete entry[freq]; changed = true; }
+    }
+    if (Object.keys(entry).length === 0) { delete hiddenSpots[call]; changed = true; }
+  }
+  if (changed) saveHiddenSpots();
+}
+function isSpotHidden(callsign, freqStr) {
+  const entry = hiddenSpots[callsign.toUpperCase()];
+  if (!entry) return false;
+  const now = Date.now();
+  // Check all-freq hide
+  const allExp = entry['*'];
+  if (allExp === Infinity || (allExp && allExp > now)) return true;
+  // Check frequency-specific hide
+  if (freqStr) {
+    const fKey = String(Math.round(parseFloat(freqStr)));
+    const fExp = entry[fKey];
+    if (fExp === Infinity || (fExp && fExp > now)) return true;
+  }
+  return false;
+}
+function hideSpotEntry(callsign, freqKey, expiry) {
+  const call = callsign.toUpperCase();
+  if (!hiddenSpots[call]) hiddenSpots[call] = {};
+  hiddenSpots[call][freqKey] = expiry;
+  saveHiddenSpots();
+}
+function unhideSpot(callsign) {
+  delete hiddenSpots[callsign.toUpperCase()];
+  saveHiddenSpots();
+}
+function hiddenSpotCount() {
+  pruneHiddenSpots();
+  return Object.keys(hiddenSpots).length;
+}
+// Prune expired entries every 60s
+setInterval(pruneHiddenSpots, 60000);
 let enableLogging = false;
+let enableBannerLogger = false;
 let n1mmRst = false; // N1MM-style single-field RST inputs
 let defaultPower = 100;
 let tuneClick = false;
@@ -61,6 +120,7 @@ let qsoPopoutOpen = false; // pop-out QSO log window is open
 let spotsPopoutOpen = false; // pop-out spots window is open
 let actmapPopoutOpen = false; // pop-out activation map window is open
 let clusterPopoutOpen = false; // pop-out cluster terminal is open
+let jtcatPopoutOpen = false; // pop-out JTCAT window is open
 let dxccData = null;  // { entities: [...] } from main process
 let enableWsjtx = false;
 let wsjtxDecodes = []; // recent decodes from WSJT-X (FIFO, max 50)
@@ -71,6 +131,7 @@ let qrzFullName = false; // show first+last or just first
 // --- Activator Mode State ---
 let appMode = 'hunter'; // 'hunter' or 'activator'
 let activatorParkRefs = [];   // [{ref:'K-1234', name:'Cedar Falls SP'}, ...]  max 3
+let activatorCrossRefs = [];  // [{program:'WWFF', ref:'KFF-1234'}, {program:'LLOTA', ref:'US-0001'}]
 let activatorParkGrid = '';   // Maidenhead grid for active park (auto from lat/lon, user-editable)
 let hunterParkRefs = [];      // [{ref:'K-5678', name:'Shenandoah NF'}]  max 3, resets per QSO
 let activatorContacts = []; // in-memory QSO list for current activation session
@@ -141,6 +202,8 @@ const spotsHideWorked = document.getElementById('spots-hide-worked');
 const spotsHideParks = document.getElementById('spots-hide-parks');
 const spotsHideParksLabel = document.getElementById('spots-hide-parks-label');
 const spotsHideOob = document.getElementById('spots-hide-oob');
+const spotsShowHidden = document.getElementById('spots-show-hidden');
+const spotsHiddenCount = document.getElementById('spots-hidden-count');
 const spotsDxcc = document.getElementById('spots-dxcc');
 const settingsBtn = document.getElementById('settings-btn');
 const logbookBtn = document.getElementById('logbook-btn');
@@ -150,6 +213,7 @@ const settingsCancel = document.getElementById('settings-cancel');
 const setGrid = document.getElementById('set-grid');
 const setDistUnit = document.getElementById('set-dist-unit');
 const setMaxAge = document.getElementById('set-max-age');
+const setSotaMaxAge = document.getElementById('set-sota-max-age');
 const setRefreshInterval = document.getElementById('set-refresh-interval');
 const setScanDwell = document.getElementById('set-scan-dwell');
 const setWatchlist = document.getElementById('set-watchlist');
@@ -190,6 +254,7 @@ const hamlibConfig = document.getElementById('hamlib-config');
 const flexConfig = document.getElementById('flex-config');
 const tcpcatConfig = document.getElementById('tcpcat-config');
 const serialcatConfig = document.getElementById('serialcat-config');
+const icomConfig = document.getElementById('icom-config');
 const rigctldnetConfig = document.getElementById('rigctldnet-config');
 const setRigctldnetHost = document.getElementById('set-rigctldnet-host');
 const setRigctldnetPort = document.getElementById('set-rigctldnet-port');
@@ -208,6 +273,7 @@ const rigAddBtn = document.getElementById('rig-add-btn');
 const rigEditor = document.getElementById('rig-editor');
 const rigEditorTitle = document.getElementById('rig-editor-title');
 const setRigName = document.getElementById('set-rig-name');
+const rigModelSelect = document.getElementById('set-rig-model-select');
 const rigSaveBtn = document.getElementById('rig-save-btn');
 const rigCancelBtn = document.getElementById('rig-cancel-btn');
 const setRigModel = document.getElementById('set-rig-model');
@@ -250,6 +316,9 @@ const setWsjtxAutoLog = document.getElementById('set-wsjtx-auto-log');
 const wsjtxStatusEl = document.getElementById('wsjtx-status');
 const setEnablePskr = document.getElementById('set-enable-pskr');
 const pskrConfig = document.getElementById('pskr-config');
+const setEnablePskrMap = document.getElementById('set-enable-pskr-map');
+const pskrMapConfig = document.getElementById('pskr-map-config');
+const connPskrMap = document.getElementById('conn-pskr-map');
 const setMyCallsign = document.getElementById('set-my-callsign');
 const setEnableClusterTerminal = document.getElementById('set-enable-cluster-terminal');
 const clusterTerminalBtn = document.getElementById('cluster-terminal-btn');
@@ -307,6 +376,7 @@ const CLUSTER_PRESETS = [
 ];
 let rbnConnected = false;
 let pskrConnected = false;
+let pskrMapConnected = false;
 const viewRbnBtn = document.getElementById('view-rbn-btn');
 const rbnView = document.getElementById('rbn-view');
 const rbnCountEl = document.getElementById('rbn-count');
@@ -339,8 +409,71 @@ const DIR_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1fg6ZX9DokyThbvHO4
 let directoryNets = [];
 let directorySwl = [];
 let dirActiveTab = 'nets'; // 'nets' or 'swl'
+// Directory View (top-level)
+const viewDirectoryBtn = document.getElementById('view-directory-btn');
+const directoryView = document.getElementById('directory-view');
+const dirvTabNets = document.getElementById('dirv-tab-nets');
+const dirvTabSwl = document.getElementById('dirv-tab-swl');
+const dirvSearch = document.getElementById('dirv-search');
+const dirvBandFilter = document.getElementById('dirv-band-filter');
+const dirvStatusFilter = document.getElementById('dirv-status-filter');
+const dirvRefreshBtn = document.getElementById('dirv-refresh-btn');
+const dirvCount = document.getElementById('dirv-count');
+const dirvNetsContainer = document.getElementById('dirv-nets-container');
+const dirvSwlContainer = document.getElementById('dirv-swl-container');
+const dirvNetsBody = document.getElementById('dirv-nets-body');
+const dirvSwlBody = document.getElementById('dirv-swl-body');
+const dirvPlaceholder = document.getElementById('dirv-placeholder');
+const dirvSuggestSheet = document.getElementById('dirv-suggest-sheet');
+let dirvActiveTab = 'nets';
+let dirvAutoRefreshTimer = null;
 const rbnMaxAgeInput = document.getElementById('rbn-max-age');
 const rbnAgeUnitSelect = document.getElementById('rbn-age-unit');
+// Propagation view source toggles and mode filter
+const propShowRbnEl = document.getElementById('prop-show-rbn');
+const propShowPskrEl = document.getElementById('prop-show-pskr');
+const propModeFilterEl = document.getElementById('prop-mode-filter');
+
+// JTCAT DOM refs
+const viewJtcatBtn = document.getElementById('view-jtcat-btn');
+const jtcatView = document.getElementById('jtcat-view');
+const jtcatModeSelect = document.getElementById('jtcat-mode');
+const jtcatCycleIndicator = document.getElementById('jtcat-cycle-indicator');
+const jtcatCountdown = document.getElementById('jtcat-countdown');
+const jtcatSyncStatus = document.getElementById('jtcat-sync-status');
+const jtcatWaterfall = document.getElementById('jtcat-waterfall');
+const jtcatTxFreqLabel = document.getElementById('jtcat-tx-freq-label');
+const jtcatBandActivity = document.getElementById('jtcat-band-activity');
+const jtcatRxActivity = document.getElementById('jtcat-rx-activity');
+const jtcatRxFreqLabel = document.getElementById('jtcat-rx-freq-label');
+const jtcatTxFreqInput = document.getElementById('jtcat-tx-freq');
+const jtcatRxFreqInput = document.getElementById('jtcat-rx-freq');
+const jtcatEnableTxBtn = document.getElementById('jtcat-enable-tx');
+const jtcatHaltTxBtn = document.getElementById('jtcat-halt-tx');
+const jtcatLogQsoBtn = document.getElementById('jtcat-log-qso');
+const jtcatTxMsgText = document.getElementById('jtcat-tx-msg-text');
+const jtcatTxSlotSelect = document.getElementById('jtcat-tx-slot');
+const jtcatCallCqBtn = document.getElementById('jtcat-call-cq');
+const jtcatQsoTracker = document.getElementById('jtcat-qso-tracker');
+const jtcatQsoLabel = document.getElementById('jtcat-qso-label');
+const jtcatQsoSteps = document.getElementById('jtcat-qso-steps');
+const jtcatQsoCancelBtn = document.getElementById('jtcat-qso-cancel');
+const jtcatCqFilterBtn = document.getElementById('jtcat-cq-filter');
+const jtcatSliceSelect = document.getElementById('jtcat-slice');
+const jtcatSliceContainer = document.getElementById('jtcat-slice-select');
+let jtcatRunning = false;
+let jtcatCountdownTimer = null;
+let jtcatDecodes = []; // current cycle's decodes (for QSO state machine)
+let jtcatDecodeLog = []; // accumulated decode history: [{cycle, time, slot, results}]
+let jtcatRxFreq = 1500;
+let jtcatTxFreq = 1500;
+let jtcatCurrentBand = '20m';
+let jtcatCqFilter = false;
+// QSO state machine
+let jtcatQso = null; // { call, grid, phase, txMsg, report, rrReport, txRetries }
+// phase: 'reply' → 'report' → 'r+report' → '73' → 'done'
+var JTCAT_MAX_CQ_RETRIES = 15;   // ~3.75 min of CQ on FT8 before giving up
+var JTCAT_MAX_QSO_RETRIES = 6;   // per-phase retry limit during QSO exchange
 const setPotaParksPath = document.getElementById('set-pota-parks-path');
 const potaParksBrowseBtn = document.getElementById('pota-parks-browse-btn');
 const potaParksClearBtn = document.getElementById('pota-parks-clear-btn');
@@ -365,11 +498,13 @@ const sfiStatusEl = document.getElementById('sfi-status');
 const kStatusEl = document.getElementById('k-status');
 const aStatusEl = document.getElementById('a-status');
 const setColorblind = document.getElementById('set-colorblind');
+const setWcagMode = document.getElementById('set-wcag-mode');
 const setColorRows = document.getElementById('set-color-rows');
 const setEnableSolar = document.getElementById('set-enable-solar');
 const setEnableBandActivity = document.getElementById('set-enable-band-activity');
 const setShowBearing = document.getElementById('set-show-bearing');
 const setEnableLogging = document.getElementById('set-enable-logging');
+const setEnableBannerLogger = document.getElementById('set-enable-banner-logger');
 const setN1mmRst = document.getElementById('set-n1mm-rst');
 const loggingConfig = document.getElementById('logging-config');
 const setAdifLogPath = document.getElementById('set-adif-log-path');
@@ -443,8 +578,21 @@ const rigRemoteAudioInput = document.getElementById('rig-remote-audio-input');
 const rigRemoteAudioOutput = document.getElementById('rig-remote-audio-output');
 const remoteAudioSummary = document.getElementById('remote-audio-summary');
 const setRemotePttTimeout = document.getElementById('set-remote-ptt-timeout');
+const setRemoteCwEnabled = document.getElementById('set-remote-cw-enabled');
+const setCwKeyPort = document.getElementById('set-cw-key-port');
 const remoteUrlDisplay = document.getElementById('remote-url-display');
 const remoteTxIndicator = document.getElementById('remote-tx-indicator');
+const jtcatTxIndicator = document.getElementById('jtcat-tx-indicator');
+// Club Station Mode
+const setClubMode = document.getElementById('set-club-mode');
+const clubConfig = document.getElementById('club-config');
+const setClubCsvPath = document.getElementById('set-club-csv-path');
+const clubCsvBrowse = document.getElementById('club-csv-browse');
+const clubHashPasswords = document.getElementById('club-hash-passwords');
+const clubCsvCreate = document.getElementById('club-csv-create');
+const clubHashStatus = document.getElementById('club-hash-status');
+const clubPreview = document.getElementById('club-preview');
+const clubSchedule = document.getElementById('club-schedule');
 const logDialog = document.getElementById('log-dialog');
 const logCallsign = document.getElementById('log-callsign');
 const logOpName = document.getElementById('log-op-name');
@@ -537,7 +685,14 @@ function positionCatPopover() {
   const anchor = _catPopoverAnchor || catStatusEl;
   const rect = anchor.getBoundingClientRect();
   catPopover.style.top = (rect.bottom + 4) + 'px';
-  catPopover.style.left = rect.left + 'px';
+  // Align right edge to anchor right, clamped to viewport
+  catPopover.style.left = '';
+  catPopover.style.right = '';
+  const popW = catPopover.offsetWidth || 220;
+  let left = rect.right - popW;
+  if (left < 0) left = 0;
+  if (left + popW > window.innerWidth) left = window.innerWidth - popW;
+  catPopover.style.left = left + 'px';
 }
 
 async function openCatPopover(anchor) {
@@ -619,6 +774,7 @@ catStatusEl.addEventListener('click', (e) => {
   if (catPopoverOpen) {
     closeCatPopover();
   } else {
+    if (typeof closeRigPopover === 'function') closeRigPopover();
     openCatPopover();
   }
 });
@@ -664,9 +820,12 @@ async function loadPrefs() {
   if (settings.appVersion) {
     window._appVersion = settings.appVersion;
     updateTitleBar();
+    const verLabel = document.getElementById('settings-version-label');
+    if (verLabel) verLabel.textContent = 'v' + settings.appVersion;
   }
   applyTheme(settings.lightMode === true);
   applyColorblindMode(settings.colorblindMode === true);
+  applyWcagMode(settings.wcagMode === true);
   grid = settings.grid || '';
   distUnit = settings.distUnit || 'mi';
   scanDwell = parseInt(settings.scanDwell, 10) || 7;
@@ -682,18 +841,26 @@ async function loadPrefs() {
   updateDxCommandBar();
   enableRbn = settings.enableRbn === true; // default false
   enablePskr = settings.enablePskr === true; // default false
+  enablePskrMap = settings.enablePskrMap === true; // default false
   enableDxe = settings.enableDxe !== false; // default true
   enableSolar = settings.enableSolar === true;   // default false
+  // PSTRotator — show quick-toggle when rotor is configured
+  rotorConfigured = !!settings.enableRotor;
+  quickRotor.checked = settings.rotorActive !== false; // defaults true when configured
+  quickRotorLabel.classList.toggle('hidden', !rotorConfigured);
+  quickRotorDivider.classList.toggle('hidden', !rotorConfigured);
   // Color rows — default true (on)
   spotsTable.classList.toggle('no-source-tint', settings.colorRows === false);
   enableBandActivity = settings.enableBandActivity === true; // default false
   updateSolarVisibility();
   qrzFullName = settings.qrzFullName === true;
   enableLogging = settings.enableLogging === true;
+  enableBannerLogger = settings.enableBannerLogger === true;
   n1mmRst = settings.n1mmRst === true;
   applyRstMode();
   defaultPower = parseInt(settings.defaultPower, 10) || 100;
   updateLoggingVisibility();
+  updateBannerLoggerVisibility();
   showBearing = settings.showBearing === true;
   updateBearingVisibility();
   licenseClass = settings.licenseClass || 'none';
@@ -714,16 +881,25 @@ async function loadPrefs() {
   activeRigName = activeRig ? activeRig.name : '';
   enableWsjtx = settings.enableWsjtx === true;
   updateWsjtxStatusVisibility();
-  // CW Keyer: init MIDI + connect saved device on load
-  if (settings.enableCwKeyer) {
+  // CW Keyer: init MIDI + connect saved device on load (requires pi access)
+  if (settings.piAccess && settings.enableCwKeyer) {
     cwKeyerStatusEl.classList.remove('hidden');
     populateMidiDevices().then(() => {
       if (settings.cwMidiDevice) connectMidiDevice(settings.cwMidiDevice);
     });
   }
+  // JTCAT Flex slice setting
+  if (settings.jtcatFlexSlice) jtcatSliceSelect.value = settings.jtcatFlexSlice;
+  // Show slice selector if active rig is Flex
+  var isFlex = activeRig && activeRig.catTarget && activeRig.catTarget.type === 'tcp' &&
+    [5002, 5003, 5004, 5005].includes(activeRig.catTarget.port);
+  jtcatSliceContainer.classList.toggle('hidden', !isFlex);
   updateRbnButton();
   clusterTerminalBtn.classList.toggle('hidden', !settings.enableClusterTerminal);
   updateDxccButton();
+  updateDirectoryButton();
+  // Pi access — JTCAT button visibility on startup
+  if (jtcatBtn) jtcatBtn.classList.toggle('hidden', !settings.piAccess);
   // Activator mode restore
   if (settings.appMode === 'activator') {
     appMode = 'activator';
@@ -733,6 +909,13 @@ async function loadPrefs() {
       activatorParkRefInput.value = primaryParkRef();
       activatorParkNameEl.textContent = primaryParkName();
       updateParkExtraBadge();
+      // Restore cross-program references
+      if (settings.activatorCrossRefs && Array.isArray(settings.activatorCrossRefs)) {
+        activatorCrossRefs = settings.activatorCrossRefs;
+        if (crossRefWwff) for (const xr of activatorCrossRefs) { if (xr.program === 'WWFF') crossRefWwff.value = xr.ref; }
+        if (crossRefLlota) for (const xr of activatorCrossRefs) { if (xr.program === 'LLOTA') crossRefLlota.value = xr.ref; }
+        updateCrossRefToggle();
+      }
       // Resolve names and grid if missing
       for (const p of activatorParkRefs) {
         if (!p.name) {
@@ -771,6 +954,7 @@ async function loadPrefs() {
     if (saved && saved.maxAgeMin) { maxAgeMin = saved.maxAgeMin; }
     else { maxAgeMin = parseInt(settings.maxAgeMin, 10) || 5; }
   } catch { maxAgeMin = parseInt(settings.maxAgeMin, 10) || 5; }
+  sotaMaxAgeMin = parseInt(settings.sotaMaxAge, 10) || 30;
   updateHeaders();
 
   // Restore view state
@@ -781,10 +965,17 @@ async function loadPrefs() {
     if (viewState) {
       if (viewState.sortCol) { sortCol = viewState.sortCol; }
       if (typeof viewState.sortAsc === 'boolean') { sortAsc = viewState.sortAsc; }
-      if (viewState.lastView === 'rbn' && enableRbn) {
+      if (viewState.lastView === 'jtcat') {
+        // JTCAT is always a pop-out now; restore to default table view
+        setView('table');
+        window.api.jtcatPopoutOpen();
+      } else
+      if (viewState.lastView === 'rbn' && (enableRbn || enablePskrMap)) {
         setView('rbn');
       } else if (viewState.lastView === 'dxcc' && enableDxcc) {
         setView('dxcc');
+      } else if (viewState.lastView === 'directory' && settings.enableDirectory) {
+        setView('directory');
       } else {
         showTable = viewState.showTable !== false;
         showMap = viewState.showMap === true;
@@ -833,10 +1024,14 @@ function updateRadioSubPanels() {
   flexConfig.classList.toggle('hidden', type !== 'flex');
   tcpcatConfig.classList.toggle('hidden', type !== 'tcpcat');
   serialcatConfig.classList.toggle('hidden', type !== 'serialcat');
+  icomConfig.classList.toggle('hidden', type !== 'icom');
   hamlibConfig.classList.toggle('hidden', type !== 'hamlib');
   rigctldnetConfig.classList.toggle('hidden', type !== 'rigctldnet');
   if (type === 'serialcat' && !serialcatPortsLoaded) {
     loadSerialcatPorts();
+  }
+  if (type === 'icom' && !icomPortsLoaded) {
+    loadIcomPorts();
   }
   if (type === 'hamlib' && !hamlibFieldsLoaded) {
     hamlibFieldsLoaded = true;
@@ -864,6 +1059,10 @@ async function populateRadioSection(currentTarget) {
     setRadioType('serialcat');
     serialcatPortsLoaded = true;
     await loadSerialcatPorts(currentTarget);
+  } else if (currentTarget.type === 'icom') {
+    setRadioType('icom');
+    icomPortsLoaded = true;
+    await loadIcomPorts(currentTarget);
   } else if (currentTarget.type === 'rigctld') {
     setRadioType('hamlib');
     hamlibFieldsLoaded = true;
@@ -936,6 +1135,44 @@ async function populateHamlibFields(savedTarget) {
   setRigctldPort.value = (savedTarget && savedTarget.rigctldPort) || 4532;
 }
 
+let icomPortsLoaded = false;
+
+function getEffectiveIcomPort() {
+  const manual = document.getElementById('set-icom-port-manual').value.trim();
+  return manual || document.getElementById('set-icom-port').value;
+}
+
+async function loadIcomPorts(savedTarget) {
+  const ports = await window.api.listPorts();
+  const portSelect = document.getElementById('set-icom-port');
+  const portManual = document.getElementById('set-icom-port-manual');
+  portSelect.innerHTML = '';
+  portManual.value = '';
+  const detectedPaths = new Set();
+  for (const p of ports) {
+    detectedPaths.add(p.path);
+    const opt = document.createElement('option');
+    opt.value = p.path;
+    opt.textContent = `${p.path} — ${p.friendlyName}`;
+    if (savedTarget && savedTarget.path === p.path) opt.selected = true;
+    portSelect.appendChild(opt);
+  }
+  if (savedTarget && savedTarget.path && !detectedPaths.has(savedTarget.path)) {
+    portManual.value = savedTarget.path;
+  }
+  if (savedTarget && savedTarget.baudRate) {
+    document.getElementById('set-icom-baud').value = String(savedTarget.baudRate);
+  }
+  if (savedTarget && savedTarget.civAddress) {
+    const modelSelect = document.getElementById('set-icom-model');
+    const addrHex = '0x' + savedTarget.civAddress.toString(16).toUpperCase();
+    for (const opt of modelSelect.options) {
+      if (opt.value.toUpperCase() === addrHex.toUpperCase()) { opt.selected = true; break; }
+    }
+  }
+  icomPortsLoaded = true;
+}
+
 let serialcatPortsLoaded = false;
 
 async function loadSerialcatPorts(savedTarget) {
@@ -966,6 +1203,40 @@ let rigEditorMode = null; // null | 'add' | 'edit'
 let editingRigId = null;
 let currentRigs = []; // local copy of settings.rigs
 let currentActiveRigId = null; // local copy of settings.activeRigId
+let rigModelData = []; // populated from main process on first use
+
+async function populateRigModelDropdown() {
+  if (!rigModelSelect) return;
+  if (rigModelData.length > 0) return;
+  try { rigModelData = await window.api.getRigModels(); } catch { return; }
+  while (rigModelSelect.options.length > 1) rigModelSelect.remove(1);
+  for (const group of rigModelData) {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = group.brand;
+    for (const name of group.models) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      optgroup.appendChild(opt);
+    }
+    rigModelSelect.appendChild(optgroup);
+  }
+}
+
+if (rigModelSelect) rigModelSelect.addEventListener('change', () => {
+  const modelName = rigModelSelect.value;
+  if (!modelName) return;
+  let brand = null;
+  for (const group of rigModelData) {
+    if (group.models.includes(modelName)) { brand = group.brand; break; }
+  }
+  if (!brand) return;
+  if (brand === 'FlexRadio') setRadioType('flex');
+  else if (brand === 'Icom') setRadioType('icom');
+  else setRadioType('serialcat');
+  updateRadioSubPanels();
+  if (!setRigName.value.trim()) setRigName.value = modelName;
+});
 
 function describeRigTarget(target) {
   if (!target) return 'Not configured';
@@ -980,6 +1251,9 @@ function describeRigTarget(target) {
   }
   if (target.type === 'serial') {
     return `Serial CAT on ${target.path || '?'} @ ${target.baudRate || 9600}`;
+  }
+  if (target.type === 'icom') {
+    return `${target.civModel || 'Icom'} CI-V on ${target.path || '?'} @ ${target.baudRate || 115200}`;
   }
   if (target.type === 'rigctld') {
     const comPort = target.serialPort || '?';
@@ -1033,7 +1307,7 @@ function renderRigList(rigs, activeRigId) {
     nameEl.textContent = rig.name || 'Unnamed Rig';
     const descEl = document.createElement('div');
     descEl.className = 'rig-item-desc';
-    descEl.textContent = describeRigTarget(rig.catTarget);
+    descEl.textContent = (rig.model ? rig.model + ' \u2014 ' : '') + describeRigTarget(rig.catTarget);
     info.appendChild(nameEl);
     info.appendChild(descEl);
 
@@ -1085,6 +1359,15 @@ function buildCatTargetFromForm() {
       baudRate: parseInt(setSerialcatBaud.value, 10) || 9600,
       dtrOff: setSerialcatDtrOff.checked,
     };
+  } else if (radioType === 'icom') {
+    const modelSelect = document.getElementById('set-icom-model');
+    return {
+      type: 'icom',
+      path: getEffectiveIcomPort(),
+      baudRate: parseInt(document.getElementById('set-icom-baud').value, 10) || 115200,
+      civAddress: parseInt(modelSelect.value, 16),
+      civModel: modelSelect.options[modelSelect.selectedIndex].text,
+    };
   } else if (radioType === 'hamlib') {
     return {
       type: 'rigctld',
@@ -1109,18 +1392,23 @@ async function openRigEditor(mode, rigId) {
   editingRigId = rigId || null;
   hamlibFieldsLoaded = false;
   serialcatPortsLoaded = false;
+  icomPortsLoaded = false;
+
+  await populateRigModelDropdown();
 
   if (mode === 'edit') {
     rigEditorTitle.textContent = 'Edit Rig';
     const rig = currentRigs.find(r => r.id === rigId);
     if (rig) {
       setRigName.value = rig.name || '';
+      if (rigModelSelect) rigModelSelect.value = rig.model || '';
       await populateRadioSection(rig.catTarget);
       await populateRigAudioDevices(rig.remoteAudioInput, rig.remoteAudioOutput);
     }
   } else {
     rigEditorTitle.textContent = 'Add Rig';
     setRigName.value = '';
+    if (rigModelSelect) rigModelSelect.value = '';
     setRadioType('flex');
     updateRadioSubPanels();
     await populateRigAudioDevices('', '');
@@ -1158,6 +1446,7 @@ rigCancelBtn.addEventListener('click', () => closeRigEditor());
 rigSaveBtn.addEventListener('click', async () => {
   const name = setRigName.value.trim() || 'Unnamed Rig';
   const catTarget = buildCatTargetFromForm();
+  const model = rigModelSelect ? rigModelSelect.value || null : null;
 
   const rigAudioIn = rigRemoteAudioInput.value || '';
   const rigAudioOut = rigRemoteAudioOutput.value || '';
@@ -1166,6 +1455,7 @@ rigSaveBtn.addEventListener('click', async () => {
     const rig = currentRigs.find(r => r.id === editingRigId);
     if (rig) {
       rig.name = name;
+      rig.model = model;
       rig.catTarget = catTarget;
       rig.remoteAudioInput = rigAudioIn;
       rig.remoteAudioOutput = rigAudioOut;
@@ -1174,6 +1464,7 @@ rigSaveBtn.addEventListener('click', async () => {
     const newRig = {
       id: 'rig_' + Date.now(),
       name,
+      model,
       catTarget,
       remoteAudioInput: rigAudioIn,
       remoteAudioOutput: rigAudioOut,
@@ -1282,14 +1573,81 @@ function getDropdownValues(container) {
   return new Set(checked.map((cb) => cb.value));
 }
 
-initMultiDropdown(bandFilterEl, 'Band');
+initMultiDropdown(bandFilterEl, 'Band', () => { updateBandButtonsVisibility(); render(); });
 initMultiDropdown(modeFilterEl, 'Mode');
 initMultiDropdown(continentFilterEl, 'Region');
 initMultiDropdown(rbnBandFilterEl, 'Band', rerenderRbn);
+initMultiDropdown(propModeFilterEl, 'Mode', rerenderRbn);
+
+// --- Band QSY buttons (shown when Radio band filter is active) ---
+const BAND_QSY_FREQS = {
+  // SSB calling frequencies (kHz) — used for SSB/phone modes
+  ssb: { '160m': 1900, '80m': 3860, '60m': 5357, '40m': 7200, '30m': 10130, '20m': 14260, '17m': 18130, '15m': 21300, '12m': 24960, '10m': 28400, '6m': 50125, '2m': 144200, '70cm': 432100 },
+  // CW calling frequencies
+  cw: { '160m': 1820, '80m': 3530, '60m': 5332, '40m': 7030, '30m': 10110, '20m': 14030, '17m': 18080, '15m': 21030, '12m': 24900, '10m': 28030, '6m': 50090, '2m': 144050, '70cm': 432050 },
+  // Digital/FT8 frequencies
+  digi: { '160m': 1840, '80m': 3573, '60m': 5357, '40m': 7074, '30m': 10136, '20m': 14074, '17m': 18100, '15m': 21074, '12m': 24915, '10m': 28074, '6m': 50313, '2m': 144174, '70cm': 432065 },
+};
+const BAND_QSY_ORDER = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m', '70cm'];
+const BAND_QSY_LABELS = { '160m': '160', '80m': '80', '60m': '60', '40m': '40', '30m': '30', '20m': '20', '17m': '17', '15m': '15', '12m': '12', '10m': '10', '6m': '6', '2m': '2', '70cm': '70cm' };
+const bandButtonsEl = document.getElementById('band-buttons');
+
+function buildBandButtons() {
+  bandButtonsEl.innerHTML = '';
+  for (const band of BAND_QSY_ORDER) {
+    const btn = document.createElement('button');
+    btn.textContent = BAND_QSY_LABELS[band];
+    btn.dataset.band = band;
+    btn.title = `QSY to ${band}`;
+    bandButtonsEl.appendChild(btn);
+  }
+}
+buildBandButtons();
+
+function getBandQsyFreq(band) {
+  const mode = (radioMode || '').toUpperCase();
+  if (mode === 'CW') return BAND_QSY_FREQS.cw[band];
+  if (['FT8', 'FT4', 'FT2', 'RTTY', 'JT65', 'JT9', 'WSPR', 'DIGI', 'DIGU', 'DIGL', 'PKTUSB', 'PKTLSB'].includes(mode)) return BAND_QSY_FREQS.digi[band];
+  return BAND_QSY_FREQS.ssb[band];
+}
+
+function updateBandButtonActive() {
+  const curBand = radioFreqKhz ? freqToBandActivator(radioFreqKhz) : null;
+  bandButtonsEl.querySelectorAll('button').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.band === curBand);
+  });
+}
+
+function updateBandButtonsVisibility() {
+  const radioCb = bandFilterEl.querySelector('input[value="radio"]');
+  const show = radioCb && radioCb.checked;
+  bandButtonsEl.classList.toggle('hidden', !show);
+  if (show) updateBandButtonActive();
+}
+
+bandButtonsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const band = btn.dataset.band;
+  const freq = getBandQsyFreq(band);
+  if (freq) {
+    const curMode = (radioMode || 'USB').toUpperCase();
+    let mode = curMode;
+    // Flip sideband for SSB: LSB below 10 MHz, USB at/above 10 MHz
+    if (curMode === 'USB' || curMode === 'LSB' || curMode === 'SSB') {
+      const lsbBands = new Set(['160m', '80m', '60m', '40m']);
+      mode = lsbBands.has(band) ? 'LSB' : 'USB';
+    }
+    window.api.tune(String(freq), mode);
+  }
+});
 
 // RBN age filter — re-render on change
 rbnMaxAgeInput.addEventListener('change', rerenderRbn);
 rbnAgeUnitSelect.addEventListener('change', rerenderRbn);
+// Propagation source toggles
+propShowRbnEl.addEventListener('change', () => { propShowRbn = propShowRbnEl.checked; rerenderRbn(); });
+propShowPskrEl.addEventListener('change', () => { propShowPskr = propShowPskrEl.checked; rerenderRbn(); });
 
 // DXCC filter constants
 const DXCC_MODE_GROUPS = {
@@ -1337,7 +1695,7 @@ function updateWsjtxStatusVisibility() {
 }
 
 function updateSettingsConnBar() {
-  const anyVisible = enableCluster || enableRbn || enablePskr || enableRemote;
+  const anyVisible = enableCluster || enableRbn || enablePskr || enablePskrMap || enableRemote;
   connBar.classList.toggle('hidden', !anyVisible);
   connCluster.classList.toggle('hidden', !enableCluster);
   connCluster.classList.toggle('connected', clusterConnected);
@@ -1351,17 +1709,23 @@ function updateSettingsConnBar() {
   connRbn.classList.toggle('connected', rbnConnected);
   connPskr.classList.toggle('hidden', !enablePskr);
   connPskr.classList.toggle('connected', pskrConnected);
+  connPskrMap.classList.toggle('hidden', !enablePskrMap);
+  connPskrMap.classList.toggle('connected', pskrMapConnected);
   connRemote.classList.toggle('hidden', !enableRemote);
   connRemote.classList.toggle('connected', remoteConnected);
 }
 
 function updateRbnButton() {
-  if (enableRbn) {
+  const propEnabled = enableRbn || enablePskrMap;
+  if (propEnabled) {
     viewRbnBtn.classList.remove('hidden');
   } else {
     viewRbnBtn.classList.add('hidden');
     if (currentView === 'rbn') setView('table');
   }
+  // Update source toggle visibility based on which sources are enabled
+  propShowRbnEl.closest('label').classList.toggle('hidden', !enableRbn);
+  propShowPskrEl.closest('label').classList.toggle('hidden', !enablePskrMap);
   // Also update the activator toolbar RBN button (safe even before DOM ref is set)
   if (typeof updateActivatorRbnButton === 'function') updateActivatorRbnButton();
 }
@@ -1381,6 +1745,247 @@ function updateBearingVisibility() {
     spotsTable.classList.remove('bearing-enabled');
   }
 }
+
+// --- Banner Logger ---
+const bannerLoggerEl = document.getElementById('banner-logger');
+const blType = document.getElementById('bl-type');
+const blRef = document.getElementById('bl-ref');
+const blCallsign = document.getElementById('bl-callsign');
+const blName = document.getElementById('bl-name');
+const blFreq = document.getElementById('bl-freq');
+const blMode = document.getElementById('bl-mode');
+const blRstSent = document.getElementById('bl-rst-sent');
+const blRstRcvd = document.getElementById('bl-rst-rcvd');
+const blTime = document.getElementById('bl-time');
+const blNotes = document.getElementById('bl-notes');
+const blRespot = document.getElementById('bl-respot');
+const blRespotLabel = document.getElementById('bl-respot-label');
+const blLogBtn = document.getElementById('bl-log-btn');
+let blFreqEdited = false;  // user manually edited freq — don't auto-fill
+let blModeEdited = false;  // user manually edited mode — don't auto-fill
+let blTimeEdited = false;  // user manually edited time — don't auto-fill
+let blClockTimer = null;
+let blLookupTimer = null;
+
+function updateBannerLoggerVisibility() {
+  const show = enableBannerLogger && enableLogging && appMode === 'hunter';
+  bannerLoggerEl.classList.toggle('hidden', !show);
+  if (show && !blClockTimer) {
+    updateBlClock();
+    blClockTimer = setInterval(updateBlClock, 1000);
+  } else if (!show && blClockTimer) {
+    clearInterval(blClockTimer);
+    blClockTimer = null;
+  }
+}
+
+function updateBlClock() {
+  if (blTimeEdited) return;
+  const now = new Date();
+  const hh = String(now.getUTCHours()).padStart(2, '0');
+  const mm = String(now.getUTCMinutes()).padStart(2, '0');
+  blTime.value = hh + ':' + mm;
+}
+
+function updateBlFreqFromRadio() {
+  if (blFreqEdited || !radioFreqKhz) return;
+  blFreq.value = (radioFreqKhz / 1000).toFixed(3);
+}
+
+function updateBlModeFromRadio() {
+  if (blModeEdited || !radioMode) return;
+  const m = radioMode.toUpperCase();
+  const mapped = m === 'USB' || m === 'LSB' ? m : m === 'CW' || m === 'CW-R' || m === 'CWR' ? 'CW' : m === 'FT8' ? 'FT8' : m === 'FT4' ? 'FT4' : m === 'FM' || m === 'NFM' ? 'FM' : m === 'AM' ? 'AM' : m === 'RTTY' || m === 'RTTY-R' ? 'RTTY' : 'SSB';
+  blMode.value = mapped;
+  updateBlRstDefaults(mapped);
+}
+
+/** Set RST defaults: 59 for phone, 599 for CW/digital */
+function updateBlRstDefaults(mode) {
+  const isPhone = mode === 'SSB' || mode === 'USB' || mode === 'LSB' || mode === 'FM' || mode === 'AM';
+  const def = isPhone ? '59' : '599';
+  blRstSent.value = def;
+  blRstRcvd.value = def;
+}
+
+function updateBlRespotVisibility() {
+  const type = blType.value;
+  // Show respot checkbox for park/summit types or DX cluster contacts
+  const canRespot = (type === 'pota' || type === 'wwff' || type === 'llota') ||
+                    (type === '' && clusterConnected);
+  blRespotLabel.classList.toggle('hidden', !canRespot);
+}
+
+// Type dropdown: show/hide ref field, update respot visibility
+blType.addEventListener('change', () => {
+  const type = blType.value;
+  const needsRef = type === 'pota' || type === 'sota' || type === 'wwff' || type === 'llota';
+  blRef.classList.toggle('hidden', !needsRef);
+  blRef.placeholder = type === 'pota' ? 'K-1234' : type === 'sota' ? 'W4C/CM-001' : type === 'wwff' ? 'KFF-1234' : type === 'llota' ? 'US-0001' : 'Ref';
+  if (needsRef) blRef.focus();
+  updateBlRespotVisibility();
+});
+
+// User-edit flags: reset after each QSO save
+blFreq.addEventListener('input', () => { blFreqEdited = true; });
+blMode.addEventListener('change', () => {
+  blModeEdited = true;
+  updateBlRstDefaults(blMode.value);
+});
+blTime.addEventListener('input', () => { blTimeEdited = true; });
+
+// QRZ lookup on callsign input (debounced)
+blCallsign.addEventListener('input', () => {
+  blCallsign.value = blCallsign.value.toUpperCase();
+  clearTimeout(blLookupTimer);
+  const cs = blCallsign.value.trim();
+  if (cs.length < 3) { blName.value = ''; return; }
+  blLookupTimer = setTimeout(async () => {
+    const cached = qrzData.get(cs.split('/')[0]);
+    if (cached) { blName.value = qrzDisplayName(cached); return; }
+    try {
+      const result = await window.api.qrzLookup(cs);
+      if (result && blCallsign.value.trim().toUpperCase() === cs) {
+        qrzData.set(cs.split('/')[0], result);
+        blName.value = qrzDisplayName(result);
+      }
+    } catch {}
+  }, 400);
+});
+
+// Save QSO from banner logger
+async function saveBannerQso() {
+  const callsign = blCallsign.value.trim().toUpperCase();
+  if (!callsign) { blCallsign.focus(); return; }
+  const frequency = blFreq.value.trim();
+  if (!frequency) { blFreq.focus(); return; }
+  const type = blType.value;
+  const ref = blRef.value.trim().toUpperCase();
+  const needsRef = type === 'pota' || type === 'sota' || type === 'wwff' || type === 'llota';
+  if (needsRef && !ref) { blRef.focus(); return; }
+  const mode = blMode.value;
+  const rstSent = blRstSent.value.trim() || '59';
+  const rstRcvd = blRstRcvd.value.trim() || '59';
+  const timeVal = blTime.value.trim();
+  const now = new Date();
+  const qsoDate = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const timeParts = timeVal.replace(':', '');
+  const timeOn = timeParts.length === 4 ? timeParts + '00' : String(now.getUTCHours()).padStart(2, '0') + String(now.getUTCMinutes()).padStart(2, '0') + '00';
+  const freqMhz = parseFloat(frequency);
+  const freqKhz = freqMhz * 1000;
+  const band = freqToBandActivator(freqKhz) || '';
+  const qrzInfo = qrzData.get(callsign.split('/')[0]);
+
+  // Build sig/sigInfo/ref fields based on type
+  let sig = '', sigInfo = '', potaRef = '', sotaRef = '', wwffRef = '';
+  if (type === 'pota' && ref) { sig = 'POTA'; potaRef = ref; sigInfo = ref; }
+  else if (type === 'sota' && ref) { sig = 'SOTA'; sotaRef = ref; sigInfo = ref; }
+  else if (type === 'wwff' && ref) { sig = 'WWFF'; wwffRef = ref; sigInfo = ref; }
+  else if (type === 'llota' && ref) { sig = 'LLOTA'; sigInfo = ref; }
+  const notes = blNotes.value.trim();
+  const commentBase = [notes, sigInfo ? `[${sig} ${sigInfo}]` : ''].filter(Boolean).join(' ');
+
+  // Respot
+  const wantsRespot = blRespot.checked && !blRespotLabel.classList.contains('hidden');
+  const opQrz = qrzData.get(callsign.split('/')[0]);
+  const opFirstname = (opQrz && (cleanQrzName(opQrz.nickname) || cleanQrzName(opQrz.fname))) || 'OM';
+  let respotCommentText = '';
+  if (wantsRespot) {
+    const tmpl = (type === '' && clusterConnected) ? dxRespotTemplate : respotTemplate;
+    respotCommentText = tmpl.replace(/\{rst\}/gi, rstSent).replace(/\{QTH\}/gi, grid).replace(/\{mycallsign\}/gi, myCallsign).replace(/\{op_firstname\}/gi, opFirstname);
+  }
+
+  // Park location lookup for POTA
+  let parkLocState = '', parkLocGrid = '';
+  if (sig === 'POTA' && potaRef) {
+    try {
+      const parkData = await window.api.getPark(potaRef);
+      if (parkData) {
+        const locParts = (parkData.locationDesc || '').split('-');
+        if (locParts.length >= 2) parkLocState = locParts.slice(1).join('-');
+        parkLocGrid = parkData.grid || '';
+      }
+    } catch {}
+  }
+
+  const qsoData = {
+    callsign,
+    frequency: String(freqKhz),
+    mode,
+    qsoDate,
+    timeOn,
+    rstSent,
+    rstRcvd,
+    txPower: String(defaultPower),
+    band,
+    sig,
+    sigInfo,
+    potaRef,
+    sotaRef,
+    wwffRef,
+    name: qrzInfo ? [cleanQrzName(qrzInfo.nickname) || cleanQrzName(qrzInfo.fname), cleanQrzName(qrzInfo.name)].filter(Boolean).join(' ') : '',
+    state: parkLocState || (!sig && qrzInfo ? (qrzInfo.state || '') : ''),
+    county: !parkLocState && !sig && qrzInfo && qrzInfo.state && qrzInfo.county ? `${qrzInfo.state},${qrzInfo.county}` : '',
+    gridsquare: parkLocGrid || (qrzInfo ? (qrzInfo.grid || '') : ''),
+    country: qrzInfo ? (qrzInfo.country || '') : '',
+    comment: commentBase,
+    respot: wantsRespot && type === 'pota',
+    wwffRespot: wantsRespot && type === 'wwff',
+    wwffReference: wantsRespot && type === 'wwff' ? ref : '',
+    llotaRespot: wantsRespot && type === 'llota',
+    llotaReference: wantsRespot && type === 'llota' ? ref : '',
+    dxcRespot: wantsRespot && type === '' && clusterConnected,
+    respotComment: wantsRespot ? respotCommentText : '',
+  };
+
+  blLogBtn.disabled = true;
+  blLogBtn.textContent = 'Saving\u2026';
+  try {
+    const result = await window.api.saveQso(qsoData);
+    if (result && result.success) {
+      // Keep type and ref sticky across QSOs (user is likely logging same park)
+      blCallsign.value = '';
+      blName.value = '';
+      blNotes.value = '';
+      blFreqEdited = false;
+      blModeEdited = false;
+      blTimeEdited = false;
+      updateBlFreqFromRadio();
+      updateBlModeFromRadio();
+      updateBlClock();
+      blCallsign.focus();
+    } else {
+      console.error('[BannerLogger] Save failed:', result);
+    }
+  } catch (err) {
+    console.error('[BannerLogger] Save error:', err);
+  } finally {
+    blLogBtn.disabled = false;
+    blLogBtn.textContent = 'Log';
+  }
+}
+
+blLogBtn.addEventListener('click', saveBannerQso);
+
+// Enter key flow: callsign → RST Sent → RST Rcvd → save
+blCallsign.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); blRstSent.focus(); blRstSent.select(); }
+});
+blRstSent.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); blRstRcvd.focus(); blRstRcvd.select(); }
+});
+blRstRcvd.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveBannerQso(); }
+});
+blRef.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); blCallsign.focus(); }
+});
+blFreq.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); blMode.focus(); }
+});
+blMode.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); blRstSent.focus(); blRstSent.select(); }
+});
 
 // --- Tune confirmation click ---
 let audioCtx = null;
@@ -1508,6 +2113,7 @@ function restoreFilters() {
 }
 
 restoreFilters();
+updateBandButtonsVisibility();
 
 // Toggle radio sub-panels when radio type changes
 radioTypeBtns.forEach((btn) => {
@@ -1889,6 +2495,9 @@ setEnableWsjtx.addEventListener('change', () => {
 setEnablePskr.addEventListener('change', () => {
   pskrConfig.classList.toggle('hidden', !setEnablePskr.checked);
 });
+setEnablePskrMap.addEventListener('change', () => {
+  pskrMapConfig.classList.toggle('hidden', !setEnablePskrMap.checked);
+});
 
 // PstRotator checkbox toggles rotor config visibility
 setEnableRotor.addEventListener('change', () => {
@@ -1985,6 +2594,163 @@ remoteRegenToken.addEventListener('click', () => {
   setRemoteToken.value = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 });
 
+// Club Station Mode event handlers
+setClubMode.addEventListener('change', () => {
+  clubConfig.classList.toggle('hidden', !setClubMode.checked);
+  if (setClubMode.checked && setClubCsvPath.value) {
+    refreshClubPreview(setClubCsvPath.value);
+  }
+});
+
+clubCsvBrowse.addEventListener('click', async () => {
+  const filePath = await window.api.chooseClubCsvFile();
+  if (filePath) {
+    setClubCsvPath.value = filePath;
+    refreshClubPreview(filePath);
+  }
+});
+
+clubCsvCreate.addEventListener('click', async () => {
+  // Get rig names from current settings to use as CSV radio columns
+  const s = await window.api.getSettings();
+  const rigNames = (s.rigs || []).map(r => r.name).filter(Boolean);
+  const filePath = await window.api.createClubCsv(rigNames);
+  if (filePath) {
+    setClubCsvPath.value = filePath;
+    refreshClubPreview(filePath);
+  }
+});
+
+clubHashPasswords.addEventListener('click', async () => {
+  const csvPath = setClubCsvPath.value;
+  if (!csvPath) return;
+  if (!confirm('This will hash all plaintext passwords in the CSV file. A .bak backup will be created. Continue?')) return;
+  clubHashStatus.textContent = 'Hashing...';
+  const result = await window.api.hashClubPasswords(csvPath);
+  if (result.error) {
+    clubHashStatus.textContent = 'Error: ' + result.error;
+    clubHashStatus.style.color = '#e94560';
+  } else {
+    clubHashStatus.textContent = result.hashed + ' hashed, ' + result.alreadyHashed + ' already hashed';
+    clubHashStatus.style.color = '#4ecca3';
+    refreshClubPreview(csvPath);
+  }
+});
+
+let clubScheduleDay = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()];
+let lastClubData = null;
+
+async function refreshClubPreview(csvPath) {
+  if (!csvPath) { clubPreview.innerHTML = ''; clubSchedule.innerHTML = ''; return; }
+  const data = await window.api.previewClubCsv(csvPath);
+  lastClubData = data;
+  if (data.errors && data.errors.length > 0) {
+    clubPreview.innerHTML = '<div style="color:#e94560">' + data.errors.join('<br>') + '</div>';
+    clubSchedule.innerHTML = '';
+    return;
+  }
+  if (!data.members || data.members.length === 0) {
+    clubPreview.innerHTML = '<div style="color:#aaa">No members found</div>';
+    clubSchedule.innerHTML = '';
+    return;
+  }
+  const radioCols = data.radioColumns || [];
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
+  html += '<tr style="border-bottom:1px solid #444;"><th style="text-align:left;padding:2px 4px;">Call</th>';
+  html += '<th style="text-align:left;padding:2px 4px;">Name</th>';
+  html += '<th style="text-align:left;padding:2px 4px;">License</th>';
+  html += '<th style="text-align:left;padding:2px 4px;">Role</th>';
+  for (const rc of radioCols) {
+    html += '<th style="text-align:center;padding:2px 4px;">' + rc + '</th>';
+  }
+  html += '</tr>';
+  for (const m of data.members) {
+    html += '<tr>';
+    html += '<td style="padding:2px 4px;color:#4fc3f7;">' + m.callsign + '</td>';
+    html += '<td style="padding:2px 4px;">' + m.firstname + ' ' + m.lastname + '</td>';
+    html += '<td style="padding:2px 4px;">' + m.license + '</td>';
+    html += '<td style="padding:2px 4px;">' + m.role + '</td>';
+    for (const rc of radioCols) {
+      const has = m.radios && m.radios[rc];
+      html += '<td style="text-align:center;padding:2px 4px;">' + (has ? '\u2713' : '') + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</table>';
+  clubPreview.innerHTML = html;
+
+  // Schedule view
+  if (data.hasSchedule) {
+    renderClubSchedule(data);
+  } else {
+    clubSchedule.innerHTML = '';
+  }
+}
+
+function renderClubSchedule(data) {
+  if (!data || !data.members) { clubSchedule.innerHTML = ''; return; }
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const todayName = days[new Date().getDay()];
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+
+  // Day picker tabs
+  let html = '<div style="margin-top:4px;font-size:12px;font-weight:600;color:#aaa;">Schedule</div>';
+  html += '<div style="display:flex;gap:2px;margin:4px 0;">';
+  for (const d of days) {
+    const active = d === clubScheduleDay;
+    const isToday = d === todayName;
+    const bg = active ? '#4fc3f7' : 'transparent';
+    const fg = active ? '#000' : (isToday ? '#4fc3f7' : '#aaa');
+    const border = isToday && !active ? '1px solid #4fc3f7' : '1px solid transparent';
+    html += `<button type="button" class="club-day-btn" data-day="${d}" style="padding:2px 6px;font-size:11px;border-radius:4px;cursor:pointer;background:${bg};color:${fg};border:${border};font-weight:${active ? '700' : '400'}">${d}</button>`;
+  }
+  html += '</div>';
+
+  // Collect slots for selected day
+  const slots = [];
+  for (const m of data.members) {
+    if (!m.schedule) continue;
+    for (const s of m.schedule) {
+      if (s.day === clubScheduleDay) {
+        slots.push({ callsign: m.callsign, firstname: m.firstname, ...s });
+      }
+    }
+  }
+  slots.sort((a, b) => (a.startH * 60 + a.startM) - (b.startH * 60 + b.startM));
+
+  if (slots.length === 0) {
+    html += '<div style="font-size:11px;color:#666;padding:4px 0;">No slots scheduled for ' + clubScheduleDay + '</div>';
+  } else {
+    html += '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:2px;">';
+    html += '<tr style="border-bottom:1px solid #444;"><th style="text-align:left;padding:2px 4px;">Time</th><th style="text-align:left;padding:2px 4px;">Radio</th><th style="text-align:left;padding:2px 4px;">Operator</th></tr>';
+    for (const s of slots) {
+      const startStr = String(s.startH).padStart(2, '0') + ':' + String(s.startM).padStart(2, '0');
+      const endStr = String(s.endH).padStart(2, '0') + ':' + String(s.endM).padStart(2, '0');
+      const slotStart = s.startH * 60 + s.startM;
+      const slotEnd = s.endH * 60 + s.endM;
+      const isNow = clubScheduleDay === todayName && nowMin >= slotStart && nowMin < slotEnd;
+      const rowStyle = isNow ? 'background:rgba(79,195,247,0.15);' : '';
+      const nowDot = isNow ? '<span style="color:#4ecca3;margin-right:3px;" title="Active now">\u25CF</span>' : '';
+      html += `<tr style="${rowStyle}">`;
+      html += `<td style="padding:2px 4px;">${nowDot}${startStr}\u2013${endStr}</td>`;
+      html += `<td style="padding:2px 4px;">${s.radio}</td>`;
+      html += `<td style="padding:2px 4px;color:#4fc3f7;">${s.callsign} <span style="color:#aaa;">${s.firstname}</span></td>`;
+      html += '</tr>';
+    }
+    html += '</table>';
+  }
+
+  clubSchedule.innerHTML = html;
+
+  // Day picker click handlers
+  clubSchedule.querySelectorAll('.club-day-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      clubScheduleDay = btn.dataset.day;
+      renderClubSchedule(data);
+    });
+  });
+}
+
 async function populateRigAudioDevices(restoreIn, restoreOut) {
   try {
     await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
@@ -2005,7 +2771,7 @@ async function populateRigAudioDevices(restoreIn, restoreOut) {
 async function updateRemoteAudioSummary(audioInId, audioOutId) {
   if (!remoteAudioSummary) return;
   if (!audioInId && !audioOutId) {
-    remoteAudioSummary.textContent = 'not configured \u2014 set in My Rigs';
+    remoteAudioSummary.textContent = 'not configured';
     return;
   }
   try {
@@ -2014,8 +2780,17 @@ async function updateRemoteAudioSummary(audioInId, audioOutId) {
     const outLabel = audioOutId ? (devices.find(d => d.deviceId === audioOutId)?.label || audioOutId.slice(0, 16)) : 'default';
     remoteAudioSummary.textContent = `${inLabel} / ${outLabel}`;
   } catch {
-    remoteAudioSummary.textContent = audioInId || audioOutId ? 'configured' : 'not configured \u2014 set in My Rigs';
+    remoteAudioSummary.textContent = audioInId || audioOutId ? 'configured' : 'not configured';
   }
+}
+
+// "Edit in Radio tab" link in ECHOCAT audio display
+const remoteAudioEditLink = document.getElementById('remote-audio-edit-link');
+if (remoteAudioEditLink) {
+  remoteAudioEditLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    switchSettingsTab('radio');
+  });
 }
 
 async function populateRemoteURLs() {
@@ -2054,11 +2829,12 @@ const LOGBOOK_DEFAULTS = {
     help: 'In Log4OM 2: Settings > Program Configuration > Software Integration > UDP Inbound tab. Click the green "+" button to add a new entry. Set Type to "ADIF-MESSAGE" and Port to "2237". Click "Save and apply". Leave Host at 127.0.0.1 in POTACAT. Log4OM must be running to receive QSOs. Only live-logged QSOs are forwarded — importing logs into POTACAT will not create duplicates.',
   },
   dxkeeper: { port: 52001, help: 'In DXKeeper: Configuration > Defaults tab > Network Service panel. The default base port is 52000 (DXKeeper listens on base + 1 = 52001). DXKeeper must be running to receive QSOs. QSOs will be logged with missing fields auto-deduced from callbook/entity databases.' },
-  hamrs: { port: 2333, help: 'In HamRS: enable WSJT-X integration in Settings and set the UDP port. POTACAT speaks the WSJT-X binary protocol so HamRS sees it as a WSJT-X connection. The port here must match the port in HamRS. HamRS must be running to receive QSOs.' },
+  hamrs: { port: 2237, help: 'In HamRS: enable WSJT-X integration in Settings and set the UDP port to 2237 (default). POTACAT speaks the WSJT-X binary protocol so HamRS sees it as a WSJT-X connection. The port here must match the port in HamRS. HamRS must be running to receive QSOs.' },
   n3fjp: { port: 1100, help: 'In N3FJP: Settings > Application Program Interface > check "TCP API Enabled". Set the port to 1100 (default). N3FJP must be running to receive QSOs. When using with WSJT-X, open WSJT-X first, then POTACAT, then N3FJP.' },
   hrd: { port: 2333, help: 'In HRD Logbook: Tools > Configure > QSO Forwarding. Under UDP Receive, check "Receive QSO notifications using UDP9/ADIF from other logging programs (eg. WSJT-X)". Set the receive port to 2333 and select your target database. POTACAT and WSJT-X can both send to this port simultaneously.' },
-  macloggerdx: { port: 9090, help: 'In MacLoggerDX: Preferences > UDP > check "Enable UDP Server". Set the port to 9090 (default). MacLoggerDX must be running to receive QSOs.' },
+  macloggerdx: { port: 2237, help: 'In MacLoggerDX: Settings > enable "Receive and log WSJT-X UDP broadcasts" and set the port to 2237. POTACAT speaks the WSJT-X binary protocol. MacLoggerDX must be running to receive QSOs.' },
   wavelog: { apiConfig: true },
+  wrl: { port: 12060, help: 'Requires WRL Cat Control running on this computer. Download it from worldradioleague.com. WRL Cat receives QSOs via the N1MM UDP protocol. In WRL Cat: enable N1MM integration and set the UDP port to 12060. QSOs logged in POTACAT will appear in your WRL logbook automatically.' },
 };
 
 function updateLogbookPortConfig() {
@@ -2222,6 +2998,41 @@ serialcatTestBtn.addEventListener('click', async () => {
 });
 
 
+// Icom CI-V test connection
+document.getElementById('icom-test-btn').addEventListener('click', async () => {
+  const portPath = getEffectiveIcomPort();
+  const baudRate = parseInt(document.getElementById('set-icom-baud').value, 10);
+  const civAddress = parseInt(document.getElementById('set-icom-model').value, 16);
+  const resultEl = document.getElementById('icom-test-result');
+  const btn = document.getElementById('icom-test-btn');
+
+  if (!portPath) {
+    resultEl.textContent = 'Select a serial port first';
+    resultEl.className = 'hamlib-test-fail';
+    return;
+  }
+
+  btn.disabled = true;
+  resultEl.textContent = 'Testing...';
+  resultEl.className = '';
+
+  try {
+    const result = await window.api.testIcomCiv({ portPath, baudRate, civAddress });
+    if (result.success) {
+      resultEl.textContent = `Connected! Freq: ${result.frequency} MHz`;
+      resultEl.className = 'hamlib-test-success';
+    } else {
+      resultEl.textContent = `Failed: ${result.error}`;
+      resultEl.className = 'hamlib-test-fail';
+    }
+  } catch (err) {
+    resultEl.textContent = `Error: ${err.message}`;
+    resultEl.className = 'hamlib-test-fail';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // Close dropdowns when clicking outside
 document.addEventListener('click', () => {
   document.querySelectorAll('.multi-dropdown.open').forEach((d) => d.classList.remove('open'));
@@ -2229,10 +3040,12 @@ document.addEventListener('click', () => {
 });
 
 // --- Filtering ---
+const DIGI_MODES = new Set(['FT8', 'FT4', 'FT2', 'RTTY', 'FREEDV', 'JT65', 'JT9', 'PSK31', 'OLIVIA', 'MFSK', 'DATA', 'DIGU', 'DIGL']);
 function modeMatches(spotMode, selectedModes) {
   if (!selectedModes) return true;
   if (selectedModes.has(spotMode)) return true;
   if (selectedModes.has('SSB') && (spotMode === 'USB' || spotMode === 'LSB')) return true;
+  if (selectedModes.has('DIGI') && DIGI_MODES.has(spotMode)) return true;
   return false;
 }
 
@@ -2247,6 +3060,8 @@ function radioModeToFilter(catMode) {
   if (m === 'FT8') return 'FT8';
   if (m === 'FT4') return 'FT4';
   if (m === 'FREEDV') return 'FREEDV';
+  // DATA modes (DIGU/PKTUSB/DIGL/PKTLSB) → show all digital spots
+  if (m === 'DIGU' || m === 'PKTUSB' || m === 'DIGL' || m === 'PKTLSB') return 'DIGI';
   return null;
 }
 
@@ -2302,6 +3117,9 @@ function getFiltered() {
     } else if (s.source === 'pskr') {
       // PSKReporter already limits to 15 min server-side; don't apply client max-age
       if (spotAgeSecs(s.spotTime) > 900) return false;
+    } else if (s.source === 'sota') {
+      // SOTA spots are posted once by a human (not re-spotted like POTA)
+      if (spotAgeSecs(s.spotTime) > sotaMaxAgeMin * 60) return false;
     } else {
       if (spotAgeSecs(s.spotTime) > maxAgeSecs) return false;
     }
@@ -2311,6 +3129,7 @@ function getFiltered() {
     if (hideOutOfBand && isOutOfPrivilege(parseFloat(s.frequency), s.mode, licenseClass)) return false;
     if (hideWorked && isWorkedSpot(s)) return false;
     if (hideWorkedParks && s.source === 'pota' && s.reference && workedParksSet.has(s.reference)) return false;
+    if (!showHiddenSpots && isSpotHidden(s.callsign, s.frequency)) return false;
     return true;
   });
 }
@@ -2759,10 +3578,15 @@ function rebuildSourceIcons() {
 rebuildSourceIcons(); // initial build with normal palette
 
 function applyColorblindMode(enabled) {
+  const wcag = setWcagMode && setWcagMode.checked;
   if (enabled) {
     Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_CB);
     Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_CB);
     Object.assign(RBN_BAND_COLORS_ACTIVE, RBN_BAND_COLORS_CB);
+  } else if (wcag) {
+    Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_WCAG);
+    Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_WCAG);
+    Object.assign(RBN_BAND_COLORS_ACTIVE, RBN_BAND_COLORS_NORMAL);
   } else {
     Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_NORMAL);
     Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_NORMAL);
@@ -2784,6 +3608,51 @@ function applyColorblindMode(enabled) {
     if (span) span.style.color = SOURCE_COLORS_ACTIVE[src];
   }
   // Refresh map markers if map is visible
+  if (typeof renderMarkers === 'function') try { renderMarkers(); } catch {}
+  if (typeof renderRbnMarkers === 'function') try { renderRbnMarkers(); } catch {}
+}
+
+// WCAG AA high-contrast source palettes
+const SOURCE_COLORS_WCAG = {
+  pota: '#5ed8ad', sota: '#f0a500', wwff: '#3cc4b8',
+  llota: '#42a5f5', dxc: '#e87fff', rbn: '#00bcd4', pskr: '#ff9090'
+};
+const SOURCE_STROKES_WCAG = {
+  pota: '#42b88a', sota: '#c47f00', wwff: '#2a9e92',
+  llota: '#1e88e5', dxc: '#c040e0', rbn: '#0097a7', pskr: '#d06060'
+};
+
+function applyWcagMode(enabled) {
+  const root = document.documentElement;
+  if (enabled) {
+    root.setAttribute('data-wcag', '');
+  } else {
+    root.removeAttribute('data-wcag');
+  }
+  // Re-apply colorblind mode on top (colorblind takes priority for source colors)
+  const isCb = setColorblind && setColorblind.checked;
+  if (isCb) {
+    // Colorblind palettes already handle contrast
+    return;
+  }
+  // Swap source colors for WCAG-boosted versions
+  if (enabled) {
+    Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_WCAG);
+    Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_WCAG);
+  } else {
+    Object.assign(SOURCE_COLORS_ACTIVE, SOURCE_COLORS_NORMAL);
+    Object.assign(SOURCE_STROKES_ACTIVE, SOURCE_STROKES_NORMAL);
+  }
+  rebuildSourceIcons();
+  for (const [src, color] of Object.entries(SOURCE_COLORS_ACTIVE)) {
+    root.style.setProperty('--source-' + src, color);
+  }
+  const srcLabels = { pota: '#spots-pota', sota: '#spots-sota', wwff: '#spots-wwff',
+    llota: '#spots-llota', dxc: '#spots-cluster', rbn: '#spots-rbn', pskr: '#spots-pskr' };
+  for (const [src, sel] of Object.entries(srcLabels)) {
+    const span = document.querySelector(sel + ' + span') || document.querySelector(sel)?.parentElement?.querySelector('span');
+    if (span) span.style.color = SOURCE_COLORS_ACTIVE[src];
+  }
   if (typeof renderMarkers === 'function') try { renderMarkers(); } catch {}
   if (typeof renderRbnMarkers === 'function') try { renderRbnMarkers(); } catch {}
 }
@@ -2828,6 +3697,11 @@ let rbnMarkerLayer = null;
 let rbnHomeMarker = null;
 let rbnNightLayer = null;
 let rbnHomePos = null; // { lat, lon } for arc drawing
+
+// PSKReporter Map state (spots shown on the shared Propagation map)
+let pskrMapSpots = [];
+let propShowRbn = true;   // source toggle: show RBN spots on propagation map
+let propShowPskr = true;  // source toggle: show PSKReporter spots on propagation map
 
 // RBN_BAND_COLORS is now managed by RBN_BAND_COLORS_ACTIVE (see colorblind palettes above)
 
@@ -2932,7 +3806,7 @@ function updateNightOverlay() {
       interactive: false,
     }).addTo(map);
   }
-  if (markerLayer) markerLayer.bringToFront();
+  if (markerLayer && markerLayer.bringToFront) markerLayer.bringToFront();
 }
 
 const MAP_STATE_KEY = 'pota-cat-map-state';
@@ -2958,7 +3832,7 @@ function initMap() {
     className: 'dark-tiles',
   }).addTo(map);
 
-  markerLayer = L.layerGroup().addTo(map);
+  markerLayer = L.featureGroup().addTo(map);
 
   // Bind tune/QRZ handlers inside popups
   bindPopupClickHandlers(map);
@@ -3084,6 +3958,19 @@ function gridToLatLonLocal(grid) {
   return { lat, lon };
 }
 
+// Returns [[south, west], [north, east]] bounds for a 4-char grid
+function gridToBoundsLocal(grid) {
+  if (!grid || grid.length < 4) return null;
+  const g = grid.toUpperCase();
+  const lonField = g.charCodeAt(0) - 65;
+  const latField = g.charCodeAt(1) - 65;
+  const lonSquare = parseInt(g[2], 10);
+  const latSquare = parseInt(g[3], 10);
+  const west = lonField * 20 + lonSquare * 2 - 180;
+  const south = latField * 10 + latSquare * 1 - 90;
+  return [[south, west], [south + 1, west + 2]];
+}
+
 // Lightweight lat/lon → Maidenhead grid for the renderer (no require of Node module)
 function latLonToGridLocal(lat, lon) {
   let lng = lon + 180;
@@ -3130,7 +4017,7 @@ const PRIVILEGE_RANGES = {
     [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
   us_technician: [
-    [3525, 3600, 'cw_digi'], [7025, 7125, 'cw_digi'], [21025, 21200, 'cw_digi'],
+    [3525, 3600, 'cw'], [7025, 7125, 'cw'], [21025, 21200, 'cw'],
     [28000, 28300, 'cw_digi'], [28300, 28500, 'phone'], [50000, 54000, 'all'],
     [144000, 148000, 'all'], [420000, 450000, 'all'],
   ],
@@ -3161,6 +4048,7 @@ function isOutOfPrivilege(freqKhz, mode, cls) {
   for (const [lower, upper, allowed] of ranges) {
     if (freqKhz >= lower && freqKhz <= upper) {
       if (allowed === 'all') return false;
+      if (allowed === 'cw' && modeUpper === 'CW') return false;
       if (allowed === 'cw_digi' && CW_DIGI_MODES.has(modeUpper)) return false;
       if (allowed === 'phone' && PHONE_MODES.has(modeUpper)) return false;
     }
@@ -3925,13 +4813,29 @@ window.api.onActmapPopoutStatus((open) => {
   }
 });
 
+// --- JTCAT Pop-out ---
+window.api.onJtcatPopoutStatus((open) => {
+  jtcatPopoutOpen = open;
+  if (open) {
+    // Start engine + audio capture in the main renderer when pop-out opens
+    if (!jtcatRunning) startJtcatView();
+    // Send current QSO state to the new popout
+    broadcastJtcatQsoState();
+  } else {
+    // Stop engine + audio when pop-out closes (unless phone is driving)
+    if (jtcatRunning && !jtcatRemoteActive) stopJtcatView();
+  }
+});
+
+// Popout QSO commands are handled directly in main.js (no relay needed)
+
 // --- View Toggle ---
 // Table and Map are toggleable (both can be active = split view).
 // RBN and DXCC are exclusive views that hide the split container.
 
 function setView(view) {
-  // Called for exclusive views (rbn, dxcc) or to force a specific state
-  if (view === 'rbn' || view === 'dxcc') {
+  // Called for exclusive views (rbn, dxcc, directory) or to force a specific state
+  if (view === 'rbn' || view === 'dxcc' || view === 'directory') {
     currentView = view;
     showTable = false;
     showMap = false;
@@ -3948,14 +4852,19 @@ function setView(view) {
 }
 
 function updateViewLayout() {
+  updateTitleBar();
   // Hide exclusive views
   dxccView.classList.add('hidden');
   rbnView.classList.add('hidden');
+  jtcatView.classList.add('hidden');
+  if (directoryView) directoryView.classList.add('hidden');
+  stopDirvAutoRefresh();
 
   // Deactivate all view buttons
   viewTableBtn.classList.remove('active');
   viewMapBtn.classList.remove('active');
   viewRbnBtn.classList.remove('active');
+  if (viewDirectoryBtn) viewDirectoryBtn.classList.remove('active');
 
   if (currentView === 'dxcc') {
     splitContainerEl.classList.add('hidden');
@@ -3974,6 +4883,17 @@ function updateViewLayout() {
     setTimeout(() => rbnMap.invalidateSize(), 0);
     renderRbnMarkers();
     renderRbnTable();
+    updateParksStatsOverlay();
+    saveViewState();
+    return;
+  }
+
+  if (currentView === 'directory') {
+    splitContainerEl.classList.add('hidden');
+    if (directoryView) directoryView.classList.remove('hidden');
+    if (viewDirectoryBtn) viewDirectoryBtn.classList.add('active');
+    renderDirectoryView();
+    startDirvAutoRefresh();
     updateParksStatsOverlay();
     saveViewState();
     return;
@@ -4033,8 +4953,9 @@ function saveViewState() {
 }
 
 viewTableBtn.addEventListener('click', () => {
-  if (currentView === 'rbn' || currentView === 'dxcc') {
+  if (currentView === 'rbn' || currentView === 'dxcc' || currentView === 'jtcat' || currentView === 'directory') {
     // Switching from exclusive view → table only
+    if (currentView === 'jtcat') stopJtcatView();
     currentView = 'table';
     showTable = true;
     showMap = false;
@@ -4063,8 +4984,9 @@ viewMapBtn.addEventListener('click', () => {
     window.api.popoutMapOpen(); // focuses existing window
     return;
   }
-  if (currentView === 'rbn' || currentView === 'dxcc') {
+  if (currentView === 'rbn' || currentView === 'dxcc' || currentView === 'jtcat' || currentView === 'directory') {
     // Switching from exclusive view → map only
+    if (currentView === 'jtcat') stopJtcatView();
     currentView = 'map';
     showTable = false;
     showMap = true;
@@ -4088,6 +5010,15 @@ viewMapBtn.addEventListener('click', () => {
 });
 
 viewRbnBtn.addEventListener('click', () => setView('rbn'));
+if (viewDirectoryBtn) viewDirectoryBtn.addEventListener('click', () => {
+  if (directoryNets.length === 0 && directorySwl.length === 0) {
+    window.api.fetchDirectory();
+  }
+  setView('directory');
+});
+viewJtcatBtn.addEventListener('click', () => {
+  window.api.jtcatPopoutOpen();
+});
 dxccBoardBtn.addEventListener('click', () => {
   if (!enableDxcc) {
     enableDxcc = true;
@@ -4390,6 +5321,17 @@ function render() {
         tr.classList.add('scan-skipped');
       }
 
+      // Mark hidden spots visually when "show hidden" is on
+      if (showHiddenSpots && isSpotHidden(s.callsign, s.frequency)) {
+        tr.classList.add('spot-hidden-row');
+      }
+
+      // Right-click to hide spot
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showHideSpotMenu(e.clientX, e.clientY, s.callsign, s.frequency);
+      });
+
       // WSJT-X decode indicator — show if this activator was recently decoded
       const wsjtxDecode = enableWsjtx && wsjtxDecodes.find(d => d.isPota && d.dxCall && d.dxCall.toUpperCase() === s.callsign.toUpperCase());
       if (wsjtxDecode) {
@@ -4440,21 +5382,29 @@ function render() {
         star.className = 'watchlist-star';
         callTd.appendChild(star);
       }
-      const callLink = document.createElement('a');
-      callLink.textContent = s.callsign;
-      callLink.href = '#';
-      callLink.className = 'qrz-link';
-      const qrzHover = qrzData.get(s.callsign.toUpperCase().split('/')[0]);
-      if (qrzHover) {
-        const hoverName = qrzDisplayName(qrzHover);
-        if (hoverName) callLink.title = hoverName;
+      if (s.source === 'net') {
+        // Net spots use the net name as callsign — no QRZ link
+        const callSpan = document.createElement('span');
+        callSpan.textContent = s.callsign;
+        callSpan.className = 'qrz-link';
+        callTd.appendChild(callSpan);
+      } else {
+        const callLink = document.createElement('a');
+        callLink.textContent = s.callsign;
+        callLink.href = '#';
+        callLink.className = 'qrz-link';
+        const qrzHover = qrzData.get(s.callsign.toUpperCase().split('/')[0]);
+        if (qrzHover) {
+          const hoverName = qrzDisplayName(qrzHover);
+          if (hoverName) callLink.title = hoverName;
+        }
+        callLink.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          window.api.openExternal(`https://www.qrz.com/db/${encodeURIComponent(s.callsign.split('/')[0])}`);
+        });
+        callTd.appendChild(callLink);
       }
-      callLink.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        window.api.openExternal(`https://www.qrz.com/db/${encodeURIComponent(s.callsign.split('/')[0])}`);
-      });
-      callTd.appendChild(callLink);
       if (donorCallsigns.has(s.callsign.toUpperCase())) {
         const paw = document.createElement('span');
         paw.className = 'donor-paw';
@@ -4532,13 +5482,32 @@ function render() {
         { val: (s.lat != null && s.lon != null) ? latLonToGridLocal(s.lat, s.lon).slice(0, 4) : '', col: 'grid' },
         { val: formatDistance(s.distance), col: 'distance' },
         { val: formatBearing(s.bearing), cls: 'bearing-col', col: 'bearing' },
-        { val: s.source === 'net' ? (s.comments || '') : formatAge(s.spotTime), col: 'spotTime' },
-        { val: s.source === 'net' ? '' : (s.comments || ''), col: 'comments' },
+        { val: formatAge(s.spotTime), col: 'spotTime' },
+        { val: s.comments || '', col: 'comments' },
       ];
 
       for (const cell of cells) {
         const td = document.createElement('td');
-        td.textContent = cell.val;
+        // Make park ref and name clickable links to park/summit pages
+        if ((cell.col === 'reference' || cell.col === 'parkName') && s.reference && s.source !== 'net') {
+          let url;
+          if (s.source === 'sota') url = `https://www.sotadata.org.uk/en/summit/${s.reference}`;
+          else if (s.source === 'wwff') url = `https://wwff.co/directory/?showRef=${s.reference}`;
+          else if (s.source === 'llota') url = `https://llota.app/lighthouse/${s.reference}`;
+          else url = `https://pota.app/#/park/${s.reference}`;
+          const a = document.createElement('a');
+          a.textContent = cell.val;
+          a.href = '#';
+          a.className = 'park-link';
+          a.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            window.api.openExternal(url);
+          });
+          td.appendChild(a);
+        } else {
+          td.textContent = cell.val;
+        }
         if (cell.col) td.setAttribute('data-col', cell.col);
         if (cell.cls) td.className = cell.cls;
         if (cell.col === 'comments' && cell.val) td.title = cell.val;
@@ -4679,8 +5648,8 @@ function openLogPopup(spot) {
   logDate.value = now.toISOString().slice(0, 10);
   logTime.value = now.toISOString().slice(11, 16);
 
-  // Pre-fill power: use CAT reading if available, otherwise settings default
-  logPower.value = radioPower > 0 ? radioPower : (defaultPower || 100);
+  // Pre-fill power: use last-entered value if set, otherwise CAT reading, otherwise default
+  logPower.value = lastLogPower > 0 ? lastLogPower : (radioPower > 0 ? radioPower : (defaultPower || 100));
 
   // Pre-fill RST based on mode
   const isCwDigi = CW_DIGI_MODES_SET.has(mode);
@@ -4881,6 +5850,7 @@ logSaveBtn.addEventListener('click', async () => {
   const rstSent = getRstDigits('rst-sent-digits', '59');
   const rstRcvd = getRstDigits('rst-rcvd-digits', '59');
   const txPower = logPower.value.trim();
+  lastLogPower = parseInt(txPower, 10) || 0; // remember for next log
   const commentBase = [logComment.value.trim(), sigInfo && !logComment.value.includes(sigInfo) ? `[${sig} ${sigInfo}]` : ''].filter(Boolean).join(' ');
 
   logSaveBtn.disabled = true;
@@ -4967,6 +5937,20 @@ logSaveBtn.addEventListener('click', async () => {
     const displayCalls = callsigns.join(', ');
     if (lastResult && lastResult.success) {
       logDialog.close();
+      // Advance selection to the next spot by frequency so the highlight
+      // doesn't disappear when "hide worked" removes the logged station
+      if (lastTunedSpot && hideWorked) {
+        const freq = parseFloat(lastTunedSpot.frequency);
+        const filtered = getFiltered().filter(s =>
+          s.callsign !== lastTunedSpot.callsign || s.frequency !== lastTunedSpot.frequency
+        );
+        if (filtered.length > 0) {
+          // Find nearest spot by frequency (prefer next higher, then lower)
+          const sorted = [...filtered].sort((a, b) => parseFloat(a.frequency) - parseFloat(b.frequency));
+          const next = sorted.find(s => parseFloat(s.frequency) >= freq) || sorted[sorted.length - 1];
+          if (next) lastTunedSpot = next;
+        }
+      }
       if (lastResult.logbookError) {
         const friendly = lastResult.logbookError.includes('ECONNREFUSED')
           ? 'Could not reach logbook — is it running and configured correctly?'
@@ -5104,6 +6088,10 @@ function syncSpotsPanel() {
   spotsHideWorked.checked = hideWorked;
   spotsHideParks.checked = hideWorkedParks;
   spotsHideOob.checked = hideOutOfBand;
+  spotsShowHidden.checked = showHiddenSpots;
+  const hCount = hiddenSpotCount();
+  spotsHiddenCount.textContent = hCount;
+  spotsHiddenCount.classList.toggle('hidden', hCount === 0);
   spotsDxcc.checked = enableDxcc;
   spotsHideParksLabel.classList.toggle('hidden', workedParksSet.size === 0);
 }
@@ -5134,6 +6122,7 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
   hideWorked = spotsHideWorked.checked;
   hideWorkedParks = spotsHideParks.checked;
   hideOutOfBand = spotsHideOob.checked;
+  showHiddenSpots = spotsShowHidden.checked;
   enableDxcc = spotsDxcc.checked;
 
   // Sync Settings dialog checkboxes
@@ -5162,6 +6151,61 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
     enableDxcc,
   });
 
+  render();
+});
+
+// --- Hide spot context menu ---
+const hideSpotMenu = document.getElementById('hide-spot-menu');
+const hideSpotCallEl = document.getElementById('hide-spot-call');
+const hideSpotFreqLabel = document.getElementById('hide-spot-freq-label');
+let hideSpotTarget = '';
+let hideSpotFreq = '';
+
+function showHideSpotMenu(x, y, callsign, frequency) {
+  hideSpotTarget = callsign.toUpperCase();
+  hideSpotFreq = String(Math.round(parseFloat(frequency)));
+  hideSpotCallEl.textContent = callsign;
+  hideSpotFreqLabel.textContent = `Hide on ${frequency} kHz only`;
+  // Show unhide button if already hidden
+  const unhideBtn = hideSpotMenu.querySelector('.hide-spot-unhide');
+  unhideBtn.classList.toggle('hidden', !isSpotHidden(callsign, frequency));
+  hideSpotMenu.classList.remove('hidden');
+  // Position near click, keep on screen
+  const rect = hideSpotMenu.getBoundingClientRect();
+  hideSpotMenu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
+  hideSpotMenu.style.top = Math.min(y, window.innerHeight - rect.height - 10) + 'px';
+}
+
+function closeHideSpotMenu() {
+  hideSpotMenu.classList.add('hidden');
+}
+
+document.addEventListener('click', (e) => {
+  if (!hideSpotMenu.contains(e.target)) closeHideSpotMenu();
+});
+
+function computeExpiry(dur) {
+  if (dur === 'forever') return Infinity;
+  if (dur === 'today') {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).getTime();
+  }
+  return Date.now() + parseInt(dur, 10);
+}
+
+hideSpotMenu.addEventListener('click', (e) => {
+  const btn = e.target.closest('.hide-spot-btn');
+  if (!btn || !hideSpotTarget) return;
+  const dur = btn.dataset.dur;
+  const scope = btn.dataset.scope;
+  if (dur === 'unhide') {
+    unhideSpot(hideSpotTarget);
+  } else if (scope === 'freq') {
+    hideSpotEntry(hideSpotTarget, hideSpotFreq, computeExpiry(dur));
+  } else {
+    hideSpotEntry(hideSpotTarget, '*', computeExpiry(dur));
+  }
+  closeHideSpotMenu();
   render();
 });
 
@@ -5206,6 +6250,9 @@ settingsBtn.addEventListener('click', (e) => {
     quickLightMode.checked = document.documentElement.getAttribute('data-theme') === 'light';
     quickActivatorMode.checked = appMode === 'activator';
     quickHideWorkedParks.checked = hideWorkedParks;
+    // Show rotor toggle only when PSTRotator is configured in Settings
+    quickRotorLabel.classList.toggle('hidden', !rotorConfigured);
+    quickRotorDivider.classList.toggle('hidden', !rotorConfigured);
     refreshEchoCatInfo();
   }
 });
@@ -5219,6 +6266,7 @@ quickLightMode.addEventListener('change', async () => {
   if (actmapPopoutOpen) window.api.actmapPopoutTheme(light ? 'light' : 'dark');
   if (spotsPopoutOpen) window.api.sendSpotsPopoutTheme(light ? 'light' : 'dark');
   if (clusterPopoutOpen) window.api.sendClusterPopoutTheme(light ? 'light' : 'dark');
+  if (jtcatPopoutOpen) window.api.jtcatPopoutTheme(light ? 'light' : 'dark');
   await window.api.saveSettings({ lightMode: light });
 });
 
@@ -5237,6 +6285,17 @@ quickHideWorkedParks.addEventListener('change', async () => {
   renderTable();
   renderMap();
   await window.api.saveSettings({ hideWorkedParks });
+});
+
+// PSTRotator quick toggle — visible once rotor has been enabled in settings
+const quickRotor = document.getElementById('quick-rotor');
+const quickRotorLabel = document.getElementById('quick-rotor-label');
+const quickRotorDivider = document.getElementById('quick-rotor-divider');
+let rotorConfigured = false; // true when enableRotor is on (user has a PSTRotator)
+
+quickRotor.addEventListener('change', async () => {
+  // Quick toggle changes rotorActive (operational state), NOT enableRotor (config)
+  await window.api.saveSettings({ rotorActive: quickRotor.checked });
 });
 
 openSettingsBtn.addEventListener('click', () => {
@@ -5372,12 +6431,98 @@ echoCatCopy.addEventListener('click', async () => {
   } catch {}
 });
 
+// Settings tabs
+const settingsTabBar = document.querySelector('.settings-tabs-row');
+const settingsSearch = document.getElementById('settings-search');
+const settingsScrollArea = document.querySelector('.settings-scroll-area');
+
+function switchSettingsTab(tabName) {
+  if (!settingsTabBar) return;
+  // Update active tab button
+  settingsTabBar.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName);
+  });
+  // Show/hide fieldsets
+  settingsScrollArea.querySelectorAll('fieldset[data-settings-tab]').forEach(fs => {
+    fs.classList.toggle('tab-visible', fs.dataset.settingsTab === tabName);
+  });
+  settingsDialog.classList.add('tabbed');
+  settingsDialog.classList.remove('searching');
+  // Save active tab
+  try { localStorage.setItem('settings-active-tab', tabName); } catch {}
+  // Scroll to top of the new tab
+  settingsScrollArea.scrollTop = 0;
+}
+
+if (settingsTabBar) {
+  settingsTabBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.settings-tab');
+    if (!btn) return;
+    settingsSearch.value = '';
+    settingsTabBar.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('has-match'));
+    switchSettingsTab(btn.dataset.tab);
+  });
+}
+
+if (settingsSearch) {
+  settingsSearch.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (settingsSearch.value) {
+        e.stopPropagation(); // Don't close the dialog
+        settingsSearch.value = '';
+        settingsSearch.dispatchEvent(new Event('input'));
+      }
+    }
+  });
+  settingsSearch.addEventListener('input', () => {
+    const q = settingsSearch.value.trim().toLowerCase();
+    if (!q) {
+      // Restore tab view
+      settingsDialog.classList.remove('searching');
+      const oldMsg = settingsScrollArea.querySelector('.settings-no-results');
+      if (oldMsg) oldMsg.remove();
+      const activeTab = settingsTabBar.querySelector('.settings-tab.active');
+      if (activeTab) switchSettingsTab(activeTab.dataset.tab);
+      settingsTabBar.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('has-match'));
+      return;
+    }
+    settingsDialog.classList.remove('tabbed');
+    settingsDialog.classList.add('searching');
+    // Remove old no-results message
+    const oldMsg = settingsScrollArea.querySelector('.settings-no-results');
+    if (oldMsg) oldMsg.remove();
+    // Check each fieldset for matches
+    const tabMatches = {};
+    let anyMatch = false;
+    settingsScrollArea.querySelectorAll('fieldset[data-settings-tab]').forEach(fs => {
+      const text = fs.textContent.toLowerCase();
+      const match = text.includes(q);
+      fs.classList.toggle('search-match', match);
+      if (match) { tabMatches[fs.dataset.settingsTab] = true; anyMatch = true; }
+    });
+    // Show which tabs have matches
+    settingsTabBar.querySelectorAll('.settings-tab').forEach(btn => {
+      btn.classList.toggle('has-match', !!tabMatches[btn.dataset.tab]);
+    });
+    // No results message
+    if (!anyMatch) {
+      const msg = document.createElement('div');
+      msg.className = 'settings-no-results';
+      msg.textContent = `No settings matching "${settingsSearch.value.trim()}"`;
+      settingsScrollArea.appendChild(msg);
+    }
+  });
+}
+
 // Settings dialog
-async function openSettingsDialog() {
+let _openSettingsTab = null;
+async function openSettingsDialog(tab) {
+  if (tab) _openSettingsTab = tab;
   const s = await window.api.getSettings();
   setGrid.value = s.grid || '';
   setDistUnit.value = s.distUnit || 'mi';
   setMaxAge.value = s.maxAgeMin || 5;
+  setSotaMaxAge.value = s.sotaMaxAge || 30;
   setRefreshInterval.value = s.refreshInterval || 30;
   setScanDwell.value = s.scanDwell || 7;
   setCwXit.value = s.cwXit || 0;
@@ -5393,6 +6538,7 @@ async function openSettingsDialog() {
   setHideWorked.checked = s.hideWorked === true;
   setTuneClick.checked = s.tuneClick === true;
   setEnableRotor.checked = s.enableRotor === true;
+  if (s.enableRotor) rotorConfigured = true;
   setRotorHost.value = s.rotorHost || '127.0.0.1';
   setRotorPort.value = s.rotorPort || 12040;
   rotorConfig.classList.toggle('hidden', !s.enableRotor);
@@ -5480,7 +6626,10 @@ async function openSettingsDialog() {
   wsjtxConfig.classList.toggle('hidden', !s.enableWsjtx);
   setEnablePskr.checked = s.enablePskr === true;
   pskrConfig.classList.toggle('hidden', !s.enablePskr);
+  setEnablePskrMap.checked = s.enablePskrMap === true;
+  pskrMapConfig.classList.toggle('hidden', !s.enablePskrMap);
   setEnableLogging.checked = s.enableLogging === true;
+  setEnableBannerLogger.checked = s.enableBannerLogger === true;
   setN1mmRst.checked = s.n1mmRst === true;
   if (s.adifLogPath) {
     setAdifLogPath.value = s.adifLogPath;
@@ -5499,6 +6648,7 @@ async function openSettingsDialog() {
   logbookConfig.classList.toggle('hidden', !s.sendToLogbook);
   updateLogbookPortConfig();
   setColorblind.checked = s.colorblindMode === true;
+  setWcagMode.checked = s.wcagMode === true;
   setColorRows.checked = s.colorRows !== false; // default true
   setEnableSolar.checked = s.enableSolar === true;
   setEnableBandActivity.checked = s.enableBandActivity === true;
@@ -5551,10 +6701,34 @@ async function openSettingsDialog() {
   remoteTokenRow.classList.toggle('hidden', !requireToken);
   setRemoteToken.value = s.remoteToken || '';
   setRemotePttTimeout.value = s.remotePttTimeout || 180;
+  setRemoteCwEnabled.checked = !!s.remoteCwEnabled;
+  // Populate CW Key Port dropdown
+  try {
+    const cwPorts = await window.api.listPorts();
+    setCwKeyPort.innerHTML = '<option value="">(none)</option>';
+    for (const p of cwPorts) {
+      const opt = document.createElement('option');
+      opt.value = p.path;
+      opt.textContent = `${p.path} — ${p.friendlyName}`;
+      if (s.cwKeyPort === p.path) opt.selected = true;
+      setCwKeyPort.appendChild(opt);
+    }
+  } catch { /* ports unavailable */ }
   if (enableRemote) {
     populateRemoteURLs();
   }
   updateRemoteAudioSummary(s.remoteAudioInput, s.remoteAudioOutput);
+  // Club Station Mode
+  setClubMode.checked = s.clubMode === true;
+  setClubCsvPath.value = s.clubCsvPath || '';
+  clubConfig.classList.toggle('hidden', !s.clubMode);
+  clubHashStatus.textContent = '';
+  if (s.clubMode && s.clubCsvPath) {
+    refreshClubPreview(s.clubCsvPath);
+  } else {
+    clubPreview.innerHTML = '';
+    clubSchedule.innerHTML = '';
+  }
   updateSettingsConnBar();
   setDisableAutoUpdate.checked = s.disableAutoUpdate === true;
   setEnableTelemetry.checked = s.enableTelemetry === true;
@@ -5570,6 +6744,13 @@ async function openSettingsDialog() {
   // App mode radio
   const modeRadio = document.querySelector(`input[name="set-app-mode"][value="${appMode}"]`);
   if (modeRadio) modeRadio.checked = true;
+  // Pi access (The Net easter egg) — unlock gated features if previously authorized
+  if (typeof applyPiAccess === 'function') applyPiAccess(!!s.piAccess);
+  // Restore settings tab (or navigate to specified tab)
+  if (settingsSearch) settingsSearch.value = '';
+  const targetTab = _openSettingsTab || localStorage.getItem('settings-active-tab') || 'station';
+  _openSettingsTab = null;
+  switchSettingsTab(targetTab);
   settingsDialog.showModal();
 }
 
@@ -5583,6 +6764,7 @@ settingsCancel.addEventListener('click', async () => {
 settingsSave.addEventListener('click', async () => {
   const watchlistRaw = setWatchlist.value.trim();
   const maxAgeVal = parseInt(setMaxAge.value, 10) || 5;
+  const sotaMaxAgeVal = parseInt(setSotaMaxAge.value, 10) || 30;
   const refreshIntervalVal = Math.max(15, parseInt(setRefreshInterval.value, 10) || 30);
   const dwellVal = parseInt(setScanDwell.value, 10) || 7;
   const cwXitVal = parseInt(setCwXit.value, 10) || 0;
@@ -5606,6 +6788,7 @@ settingsSave.addEventListener('click', async () => {
   let clusterEnabled = setEnableCluster.checked;
   let rbnEnabled = setEnableRbn.checked;
   const pskrEnabled = setEnablePskr.checked;
+  const pskrMapEnabled = setEnablePskrMap.checked;
 
   // DX Cluster and RBN require a callsign
   if (clusterEnabled && !myCallsign) {
@@ -5617,6 +6800,12 @@ settingsSave.addEventListener('click', async () => {
     rbnEnabled = false;
     setEnableRbn.checked = false;
     alert('RBN requires a callsign. Please enter your callsign above.');
+  }
+  let pskrMapEnabledVal = pskrMapEnabled;
+  if (pskrMapEnabledVal && !myCallsign) {
+    pskrMapEnabledVal = false;
+    setEnablePskrMap.checked = false;
+    alert('PSKReporter Map requires a callsign. Please enter your callsign above.');
   }
   const clusterNodes = currentClusterNodes;
   const showBeaconsEnabled = setShowBeacons.checked;
@@ -5630,6 +6819,7 @@ settingsSave.addEventListener('click', async () => {
   const wsjtxHighlightEnabled = setWsjtxHighlight.checked;
   const wsjtxAutoLogEnabled = setWsjtxAutoLog.checked;
   const colorblindEnabled = setColorblind.checked;
+  const wcagEnabled = setWcagMode.checked;
   const colorRowsEnabled = setColorRows.checked;
   const solarEnabled = setEnableSolar.checked;
   const bandActivityEnabled = setEnableBandActivity.checked;
@@ -5644,7 +6834,7 @@ settingsSave.addEventListener('click', async () => {
   const hideOob = setHideOutOfBand.checked;
   const hideWorkedEnabled = setHideWorked.checked;
   const tuneClickEnabled = setTuneClick.checked;
-  const rotorEnabled = setEnableRotor.checked;
+  const rotorEnabledVal = setEnableRotor.checked;
   const rotorHostVal = setRotorHost.value.trim() || '127.0.0.1';
   const rotorPortVal = parseInt(setRotorPort.value, 10) || 12040;
   const agEnabled = setEnableAg.checked;
@@ -5671,6 +6861,10 @@ settingsSave.addEventListener('click', async () => {
   const remoteRequireTokenVal = setRemoteRequireToken.checked;
   const remoteTokenVal = setRemoteToken.value;
   const remotePttTimeoutVal = parseInt(setRemotePttTimeout.value, 10) || 180;
+  const remoteCwEnabledVal = setRemoteCwEnabled.checked;
+  const cwKeyPortVal = setCwKeyPort.value || '';
+  const clubModeEnabled = setClubMode.checked;
+  const clubCsvPathVal = setClubCsvPath.value || '';
   // Audio comes from the active rig (resolved after selectedRig below)
   // CW Keyer
   const cwKeyerEnabled = setEnableCwKeyer.checked;
@@ -5707,6 +6901,7 @@ settingsSave.addEventListener('click', async () => {
     grid: setGrid.value.trim() || 'FN20jb',
     distUnit: setDistUnit.value,
     maxAgeMin: maxAgeVal,
+    sotaMaxAge: sotaMaxAgeVal,
     refreshInterval: refreshIntervalVal,
     scanDwell: dwellVal,
     cwXit: cwXitVal,
@@ -5731,6 +6926,7 @@ settingsSave.addEventListener('click', async () => {
     enableRbn: rbnEnabled,
     enableWsjtx: wsjtxEnabled,
     enablePskr: pskrEnabled,
+    enablePskrMap: pskrMapEnabledVal,
     wsjtxPort: wsjtxPortVal,
     wsjtxHighlight: wsjtxHighlightEnabled,
     wsjtxAutoLog: wsjtxAutoLogEnabled,
@@ -5742,6 +6938,7 @@ settingsSave.addEventListener('click', async () => {
     showDxBar: showDxBarEnabled,
     enableClusterTerminal: clusterTerminalEnabled,
     colorblindMode: colorblindEnabled,
+    wcagMode: wcagEnabled,
     colorRows: colorRowsEnabled,
     enableSolar: solarEnabled,
     enableBandActivity: bandActivityEnabled,
@@ -5756,7 +6953,7 @@ settingsSave.addEventListener('click', async () => {
     hideOutOfBand: hideOob,
     hideWorked: hideWorkedEnabled,
     tuneClick: tuneClickEnabled,
-    enableRotor: rotorEnabled,
+    enableRotor: rotorEnabledVal,
     rotorHost: rotorHostVal,
     rotorPort: rotorPortVal,
     enableAntennaGenius: agEnabled,
@@ -5770,6 +6967,7 @@ settingsSave.addEventListener('click', async () => {
     potaParksPath: potaParksPath,
     hideWorkedParks: hideWorkedParksEnabled,
     enableLogging: loggingEnabled,
+    enableBannerLogger: setEnableBannerLogger.checked,
     n1mmRst: n1mmRstEnabled,
     adifLogPath: adifLogPath,
     defaultPower: defaultPowerVal,
@@ -5805,6 +7003,10 @@ settingsSave.addEventListener('click', async () => {
     remoteRequireToken: remoteRequireTokenVal,
     remoteToken: remoteTokenVal,
     remotePttTimeout: remotePttTimeoutVal,
+    remoteCwEnabled: remoteCwEnabledVal,
+    cwKeyPort: cwKeyPortVal,
+    clubMode: clubModeEnabled,
+    clubCsvPath: clubCsvPathVal,
     remoteAudioInput: selectedRig ? (selectedRig.remoteAudioInput || '') : '',
     remoteAudioOutput: selectedRig ? (selectedRig.remoteAudioOutput || '') : '',
     appMode: document.querySelector('input[name="set-app-mode"]:checked')?.value || 'hunter',
@@ -5812,6 +7014,7 @@ settingsSave.addEventListener('click', async () => {
   grid = setGrid.value.trim();
   distUnit = setDistUnit.value;
   maxAgeMin = maxAgeVal;
+  sotaMaxAgeMin = sotaMaxAgeVal;
   scanDwell = dwellVal;
   watchlist = parseWatchlist(watchlistRaw);
   enablePota = potaEnabled;
@@ -5821,13 +7024,23 @@ settingsSave.addEventListener('click', async () => {
   enableCluster = clusterEnabled;
   enableRbn = rbnEnabled;
   enablePskr = pskrEnabled;
+  enablePskrMap = pskrMapEnabledVal;
   enableRemote = remoteEnabled;
   enableWsjtx = wsjtxEnabled;
   updateWsjtxStatusVisibility();
   updateRbnButton();
+  updateDirectoryButton();
+  // Sync rotor quick-toggle visibility
+  rotorConfigured = !!rotorEnabledVal;
+  quickRotorLabel.classList.toggle('hidden', !rotorConfigured);
+  quickRotorDivider.classList.toggle('hidden', !rotorConfigured);
+  // When enabling rotor config, default rotorActive to on
+  if (rotorEnabledVal) quickRotor.checked = true;
   spotsTable.classList.toggle('no-source-tint', !colorRowsEnabled);
   applyColorblindMode(colorblindEnabled);
+  applyWcagMode(wcagEnabled);
   window.api.sendColorblindMode(colorblindEnabled);
+  window.api.sendWcagMode(wcagEnabled);
   enableSolar = solarEnabled;
   updateSolarVisibility();
   enableBandActivity = bandActivityEnabled;
@@ -5844,16 +7057,19 @@ settingsSave.addEventListener('click', async () => {
   if (showTable || showMap) updateViewLayout();
   qrzFullName = qrzFullNameEnabled;
   enableLogging = loggingEnabled;
+  enableBannerLogger = setEnableBannerLogger.checked;
   n1mmRst = n1mmRstEnabled;
   applyRstMode();
   defaultPower = defaultPowerVal;
   updateLoggingVisibility();
+  updateBannerLoggerVisibility();
   applyTheme(lightModeEnabled);
   if (popoutOpen) window.api.sendPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (qsoPopoutOpen) window.api.sendQsoPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (actmapPopoutOpen) window.api.actmapPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (spotsPopoutOpen) window.api.sendSpotsPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   if (clusterPopoutOpen) window.api.sendClusterPopoutTheme(lightModeEnabled ? 'light' : 'dark');
+  if (jtcatPopoutOpen) window.api.jtcatPopoutTheme(lightModeEnabled ? 'light' : 'dark');
   enableDxcc = dxccEnabled;
   licenseClass = licenseClassVal;
   hideOutOfBand = hideOob;
@@ -6640,6 +7856,580 @@ function isSwlOnAirNow(entry) {
   return nowMin >= startMin && nowMin < endMin;
 }
 
+// === Directory View (top-level) ===
+
+function freqToBandDir(khz) {
+  const f = parseFloat(khz);
+  if (!f) return '';
+  if (f >= 1800 && f <= 2000) return '160m';
+  if (f >= 3500 && f <= 4000) return '80m';
+  if (f >= 5330 && f <= 5410) return '60m';
+  if (f >= 7000 && f <= 7300) return '40m';
+  if (f >= 10100 && f <= 10150) return '30m';
+  if (f >= 14000 && f <= 14350) return '20m';
+  if (f >= 18068 && f <= 18168) return '17m';
+  if (f >= 21000 && f <= 21450) return '15m';
+  if (f >= 24890 && f <= 24990) return '12m';
+  if (f >= 28000 && f <= 29700) return '10m';
+  if (f >= 50000 && f <= 54000) return '6m';
+  if (f >= 144000 && f <= 148000) return '2m';
+  if (f >= 530 && f <= 1700) return 'MW';
+  if (f >= 2300 && f <= 26100) return 'SW';
+  return '';
+}
+
+function getNetCountdown(net) {
+  // Returns { status: 'live'|'soon'|'today'|'off', label: string, sortKey: number }
+  const now = new Date();
+  const utcH = now.getUTCHours();
+  const utcM = now.getUTCMinutes();
+  const nowMin = utcH * 60 + utcM;
+  const parts = (net.startTimeUtc || '0:0').split(':');
+  const startMin = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || '0', 10);
+  const dur = net.duration || 60;
+  const endMin = startMin + dur;
+  const days = (net.days || 'Daily').toLowerCase();
+
+  // Check if scheduled today
+  let scheduledToday = days === 'daily';
+  if (!scheduledToday) {
+    const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    const todayAbbr = dayNames[now.getUTCDay()];
+    scheduledToday = days.includes(todayAbbr);
+  }
+
+  if (!scheduledToday) {
+    return { status: 'off', label: '', sortKey: 9999 };
+  }
+
+  // Check if on-air
+  let onAir = false;
+  if (endMin > 1440) {
+    onAir = nowMin >= startMin || nowMin < (endMin - 1440);
+  } else {
+    onAir = nowMin >= startMin && nowMin < endMin;
+  }
+
+  if (onAir) {
+    const remaining = endMin > 1440 && nowMin < startMin
+      ? (endMin - 1440) - nowMin
+      : (endMin > 1440 ? endMin - 1440 - nowMin : endMin - nowMin);
+    const rh = Math.floor(remaining / 60);
+    const rm = remaining % 60;
+    const timeLeft = rh > 0 ? `${rh}h ${rm}m left` : `${rm}m left`;
+    return { status: 'live', label: `On air \u2014 ${timeLeft}`, sortKey: -1000 + nowMin - startMin };
+  }
+
+  // Upcoming today
+  let minsUntil = startMin - nowMin;
+  if (minsUntil < 0) minsUntil += 1440; // past for today, would be tomorrow
+  if (minsUntil < 0 || minsUntil > 1440) {
+    return { status: 'today', label: `${parts[0].padStart(2,'0')}:${(parts[1]||'00').padStart(2,'0')} UTC`, sortKey: minsUntil };
+  }
+  if (minsUntil <= 60) {
+    return { status: 'soon', label: `in ${minsUntil}m`, sortKey: minsUntil };
+  }
+  const h = Math.floor(minsUntil / 60);
+  const m = minsUntil % 60;
+  const timeStr = m > 0 ? `in ${h}h ${m}m` : `in ${h}h`;
+  return { status: minsUntil <= 120 ? 'soon' : 'today', label: timeStr, sortKey: minsUntil };
+}
+
+function getSwlCountdown(entry) {
+  if (!entry.startTimeUtc || !entry.endTimeUtc) return { status: 'off', label: '', sortKey: 9999 };
+  const now = new Date();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const sp = entry.startTimeUtc.split(':');
+  const ep = entry.endTimeUtc.split(':');
+  const startMin = parseInt(sp[0], 10) * 60 + parseInt(sp[1] || '0', 10);
+  let endMin = parseInt(ep[0], 10) * 60 + parseInt(ep[1] || '0', 10);
+  if (entry.endTimeUtc === '24:00') endMin = 1440;
+
+  let onAir;
+  if (endMin <= startMin) {
+    onAir = nowMin >= startMin || nowMin < endMin;
+  } else {
+    onAir = nowMin >= startMin && nowMin < endMin;
+  }
+
+  if (onAir) {
+    const effEnd = endMin <= startMin && nowMin < endMin ? endMin : endMin;
+    const remaining = effEnd > nowMin ? effEnd - nowMin : effEnd + 1440 - nowMin;
+    const rh = Math.floor(remaining / 60);
+    const rm = remaining % 60;
+    const timeLeft = rh > 0 ? `${rh}h ${rm}m left` : `${rm}m left`;
+    return { status: 'live', label: `On air \u2014 ${timeLeft}`, sortKey: -1000 };
+  }
+
+  let minsUntil = startMin - nowMin;
+  if (minsUntil < 0) minsUntil += 1440;
+  if (minsUntil <= 60) return { status: 'soon', label: `in ${minsUntil}m`, sortKey: minsUntil };
+  const h = Math.floor(minsUntil / 60);
+  const m = minsUntil % 60;
+  const timeStr = m > 0 ? `in ${h}h ${m}m` : `in ${h}h`;
+  return { status: minsUntil <= 120 ? 'soon' : 'today', label: timeStr, sortKey: minsUntil };
+}
+
+let dirvInited = false;
+function renderDirectoryView() {
+  if (!directoryView || directoryView.classList.contains('hidden')) return;
+  const search = (dirvSearch ? dirvSearch.value : '').toLowerCase().trim();
+  const bandFilter = dirvBandFilter ? dirvBandFilter.value : 'all';
+  const statusFilter = dirvStatusFilter ? dirvStatusFilter.value : 'all';
+
+  if (dirvActiveTab === 'nets') {
+    renderDirvNets(search, bandFilter, statusFilter);
+    const table = dirvNetsContainer?.querySelector('.directory-view-table');
+    if (table) {
+      initDirvColumnResizing(table);
+      applyDirvHiddenCols(table);
+      if (!table._dirvMenuInited) { initDirvHeaderMenu(table); table._dirvMenuInited = true; }
+    }
+  } else {
+    renderDirvSwl(search, bandFilter, statusFilter);
+    const table = dirvSwlContainer?.querySelector('.directory-view-table');
+    if (table) {
+      initDirvColumnResizing(table);
+      applyDirvHiddenCols(table);
+      if (!table._dirvMenuInited) { initDirvHeaderMenu(table); table._dirvMenuInited = true; }
+    }
+  }
+}
+
+function renderDirvNets(search, bandFilter, statusFilter) {
+  if (!dirvNetsBody) return;
+  dirvNetsBody.innerHTML = '';
+  // Merge community directory nets + user custom nets
+  let entries = [];
+  // Community nets
+  for (const net of directoryNets) {
+    const band = freqToBandDir(net.frequency);
+    const cd = getNetCountdown(net);
+    entries.push({ ...net, band, _cd: cd, _src: 'community' });
+  }
+  // User custom net reminders
+  for (const nr of currentNetReminders) {
+    // Skip if it matches a community net (avoid duplicates)
+    const isDup = directoryNets.some(d => d.name === nr.name && String(d.frequency) === String(nr.frequency));
+    if (isDup) continue;
+    const band = freqToBandDir(nr.frequency);
+    // Build a fake directory entry from the reminder
+    const days = nr.schedule?.type === 'daily' ? 'Daily' :
+      nr.schedule?.type === 'weekly' ? (nr.schedule.days || []).map(d => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]).join(',') : 'Custom';
+    const fakeNet = {
+      name: nr.name, frequency: nr.frequency, mode: nr.mode || 'SSB',
+      days, startTimeUtc: nr.startTime, duration: nr.duration || 60,
+      region: '', notes: '(My Net)', band,
+      _cd: getNetCountdown({ startTimeUtc: nr.startTime, days, duration: nr.duration || 60 }),
+      _src: 'user', _netId: nr.id
+    };
+    entries.push(fakeNet);
+  }
+
+  // Filter
+  if (search) {
+    entries = entries.filter(n =>
+      (n.name || '').toLowerCase().includes(search) ||
+      (n.region || '').toLowerCase().includes(search) ||
+      (n.notes || '').toLowerCase().includes(search) ||
+      (n.mode || '').toLowerCase().includes(search) ||
+      String(n.frequency).includes(search)
+    );
+  }
+  if (bandFilter !== 'all') {
+    entries = entries.filter(n => n.band === bandFilter);
+  }
+  if (statusFilter === 'live') {
+    entries = entries.filter(n => n._cd.status === 'live');
+  } else if (statusFilter === 'today') {
+    entries = entries.filter(n => n._cd.status !== 'off');
+  }
+
+  // Sort: live first, then soon, then today by countdown, then off alphabetically
+  entries.sort((a, b) => {
+    if (a._cd.sortKey !== b._cd.sortKey) return a._cd.sortKey - b._cd.sortKey;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  if (dirvCount) dirvCount.textContent = `${entries.length} net${entries.length !== 1 ? 's' : ''}`;
+
+  if (entries.length === 0) {
+    if (dirvPlaceholder) {
+      dirvPlaceholder.textContent = directoryNets.length === 0 ? 'Loading directory data...' : 'No matching nets found.';
+      dirvPlaceholder.classList.remove('hidden');
+    }
+    return;
+  }
+  if (dirvPlaceholder) dirvPlaceholder.classList.add('hidden');
+
+  const lsbBands = new Set(['160m', '80m', '60m', '40m']);
+
+  for (const net of entries) {
+    const tr = document.createElement('tr');
+    const cd = net._cd;
+    if (cd.status === 'live') tr.classList.add('dirv-on-air');
+    else if (cd.status === 'soon') tr.classList.add('dirv-upcoming');
+
+    const statusBadge = cd.status === 'live' ? '<span class="dirv-status-badge live">Live</span>'
+      : cd.status === 'soon' ? '<span class="dirv-status-badge soon">Soon</span>'
+      : cd.status === 'today' ? '<span class="dirv-status-badge today">Today</span>'
+      : '<span class="dirv-status-badge off">\u2014</span>';
+
+    const nextLabel = cd.label
+      ? `<span class="dirv-next-countdown${cd.status === 'live' ? ' live' : ''}">${esc(cd.label)}</span>`
+      : '\u2014';
+
+    const duration = net.duration ? `${net.duration}m` : '';
+    const alreadyAdded = net._src === 'user' || currentNetReminders.some(r =>
+      r.name === net.name && String(r.frequency) === String(net.frequency)
+    );
+    const actionCell = alreadyAdded
+      ? '<span class="dir-added-label">\u2713</span>'
+      : '<button class="dir-add-btn" type="button">+ Add</button>';
+
+    tr.innerHTML = `<td class="dirv-status-col">${statusBadge}</td>`
+      + `<td class="dirv-name-col">${esc(net.name)}</td>`
+      + `<td class="dirv-freq-col">${net.frequency || ''}</td>`
+      + `<td class="dirv-mode-col">${esc(net.mode)}</td>`
+      + `<td class="dirv-band-col">${esc(net.band)}</td>`
+      + `<td class="dirv-days-col">${esc(net.days)}</td>`
+      + `<td class="dirv-time-col">${esc(net.startTimeUtc)}</td>`
+      + `<td class="dirv-next-col">${nextLabel}</td>`
+      + `<td class="dirv-dur-col">${duration}</td>`
+      + `<td class="dirv-region-col">${esc(net.region)}</td>`
+      + `<td class="dirv-notes-col">${esc(net.notes)}</td>`
+      + `<td class="dirv-action-col">${actionCell}</td>`;
+
+    // Click row to tune
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.dir-add-btn')) return; // don't tune on Add click
+      const freq = String(net.frequency);
+      if (!freq) return;
+      let mode = (net.mode || '').toUpperCase();
+      if (mode === 'SSB') {
+        const band = net.band;
+        mode = lsbBands.has(band) ? 'LSB' : 'USB';
+      }
+      window.api.tune(freq, mode);
+    });
+
+    // Hover popup
+    attachDirHover(tr, [
+      { label: 'Net', value: net.name },
+      { label: 'Frequency', value: net.frequency ? `${net.frequency} kHz` : '' },
+      { label: 'Mode', value: net.mode },
+      { label: 'Schedule', value: `${net.days || 'Daily'} at ${net.startTimeUtc || '?'} UTC` },
+      { label: 'Duration', value: duration },
+      { label: 'Region', value: net.region },
+      { label: 'Notes', value: net.notes },
+    ]);
+
+    // Add button
+    const addBtn = tr.querySelector('.dir-add-btn');
+    if (addBtn) {
+      addBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addDirectoryNetToReminders(net);
+        renderDirectoryView();
+        renderNetList(currentNetReminders);
+        // Persist immediately so the net reminder survives app restart
+        window.api.saveSettings({ netReminders: currentNetReminders });
+      });
+    }
+
+    dirvNetsBody.appendChild(tr);
+  }
+}
+
+function renderDirvSwl(search, bandFilter, statusFilter) {
+  if (!dirvSwlBody) return;
+  dirvSwlBody.innerHTML = '';
+  let entries = [];
+  for (const entry of directorySwl) {
+    const band = freqToBandDir(entry.frequency);
+    const cd = getSwlCountdown(entry);
+    entries.push({ ...entry, band, _cd: cd });
+  }
+
+  if (search) {
+    entries = entries.filter(e =>
+      (e.station || '').toLowerCase().includes(search) ||
+      (e.language || '').toLowerCase().includes(search) ||
+      (e.regionTarget || '').toLowerCase().includes(search) ||
+      (e.notes || '').toLowerCase().includes(search) ||
+      String(e.frequency).includes(search)
+    );
+  }
+  if (bandFilter !== 'all') {
+    entries = entries.filter(e => e.band === bandFilter);
+  }
+  if (statusFilter === 'live') {
+    entries = entries.filter(e => e._cd.status === 'live');
+  } else if (statusFilter === 'today') {
+    entries = entries.filter(e => e._cd.status !== 'off');
+  }
+
+  entries.sort((a, b) => {
+    if (a._cd.sortKey !== b._cd.sortKey) return a._cd.sortKey - b._cd.sortKey;
+    return (a.station || '').localeCompare(b.station || '');
+  });
+
+  if (dirvCount) dirvCount.textContent = `${entries.length} broadcast${entries.length !== 1 ? 's' : ''}`;
+
+  if (entries.length === 0) {
+    if (dirvPlaceholder) {
+      dirvPlaceholder.textContent = directorySwl.length === 0 ? 'Loading directory data...' : 'No matching broadcasts found.';
+      dirvPlaceholder.classList.remove('hidden');
+    }
+    return;
+  }
+  if (dirvPlaceholder) dirvPlaceholder.classList.add('hidden');
+
+  for (const entry of entries) {
+    const tr = document.createElement('tr');
+    const cd = entry._cd;
+    if (cd.status === 'live') tr.classList.add('dirv-on-air');
+    else if (cd.status === 'soon') tr.classList.add('dirv-upcoming');
+
+    const statusBadge = cd.status === 'live' ? '<span class="dirv-status-badge live">Live</span>'
+      : cd.status === 'soon' ? '<span class="dirv-status-badge soon">Soon</span>'
+      : cd.status === 'today' ? '<span class="dirv-status-badge today">Today</span>'
+      : '<span class="dirv-status-badge off">\u2014</span>';
+
+    const nextLabel = cd.label
+      ? `<span class="dirv-next-countdown${cd.status === 'live' ? ' live' : ''}">${esc(cd.label)}</span>`
+      : '\u2014';
+
+    const powerStr = entry.powerKw ? `${entry.powerKw} kW` : '';
+
+    tr.innerHTML = `<td class="dirv-status-col">${statusBadge}</td>`
+      + `<td class="dirv-name-col">${esc(entry.station)}</td>`
+      + `<td class="dirv-freq-col">${entry.frequency || ''}</td>`
+      + `<td class="dirv-mode-col">${esc(entry.mode)}</td>`
+      + `<td class="dirv-band-col">${esc(entry.band)}</td>`
+      + `<td class="dirv-time-col">${esc(entry.startTimeUtc)}</td>`
+      + `<td class="dirv-time-col">${esc(entry.endTimeUtc)}</td>`
+      + `<td class="dirv-next-col">${nextLabel}</td>`
+      + `<td class="dirv-lang-col">${esc(entry.language)}</td>`
+      + `<td class="dirv-power-col">${powerStr}</td>`
+      + `<td class="dirv-region-col">${esc(entry.regionTarget)}</td>`
+      + `<td class="dirv-notes-col">${esc(entry.notes)}</td>`;
+
+    // Click row to tune
+    tr.addEventListener('click', () => {
+      const freq = String(entry.frequency);
+      if (!freq) return;
+      window.api.tune(freq, (entry.mode || 'AM').toUpperCase());
+    });
+
+    attachDirHover(tr, [
+      { label: 'Station', value: entry.station },
+      { label: 'Frequency', value: entry.frequency ? `${entry.frequency} kHz` : '' },
+      { label: 'Mode', value: entry.mode },
+      { label: 'Schedule', value: `${entry.startTimeUtc || '?'} \u2013 ${entry.endTimeUtc || '?'} UTC` },
+      { label: 'Language', value: entry.language },
+      { label: 'Power', value: powerStr },
+      { label: 'Target', value: entry.regionTarget },
+      { label: 'Notes', value: entry.notes },
+    ]);
+
+    dirvSwlBody.appendChild(tr);
+  }
+}
+
+// Auto-refresh countdowns every 30s while directory view is open
+function startDirvAutoRefresh() {
+  stopDirvAutoRefresh();
+  dirvAutoRefreshTimer = setInterval(() => {
+    if (currentView === 'directory') renderDirectoryView();
+  }, 30000);
+}
+function stopDirvAutoRefresh() {
+  if (dirvAutoRefreshTimer) { clearInterval(dirvAutoRefreshTimer); dirvAutoRefreshTimer = null; }
+}
+
+// --- Directory View: Column Resize & Visibility ---
+const DIRV_COL_KEY = 'dirv-col-widths';
+const DIRV_HIDDEN_KEY = 'dirv-hidden-cols';
+
+const DIRV_NETS_COLS = ['status','name','freq','mode','band','days','time','next','dur','region','notes','action'];
+const DIRV_SWL_COLS = ['status','name','freq','mode','band','startTime','endTime','next','lang','power','region','notes'];
+
+const DIRV_DEFAULT_WIDTHS = {
+  status: 70, name: 0, freq: 90, mode: 50, band: 50, days: 100,
+  time: 80, next: 90, dur: 40, region: 110, notes: 0, action: 60,
+  startTime: 80, endTime: 80, lang: 60, power: 60
+};
+
+function loadDirvColWidths() {
+  try { const s = JSON.parse(localStorage.getItem(DIRV_COL_KEY)); if (s) return s; } catch {}
+  return {};
+}
+function saveDirvColWidths(w) { localStorage.setItem(DIRV_COL_KEY, JSON.stringify(w)); }
+function loadDirvHiddenCols() {
+  try { const s = JSON.parse(localStorage.getItem(DIRV_HIDDEN_KEY)); if (Array.isArray(s)) return new Set(s); } catch {}
+  return new Set();
+}
+function saveDirvHiddenCols(s) { localStorage.setItem(DIRV_HIDDEN_KEY, JSON.stringify([...s])); }
+
+let dirvColWidths = loadDirvColWidths();
+let dirvHiddenCols = loadDirvHiddenCols();
+
+function initDirvColumnResizing(table) {
+  if (!table) return;
+  const ths = table.querySelectorAll('thead th');
+  ths.forEach(th => {
+    // Remove any old handle
+    const old = th.querySelector('.col-resize-handle');
+    if (old) old.remove();
+
+    const col = th.dataset.dirCol;
+    if (!col) return;
+
+    // Apply saved width
+    if (dirvColWidths[col]) th.style.width = dirvColWidths[col] + 'px';
+
+    // Apply hidden state
+    th.classList.toggle('dirv-col-hidden', dirvHiddenCols.has(col));
+
+    const handle = document.createElement('div');
+    handle.className = 'col-resize-handle';
+    th.style.position = 'relative';
+    th.appendChild(handle);
+
+    handle.addEventListener('dragstart', (e) => e.preventDefault());
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.offsetWidth;
+      document.body.style.cursor = 'col-resize';
+
+      const onMove = (ev) => {
+        const w = Math.max(30, startW + ev.clientX - startX);
+        th.style.width = w + 'px';
+        dirvColWidths[col] = w;
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        saveDirvColWidths(dirvColWidths);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+function applyDirvHiddenCols(table) {
+  if (!table) return;
+  const ths = table.querySelectorAll('thead th');
+  const colIndices = new Map();
+  ths.forEach((th, i) => {
+    const col = th.dataset.dirCol;
+    if (!col) return;
+    const hidden = dirvHiddenCols.has(col);
+    th.classList.toggle('dirv-col-hidden', hidden);
+    colIndices.set(i, hidden);
+  });
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    const tds = tr.querySelectorAll('td');
+    colIndices.forEach((hidden, i) => {
+      if (tds[i]) tds[i].classList.toggle('dirv-col-hidden', hidden);
+    });
+  });
+}
+
+// Right-click context menu on header to toggle columns
+let dirvColMenu = null;
+function showDirvColMenu(e, table) {
+  e.preventDefault();
+  closeDirvColMenu();
+  const ths = table.querySelectorAll('thead th[data-dir-col]');
+  const menu = document.createElement('div');
+  menu.className = 'dirv-col-menu';
+  menu.style.left = e.clientX + 'px';
+  menu.style.top = e.clientY + 'px';
+
+  ths.forEach(th => {
+    const col = th.dataset.dirCol;
+    const label = th.textContent.replace(/\s+/g, ' ').trim();
+    if (!col || !label) return;
+    const item = document.createElement('label');
+    item.className = 'dirv-col-menu-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !dirvHiddenCols.has(col);
+    cb.addEventListener('change', () => {
+      if (cb.checked) dirvHiddenCols.delete(col);
+      else dirvHiddenCols.add(col);
+      saveDirvHiddenCols(dirvHiddenCols);
+      applyDirvHiddenCols(table);
+    });
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(' ' + label));
+    menu.appendChild(item);
+  });
+
+  document.body.appendChild(menu);
+  dirvColMenu = menu;
+  // Keep within viewport
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+
+  setTimeout(() => {
+    document.addEventListener('click', closeDirvColMenu, { once: true });
+  }, 0);
+}
+function closeDirvColMenu() {
+  if (dirvColMenu) { dirvColMenu.remove(); dirvColMenu = null; }
+}
+
+// Attach context menu to both directory tables
+function initDirvHeaderMenu(table) {
+  if (!table) return;
+  const thead = table.querySelector('thead');
+  if (thead) thead.addEventListener('contextmenu', (e) => showDirvColMenu(e, table));
+}
+
+// Directory view tab switching
+if (dirvTabNets) dirvTabNets.addEventListener('click', () => {
+  dirvActiveTab = 'nets';
+  dirvTabNets.classList.add('active');
+  dirvTabSwl.classList.remove('active');
+  dirvNetsContainer.classList.remove('hidden');
+  dirvSwlContainer.classList.add('hidden');
+  renderDirectoryView();
+});
+if (dirvTabSwl) dirvTabSwl.addEventListener('click', () => {
+  dirvActiveTab = 'swl';
+  dirvTabSwl.classList.add('active');
+  dirvTabNets.classList.remove('active');
+  dirvSwlContainer.classList.remove('hidden');
+  dirvNetsContainer.classList.add('hidden');
+  renderDirectoryView();
+});
+
+// Directory view filters
+if (dirvSearch) dirvSearch.addEventListener('input', () => renderDirectoryView());
+if (dirvBandFilter) dirvBandFilter.addEventListener('change', () => renderDirectoryView());
+if (dirvStatusFilter) dirvStatusFilter.addEventListener('change', () => renderDirectoryView());
+if (dirvRefreshBtn) dirvRefreshBtn.addEventListener('click', () => { window.api.fetchDirectory(); });
+if (dirvSuggestSheet) dirvSuggestSheet.addEventListener('click', (e) => {
+  e.preventDefault();
+  window.api.openExternal(DIR_SHEET_URL);
+});
+
+function updateDirectoryButton() {
+  if (!viewDirectoryBtn) return;
+  // Show when directory is enabled, OR user has custom net reminders
+  const show = setEnableDirectory?.checked || (currentNetReminders && currentNetReminders.length > 0);
+  viewDirectoryBtn.classList.toggle('hidden', !show);
+  if (!show && currentView === 'directory') setView('table');
+}
+
 function renderDirectory() {
   if (!dirBrowser || dirBrowser.classList.contains('hidden')) return;
   const search = (dirSearchInput.value || '').toLowerCase().trim();
@@ -6716,6 +8506,8 @@ function renderNetsTable(search) {
         addDirectoryNetToReminders(net);
         renderDirectory();
         renderNetList(currentNetReminders);
+        // Persist immediately so the net reminder survives app restart
+        window.api.saveSettings({ netReminders: currentNetReminders });
       });
     }
     // URL link
@@ -6900,14 +8692,13 @@ if (setEnableDirectory) setEnableDirectory.addEventListener('change', () => {
   }
 });
 
-// Browse / close directory browser
+// Browse / close directory browser — now opens the full Directory View
 if (dirBrowseBtn) dirBrowseBtn.addEventListener('click', () => {
-  dirBrowser.classList.remove('hidden');
-  dirBrowseBtn.classList.add('hidden');
   if (directoryNets.length === 0 && directorySwl.length === 0) {
     window.api.fetchDirectory();
   }
-  renderDirectory();
+  settingsDialog.close();
+  setView('directory');
 });
 if (dirCloseBtn) dirCloseBtn.addEventListener('click', () => {
   dirBrowser.classList.add('hidden');
@@ -6919,6 +8710,7 @@ window.api.onDirectoryData((data) => {
   directoryNets = data.nets || [];
   directorySwl = data.swl || [];
   renderDirectory();
+  renderDirectoryView();
 });
 
 // --- Worked parks listener ---
@@ -7074,11 +8866,12 @@ window.api.onWsjtxActivatorQso((contact) => {
       contact,
     });
   }
-  // Fire-and-forget QRZ lookup for name + grid
+  // Fire-and-forget QRZ lookup for name + grid + state
   window.api.qrzLookup(contact.callsign).then(info => {
     if (info) {
       contact.name = qrzDisplayName(info);
       if (info.grid) contact.grid = info.grid;
+      if (!contact.state && info.state) contact.state = info.state;
       renderActivatorLog();
       if (actmapPopoutOpen && info.grid) {
         window.api.actmapPopoutContact({
@@ -7100,10 +8893,12 @@ window.api.onCatFrequency((hz) => {
   const newBand = freqToBandActivator(newKhz);
   // Update band filter text and re-filter when band changes in Radio mode
   const radioBandCb = bandFilterEl.querySelector('input[value="radio"]');
-  if (radioBandCb && radioBandCb.checked && newBand !== oldBand) {
-    if (bandFilterEl._updateText) bandFilterEl._updateText();
+  if (radioBandCb && radioBandCb.checked) {
+    if (newBand !== oldBand && bandFilterEl._updateText) bandFilterEl._updateText();
+    updateBandButtonActive();
   }
   playTuneClick();
+  updateBlFreqFromRadio();
   if (showTable || showMap) render();
 });
 
@@ -7111,6 +8906,7 @@ window.api.onCatMode((mode) => {
   const oldFilter = radioMode ? radioModeToFilter(radioMode) : null;
   radioMode = mode;
   const newFilter = radioModeToFilter(mode);
+  updateBlModeFromRadio();
   const radioModeCb = modeFilterEl.querySelector('input[value="radio"]');
   if (radioModeCb && radioModeCb.checked && newFilter !== oldFilter) {
     if (modeFilterEl._updateText) modeFilterEl._updateText();
@@ -7119,6 +8915,7 @@ window.api.onCatMode((mode) => {
 });
 
 let radioPower = 0; // last known TX power from CAT (watts)
+let lastLogPower = 0; // last power value entered by user in log dialog (sticky)
 window.api.onCatPower((watts) => {
   radioPower = watts;
 });
@@ -7337,12 +9134,23 @@ function updateRbnNightOverlay() {
 
 function getFilteredRbnSpots() {
   const bands = getDropdownValues(rbnBandFilterEl);
+  const modes = getDropdownValues(propModeFilterEl);
   const maxAge = parseInt(rbnMaxAgeInput.value, 10) || 30;
   const ageUnit = rbnAgeUnitSelect.value; // 'm' or 'h'
   const maxAgeSecs = maxAge * (ageUnit === 'h' ? 3600 : 60);
 
-  return rbnSpots.filter((s) => {
+  // Merge RBN and PSKReporter spots based on source toggles
+  const merged = [];
+  if (propShowRbn) {
+    for (const s of rbnSpots) merged.push({ ...s, _source: 'rbn', _station: s.spotter });
+  }
+  if (propShowPskr) {
+    for (const s of pskrMapSpots) merged.push({ ...s, _source: 'pskr', _station: s.receiver });
+  }
+
+  return merged.filter((s) => {
     if (bands && !bands.has(s.band)) return false;
+    if (modes && !modes.has(s.mode)) return false;
     if (spotAgeSecs(s.spotTime) > maxAgeSecs) return false;
     return true;
   });
@@ -7391,9 +9199,10 @@ function renderRbnMarkers() {
     const snrStr = s.snr != null ? s.snr + ' dB' : '';
     const wpmStr = s.wpm != null ? s.wpm + ' WPM' : '';
     const details = [snrStr, wpmStr].filter(Boolean).join(' / ');
+    const srcLabel = s._source === 'pskr' ? 'PSKReporter' : 'RBN';
 
     const popupContent = `
-      <b><a href="#" class="popup-qrz" data-call="${s.spotter}">${s.spotter}</a></b><br>
+      <b><a href="#" class="popup-qrz" data-call="${s._station}">${s._station}</a></b> <span class="help-text">${srcLabel}</span><br>
       ${s.locationDesc}<br>
       ${s.band || ''} ${s.mode || ''} &middot; ${details}<br>
       ${distStr ? distStr + '<br>' : ''}
@@ -7435,7 +9244,6 @@ function renderRbnLegend(activeBands) {
 function renderRbnTable() {
   rbnTableBody.innerHTML = '';
   rbnDistHeader.textContent = distUnit === 'km' ? 'Dist (km)' : 'Dist (mi)';
-  const unit = distUnit === 'km' ? 'km' : 'mi';
 
   // Show newest spots first
   const sorted = [...getFilteredRbnSpots()].reverse();
@@ -7443,27 +9251,32 @@ function renderRbnTable() {
   for (const s of sorted) {
     const tr = document.createElement('tr');
 
-    // Spotter (QRZ link)
-    const spotterTd = document.createElement('td');
-    const spotterLink = document.createElement('a');
-    spotterLink.textContent = s.spotter;
-    spotterLink.href = '#';
-    spotterLink.className = 'qrz-link';
-    spotterLink.addEventListener('click', (e) => {
+    // Station (QRZ link with source dot)
+    const stationTd = document.createElement('td');
+    const dot = document.createElement('span');
+    dot.className = 'prop-source-dot';
+    dot.style.background = s._source === 'pskr' ? '#ff6b6b' : 'var(--source-rbn)';
+    dot.title = s._source === 'pskr' ? 'PSKReporter' : 'RBN';
+    stationTd.appendChild(dot);
+    const stationLink = document.createElement('a');
+    stationLink.textContent = s._station;
+    stationLink.href = '#';
+    stationLink.className = 'qrz-link';
+    stationLink.addEventListener('click', (e) => {
       e.preventDefault();
-      window.api.openExternal(`https://www.qrz.com/db/${encodeURIComponent(s.spotter.split('/')[0])}`);
+      window.api.openExternal(`https://www.qrz.com/db/${encodeURIComponent(s._station.split('/')[0])}`);
     });
-    spotterTd.appendChild(spotterLink);
-    tr.appendChild(spotterTd);
+    stationTd.appendChild(stationLink);
+    tr.appendChild(stationTd);
 
-    // Spotted (location description)
-    const spottedTd = document.createElement('td');
-    spottedTd.textContent = s.locationDesc || '';
-    tr.appendChild(spottedTd);
+    // Location
+    const locTd = document.createElement('td');
+    locTd.textContent = s.locationDesc || '';
+    tr.appendChild(locTd);
 
     // Distance
     const distTd = document.createElement('td');
-    distTd.textContent = s.distance != null ? formatDistance(s.distance) : '—';
+    distTd.textContent = s.distance != null ? formatDistance(s.distance) : '\u2014';
     tr.appendChild(distTd);
 
     // Freq
@@ -7476,22 +9289,12 @@ function renderRbnTable() {
     modeTd.textContent = s.mode || '';
     tr.appendChild(modeTd);
 
-    // Type
-    const typeTd = document.createElement('td');
-    typeTd.textContent = s.type || '';
-    tr.appendChild(typeTd);
-
     // SNR
     const snrTd = document.createElement('td');
     snrTd.textContent = s.snr != null ? s.snr + ' dB' : '';
     tr.appendChild(snrTd);
 
-    // Speed
-    const speedTd = document.createElement('td');
-    speedTd.textContent = s.wpm != null ? s.wpm + ' WPM' : '';
-    tr.appendChild(speedTd);
-
-    // Time (HHMM from spotTime)
+    // Time
     const timeTd = document.createElement('td');
     try {
       const d = new Date(s.spotTime);
@@ -7541,7 +9344,9 @@ rbnSplitter.addEventListener('mousedown', (e) => {
 // RBN clear button
 rbnClearBtn.addEventListener('click', () => {
   window.api.clearRbn();
+  window.api.clearPskrMap();
   rbnSpots = [];
+  pskrMapSpots = [];
   renderRbnMarkers();
   renderRbnTable();
 });
@@ -7570,15 +9375,33 @@ window.api.onPskrStatus(({ connected, error, spotCount, nextPollAt, pollUpdate }
   }
 });
 
+// --- PSKReporter Map IPC listeners (feeds into shared Propagation view) ---
+window.api.onPskrMapSpots((spots) => {
+  pskrMapSpots = spots;
+  if (currentView === 'rbn') {
+    renderRbnMarkers();
+    renderRbnTable();
+  }
+});
+
+let pskrMapNextPollAt = null;
+window.api.onPskrMapStatus(({ connected, error, spotCount, nextPollAt, pollUpdate }) => {
+  pskrMapConnected = connected;
+  if (nextPollAt) pskrMapNextPollAt = nextPollAt;
+  updateSettingsConnBar();
+  if (!pollUpdate) {
+    if (connected && spotCount != null) showLogToast(`PSKReporter: ${spotCount} spots (polling every 5 min)`, { duration: 4000 });
+    if (error) showLogToast(error, { warn: true, duration: 5000 });
+  }
+});
+
 // ECHOCAT status
 window.api.onRemoteStatus((s) => {
   remoteConnected = s.connected;
   updateSettingsConnBar();
 });
 
-window.api.onRemoteTxState((state) => {
-  if (remoteTxIndicator) remoteTxIndicator.classList.toggle('hidden', !state);
-});
+// ECHOCAT TX indicator removed — JTCAT TX indicator remains
 
 // Reload prefs when ECHOCAT changes settings remotely
 window.api.onReloadPrefs(() => {
@@ -7811,6 +9634,7 @@ cwKeyerStatusEl.addEventListener('click', (e) => {
   if (cwPopoverOpen) { closeCwPopover(); return; }
   // Close other popovers
   if (typeof closeCatPopover === 'function') closeCatPopover();
+  if (typeof closeRigPopover === 'function') closeRigPopover();
   document.querySelectorAll('.multi-dropdown.open').forEach((d) => d.classList.remove('open'));
   openCwPopover();
 });
@@ -7854,6 +9678,229 @@ document.addEventListener('click', function unlockAudio() {
   }
 }, { once: true });
 
+// --- Rig Control Panel (popover from status bar) ---
+const rigPanelBtn = document.getElementById('rig-panel-btn');
+const rigPopover = document.getElementById('rig-popover');
+const rigAtuBtn = document.getElementById('rig-atu-btn');
+const rigNbBtn = document.getElementById('rig-nb-btn');
+const rigPowerOnBtn = document.getElementById('rig-power-on-btn');
+const rigPowerOffBtn = document.getElementById('rig-power-off-btn');
+const rigRfGain = document.getElementById('rig-rfgain');
+const rigRfGainLabel = document.getElementById('rig-rfgain-label');
+const rigTxPower = document.getElementById('rig-txpower');
+const rigTxPowerLabel = document.getElementById('rig-txpower-label');
+const rigFilterPresets = document.getElementById('rig-filter-presets');
+let rigPopoverOpen = false;
+let rigCurrentCaps = {};
+let rigCurrentMode = '';
+
+const RIG_FILTER_PRESETS = {
+  SSB: [1800, 2100, 2400, 2700, 3000, 3600],
+  CW:  [50, 100, 200, 500, 1000, 1500, 2400],
+  DIG: [500, 1000, 2000, 3000, 4000],
+};
+
+function formatFilterWidth(hz) {
+  return hz >= 1000 ? (hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1) + 'k' : hz + '';
+}
+
+function rigGetFilterPresets(mode) {
+  const m = (mode || '').toUpperCase();
+  if (m === 'CW') return RIG_FILTER_PRESETS.CW;
+  if (['FT8','FT4','FT2','DIGU','DIGL','RTTY','PKTUSB','PKTLSB'].includes(m)) return RIG_FILTER_PRESETS.DIG;
+  return RIG_FILTER_PRESETS.SSB;
+}
+
+function rigBuildFilterPresets(mode, currentWidth) {
+  const presets = rigGetFilterPresets(mode);
+  rigFilterPresets.innerHTML = '';
+  for (const w of presets) {
+    const btn = document.createElement('button');
+    btn.textContent = formatFilterWidth(w);
+    btn.title = w + ' Hz';
+    if (currentWidth && Math.abs(currentWidth - w) < 25) btn.classList.add('active');
+    btn.addEventListener('click', () => {
+      window.api.rigControl({ action: 'set-filter-width', value: w });
+    });
+    rigFilterPresets.appendChild(btn);
+  }
+}
+
+function rigApplyCapabilities(caps) {
+  rigCurrentCaps = caps || {};
+  rigAtuBtn.style.display = caps.atu ? '' : 'none';
+  rigNbBtn.style.display = caps.nb ? '' : 'none';
+  rigPowerOnBtn.style.display = caps.power ? '' : 'none';
+  rigPowerOffBtn.style.display = caps.power ? '' : 'none';
+  rigRfGain.closest('.rig-popover-row').style.display = caps.rfgain ? '' : 'none';
+  rigTxPower.closest('.rig-popover-row').style.display = caps.txpower ? '' : 'none';
+  rigFilterPresets.closest('.rig-popover-row').style.display = caps.filter ? '' : 'none';
+}
+
+function positionRigPopover() {
+  const rect = rigPanelBtn.getBoundingClientRect();
+  const bar = rigPanelBtn.closest('.status-bar');
+  const barRect = bar.getBoundingClientRect();
+  rigPopover.style.top = (rect.bottom - barRect.top + 4) + 'px';
+  // Align right edge to anchor right, clamped to parent
+  const popW = rigPopover.offsetWidth || 280;
+  let left = rect.right - barRect.left - popW;
+  if (left < 0) left = 0;
+  if (left + popW > barRect.width) left = barRect.width - popW;
+  rigPopover.style.left = left + 'px';
+}
+
+function openRigPopover() {
+  positionRigPopover();
+  rigPopover.classList.remove('hidden');
+  rigPopoverOpen = true;
+  // Request current state from main process
+  window.api.rigControl({ action: 'get-state' });
+}
+
+function closeRigPopover() {
+  rigPopover.classList.add('hidden');
+  rigPopoverOpen = false;
+}
+
+rigPanelBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (rigPopoverOpen) { closeRigPopover(); return; }
+  if (typeof closeCatPopover === 'function') closeCatPopover();
+  if (typeof closeCwPopover === 'function') closeCwPopover();
+  document.querySelectorAll('.multi-dropdown.open').forEach((d) => d.classList.remove('open'));
+  openRigPopover();
+});
+
+rigPopover.addEventListener('click', (e) => e.stopPropagation());
+
+// Close rig popover on outside click (extend existing document click handler)
+document.addEventListener('click', () => { if (rigPopoverOpen) closeRigPopover(); });
+
+// Button handlers
+rigAtuBtn.addEventListener('click', () => {
+  window.api.rigControl({ action: 'atu-tune' });
+});
+
+rigNbBtn.addEventListener('click', () => {
+  const newState = !rigNbBtn.classList.contains('active');
+  window.api.rigControl({ action: 'set-nb', value: newState });
+});
+
+rigPowerOnBtn.addEventListener('click', () => {
+  window.api.rigControl({ action: 'power-on' });
+});
+
+rigPowerOffBtn.addEventListener('click', () => {
+  window.api.rigControl({ action: 'power-off' });
+});
+
+// Slider handlers
+// Throttle rig control sliders to prevent flooding serial port
+let rigSliderTimer = null;
+function throttledRigControl(action, value) {
+  if (rigSliderTimer) clearTimeout(rigSliderTimer);
+  rigSliderTimer = setTimeout(() => {
+    rigSliderTimer = null;
+    window.api.rigControl({ action, value });
+  }, 80);
+}
+
+rigRfGain.addEventListener('input', () => {
+  const val = parseInt(rigRfGain.value, 10);
+  rigRfGainLabel.textContent = val;
+  throttledRigControl('set-rf-gain', val);
+});
+
+rigTxPower.addEventListener('input', () => {
+  const val = parseInt(rigTxPower.value, 10);
+  rigTxPowerLabel.textContent = val + 'W';
+  throttledRigControl('set-tx-power', val);
+});
+
+// Listen for rig state updates from main process
+window.api.onRigState((state) => {
+  if (!state) return;
+  // Update NB button
+  if (state.nb) {
+    rigNbBtn.classList.add('active');
+  } else {
+    rigNbBtn.classList.remove('active');
+  }
+  // Update sliders (only if user is not actively dragging)
+  if (document.activeElement !== rigRfGain && state.rfGain != null) {
+    rigRfGain.value = state.rfGain;
+    rigRfGainLabel.textContent = state.rfGain;
+  }
+  if (document.activeElement !== rigTxPower && state.txPower != null) {
+    rigTxPower.value = state.txPower;
+    rigTxPowerLabel.textContent = state.txPower + 'W';
+  }
+  // Update filter presets
+  if (state.mode) rigCurrentMode = state.mode;
+  rigBuildFilterPresets(state.mode || rigCurrentMode, state.filterWidth);
+  // Update capabilities (show/hide controls)
+  if (state.capabilities) rigApplyCapabilities(state.capabilities);
+});
+
+// Show/hide rig panel button based on CAT connection status
+window.api.onCatStatus((s) => {
+  if (s.connected) {
+    rigPanelBtn.classList.remove('hidden');
+  } else {
+    rigPanelBtn.classList.add('hidden');
+    if (rigPopoverOpen) closeRigPopover();
+  }
+});
+
+// --- Pi Access (The Net easter egg) ---
+// Ctrl+Shift+Click (Cmd+Shift+Click on Mac) on π unlocks JTCAT + Remote CW
+const piAccessEl = document.getElementById('pi-access');
+const piOverlay = document.getElementById('pi-overlay');
+const piGatedEls = document.querySelectorAll('.pi-gated');
+const jtcatBtn = document.getElementById('view-jtcat-btn');
+let piUnlocked = false;
+
+function applyPiAccess(unlocked) {
+  piUnlocked = unlocked;
+  for (const el of piGatedEls) {
+    el.classList.toggle('hidden', !unlocked);
+  }
+  if (jtcatBtn) jtcatBtn.classList.toggle('hidden', !unlocked);
+}
+
+piAccessEl.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const mod = e.ctrlKey || e.metaKey;
+  if (!mod || !e.shiftKey) return;
+  // Ctrl+Alt+Shift+Click (Cmd+Alt+Shift on Mac) → revoke access
+  if (e.altKey && piUnlocked) {
+    const txt = piOverlay.querySelector('.pi-overlay-text');
+    txt.textContent = 'ACCESS: REVOKED';
+    txt.style.color = '#ff1744';
+    txt.style.textShadow = '0 0 10px #ff1744, 0 0 30px #ff174480';
+    piOverlay.classList.remove('hidden');
+    setTimeout(() => {
+      piOverlay.classList.add('hidden');
+      txt.textContent = 'ACCESS: AUTHORIZED';
+      txt.style.color = '';
+      txt.style.textShadow = '';
+    }, 1800);
+    applyPiAccess(false);
+    window.api.saveSettings({ piAccess: false });
+    return;
+  }
+  // Ctrl+Shift+Click (Cmd+Shift on Mac) → grant access
+  if (piUnlocked) return;
+  piOverlay.classList.remove('hidden');
+  setTimeout(() => {
+    piOverlay.classList.add('hidden');
+  }, 1800);
+  applyPiAccess(true);
+  window.api.saveSettings({ piAccess: true });
+});
+
 // MIDI hot-plug: re-enumerate when devices change
 (async function initMidiHotplug() {
   try {
@@ -7875,11 +9922,11 @@ document.getElementById('coffee-link').addEventListener('click', (e) => {
 });
 document.getElementById('discord-link').addEventListener('click', (e) => {
   e.preventDefault();
-  window.api.openExternal('https://discord.gg/JjdKSshej');
+  window.api.openExternal('https://discord.gg/cuNQpES38C');
 });
 document.getElementById('welcome-discord-link').addEventListener('click', (e) => {
   e.preventDefault();
-  window.api.openExternal('https://discord.gg/JjdKSshej');
+  window.api.openExternal('https://discord.gg/cuNQpES38C');
 });
 document.getElementById('welcome-coffee-btn').addEventListener('click', () => {
   window.api.openExternal('https://buymeacoffee.com/potacat');
@@ -7944,6 +9991,7 @@ welcomeLightMode.addEventListener('change', () => applyTheme(welcomeLightMode.ch
 let welcomeRig = null; // rig configured in welcome dialog
 let welcomeHamlibLoaded = false;
 let welcomeSerialcatLoaded = false;
+let welcomeIcomLoaded = false;
 let welcomeAllRigOptions = [];
 
 function getWelcomeRadioType() {
@@ -7956,11 +10004,16 @@ function updateWelcomeRadioSubPanels() {
   document.getElementById('welcome-flex-config').classList.toggle('hidden', type !== 'flex');
   document.getElementById('welcome-tcpcat-config').classList.toggle('hidden', type !== 'tcpcat');
   document.getElementById('welcome-serialcat-config').classList.toggle('hidden', type !== 'serialcat');
+  document.getElementById('welcome-icom-config').classList.toggle('hidden', type !== 'icom');
   document.getElementById('welcome-hamlib-config').classList.toggle('hidden', type !== 'hamlib');
   document.getElementById('welcome-rigctldnet-config').classList.toggle('hidden', type !== 'rigctldnet');
   if (type === 'serialcat' && !welcomeSerialcatLoaded) {
     welcomeSerialcatLoaded = true;
     loadWelcomeSerialcatPorts();
+  }
+  if (type === 'icom' && !welcomeIcomLoaded) {
+    welcomeIcomLoaded = true;
+    loadWelcomeIcomPorts();
   }
   if (type === 'hamlib' && !welcomeHamlibLoaded) {
     welcomeHamlibLoaded = true;
@@ -7971,6 +10024,18 @@ function updateWelcomeRadioSubPanels() {
 async function loadWelcomeSerialcatPorts() {
   const ports = await window.api.listPorts();
   const sel = document.getElementById('welcome-serialcat-port');
+  sel.innerHTML = '';
+  for (const p of ports) {
+    const opt = document.createElement('option');
+    opt.value = p.path;
+    opt.textContent = `${p.path} — ${p.friendlyName}`;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadWelcomeIcomPorts() {
+  const ports = await window.api.listPorts();
+  const sel = document.getElementById('welcome-icom-port');
   sel.innerHTML = '';
   for (const p of ports) {
     const opt = document.createElement('option');
@@ -8016,6 +10081,16 @@ function buildWelcomeCatTarget() {
       path: manual || document.getElementById('welcome-serialcat-port').value,
       baudRate: parseInt(document.getElementById('welcome-serialcat-baud').value, 10) || 9600,
       dtrOff: document.getElementById('welcome-serialcat-dtr-off').checked,
+    };
+  } else if (type === 'icom') {
+    const manual = document.getElementById('welcome-icom-port-manual').value.trim();
+    const modelSelect = document.getElementById('welcome-icom-model');
+    return {
+      type: 'icom',
+      path: manual || document.getElementById('welcome-icom-port').value,
+      baudRate: parseInt(document.getElementById('welcome-icom-baud').value, 10) || 115200,
+      civAddress: parseInt(modelSelect.value, 16),
+      civModel: modelSelect.options[modelSelect.selectedIndex].text,
     };
   } else if (type === 'hamlib') {
     const manual = document.getElementById('welcome-rig-port-manual').value.trim();
@@ -8100,7 +10175,7 @@ document.getElementById('welcome-radio-help-link').addEventListener('click', (e)
 
 document.getElementById('welcome-radio-discord-link').addEventListener('click', (e) => {
   e.preventDefault();
-  window.api.openExternal('https://discord.gg/JjdKSshej');
+  window.api.openExternal('https://discord.gg/cuNQpES38C');
 });
 
 // Welcome hamlib rig search filter
@@ -8272,9 +10347,11 @@ const activatorUtcEl = document.getElementById('activator-utc');
 const activatorTimerEl = document.getElementById('activator-timer');
 const activatorCallsignInput = document.getElementById('activator-callsign');
 const activatorOpNameEl = document.getElementById('activator-op-name');
+const activatorStateInput = document.getElementById('activator-state');
 const activatorLogBtn = document.getElementById('activator-log-btn');
 const activatorLogBody = document.getElementById('activator-log-body');
 const activatorExportBtn = document.getElementById('activator-export');
+const activatorSpotBtn = document.getElementById('activator-spot-btn');
 const activatorMapBtn = document.getElementById('activator-map-btn');
 const activatorBackBtn = document.getElementById('activator-back');
 const activatorStartBtn = document.getElementById('activator-start-btn');
@@ -8319,6 +10396,7 @@ function setAppMode(mode) {
     }
     if (eventBannerEl) eventBannerEl.classList.add('hidden');
     if (dxCommandBarEl) dxCommandBarEl.classList.add('hidden');
+    if (bannerLoggerEl) bannerLoggerEl.classList.add('hidden');
     // Show activator
     activatorView.classList.remove('hidden');
     // Apply activator-spots or activator-rbn layout if toggled on
@@ -8353,6 +10431,7 @@ function setAppMode(mode) {
     if (headerEl) headerEl.classList.remove('hidden');
     if (mainEl) mainEl.classList.remove('hidden');
     if (dxCommandBarEl) dxCommandBarEl.classList.remove('hidden');
+    updateBannerLoggerVisibility();
     // Hide activator
     activatorView.classList.add('hidden');
     // Clean up activator-spots and activator-rbn layout
@@ -8605,6 +10684,7 @@ function resumeActivation(activation) {
       band: c.band || '',
       rstSent: c.rstSent || '',
       rstRcvd: c.rstRcvd || '',
+      state: c.state || '',
       name: c.name || '',
       myParks: [activation.parkRef],
       theirParks: c.sigInfo ? [c.sigInfo] : [],
@@ -8749,12 +10829,24 @@ function updateActivatorUtc() {
 }
 
 function updateActivatorCounter() {
-  const count = activatorContacts.length;
+  const total = activatorContacts.length;
   const totalRecords = activatorContacts.reduce((sum, c) => sum + (c.qsoDataList ? c.qsoDataList.length : 1), 0);
-  activatorCounterEl.textContent = count;
-  activatorCounterEl.classList.toggle('valid', count >= 10);
-  const recordNote = totalRecords > count ? ` (${totalRecords} ADIF records)` : '';
-  activatorCounterEl.title = `${count} contact${count !== 1 ? 's' : ''} logged${recordNote}${count >= 10 ? ' — valid activation!' : ` (need ${10 - count} more)`}`;
+  // Count contacts for the current UTC day (POTA requires 10 per UTC day)
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayCount = activatorContacts.filter(c => {
+    const ts = c.qsoData?.timeOn || c.qsoData?.spotTime || c.timestamp;
+    return ts && ts.startsWith(todayStr);
+  }).length;
+  // If activation spans midnight, show today's count; otherwise show total
+  const spansDay = total > 0 && todayCount < total;
+  const displayCount = spansDay ? todayCount : total;
+  activatorCounterEl.textContent = spansDay ? `${todayCount}/${total}` : String(total);
+  activatorCounterEl.classList.toggle('valid', displayCount >= 10);
+  const recordNote = totalRecords > total ? ` (${totalRecords} ADIF records)` : '';
+  const dayNote = spansDay ? ` (${todayCount} today UTC / ${total} total session)` : '';
+  activatorCounterEl.title = spansDay
+    ? `${todayCount} today UTC / ${total} total session${recordNote}${todayCount >= 10 ? ' — valid activation today!' : ` (need ${10 - todayCount} more today)`}`
+    : `${total} contact${total !== 1 ? 's' : ''} logged${recordNote}${total >= 10 ? ' — valid activation!' : ` (need ${10 - total} more)`}`;
 }
 
 function renderActivatorLog() {
@@ -8773,6 +10865,7 @@ function renderActivatorLog() {
       <td class="act-log-time act-log-editable" data-field="timeUtc">${c.timeUtc || ''}</td>
       <td class="act-log-call act-log-editable" data-field="callsign">${c.callsign || ''}${dupeFlag}${p2pBadge}</td>
       <td class="act-log-name">${c.name || ''}</td>
+      <td class="act-log-state act-log-editable" data-field="state">${c.state || ''}</td>
       <td class="act-log-freq act-log-editable" data-field="freqDisplay">${c.freqDisplay || ''}</td>
       <td class="act-log-mode act-log-editable" data-field="mode">${c.mode || ''}</td>
       <td class="act-log-rst act-log-editable" data-field="rstSent">${c.rstSent || ''}</td>
@@ -8840,7 +10933,7 @@ activatorLogBody.addEventListener('dblclick', (e) => {
     input.type = 'text';
     input.className = 'act-log-edit-input';
     input.value = rawValue;
-    if (field === 'callsign') input.style.textTransform = 'uppercase';
+    if (field === 'callsign' || field === 'state') input.style.textTransform = 'uppercase';
     td.textContent = '';
     td.appendChild(input);
     input.focus();
@@ -8913,6 +11006,12 @@ async function saveActivatorEdit(idx, field, newVal) {
     case 'rstRcvd':
       c.rstRcvd = newVal;
       adifUpdates.RST_RCVD = newVal;
+      break;
+    case 'state':
+      c.state = newVal.toUpperCase();
+      adifUpdates.STATE = c.state;
+      if (c.qsoData) c.qsoData.state = c.state;
+      if (c.qsoDataList) c.qsoDataList.forEach(q => { q.state = c.state; });
       break;
     case 'timeUtc': {
       c.timeUtc = newVal;
@@ -9298,6 +11397,9 @@ if (activatorParkRefInput) {
       activatorStartBtn.disabled = true;
       activatorParkNameEl.textContent = '';
       activatorParkRefs = [];
+      activatorCrossRefs = [];
+      if (crossRefWwff) crossRefWwff.value = '';
+      if (crossRefLlota) crossRefLlota.value = '';
       updateParkExtraBadge();
       return;
     }
@@ -9511,6 +11613,7 @@ function updateParkExtraBadge() {
     badge.textContent = '';
     badge.classList.add('hidden');
   }
+  updateCrossRefToggle();
 }
 
 /** Update hunter park input display and extra badge */
@@ -9532,6 +11635,46 @@ function updateHunterParkDisplay() {
   }
 }
 
+// --- Cross-Program References ---
+const crossRefWrap = document.getElementById('activator-crossref-wrap');
+const crossRefToggle = document.getElementById('activator-crossref-toggle');
+const crossRefPopover = document.getElementById('activator-crossref-popover');
+const crossRefWwff = document.getElementById('activator-crossref-wwff');
+const crossRefLlota = document.getElementById('activator-crossref-llota');
+
+function rebuildCrossRefs() {
+  activatorCrossRefs = [];
+  const wwffVal = crossRefWwff ? crossRefWwff.value.trim().toUpperCase() : '';
+  const llotaVal = crossRefLlota ? crossRefLlota.value.trim().toUpperCase() : '';
+  if (wwffVal) activatorCrossRefs.push({ program: 'WWFF', ref: wwffVal });
+  if (llotaVal) activatorCrossRefs.push({ program: 'LLOTA', ref: llotaVal });
+  window.api.saveSettings({ activatorCrossRefs });
+  updateCrossRefToggle();
+}
+
+function updateCrossRefToggle() {
+  if (!crossRefToggle || !crossRefWrap) return;
+  const hasRefs = activatorCrossRefs.length > 0;
+  crossRefToggle.classList.toggle('has-refs', hasRefs);
+  crossRefToggle.textContent = hasRefs ? `X-Ref (${activatorCrossRefs.length})` : 'X-Ref';
+  // Show the wrap when a park ref is entered
+  crossRefWrap.classList.toggle('hidden', !primaryParkRef());
+}
+
+if (crossRefToggle) {
+  crossRefToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    crossRefPopover.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    if (!crossRefPopover.contains(e.target) && e.target !== crossRefToggle) {
+      crossRefPopover.classList.add('hidden');
+    }
+  });
+}
+if (crossRefWwff) crossRefWwff.addEventListener('blur', rebuildCrossRefs);
+if (crossRefLlota) crossRefLlota.addEventListener('blur', rebuildCrossRefs);
+
 // --- Quick Log ---
 async function activatorLogContact() {
   if (!activationActive) return; // must have an active activation
@@ -9549,6 +11692,9 @@ async function activatorLogContact() {
   const mode = activatorModeSelect.value;
   const rstSent = getRstDigits('activator-rst-sent', mode === 'SSB' || mode === 'FM' ? '59' : '599');
   const rstRcvd = getRstDigits('activator-rst-rcvd', mode === 'SSB' || mode === 'FM' ? '59' : '599');
+
+  // State: prefer user-edited value, auto-filled from QRZ
+  const stateVal = activatorStateInput ? activatorStateInput.value.trim().toUpperCase() : '';
 
   // Frequency: prefer the input field (may have been manually entered), fall back to CAT
   const inputMhz = parseFloat(activatorFreqInput.value);
@@ -9579,6 +11725,7 @@ async function activatorLogContact() {
       rstSent,
       rstRcvd,
       txPower: defaultPower ? String(defaultPower) : '',
+      state: stateVal,
       stationCallsign: myCallsign || '',
       operator: myCallsign || '',
       myGridsquare: activatorParkGrid || '',
@@ -9593,6 +11740,15 @@ async function activatorLogContact() {
         allQsoData.push(qsoData);
       }
     }
+    // Cross-program records: WWFF/LLOTA refs for the same physical park
+    for (const xr of activatorCrossRefs) {
+      for (const theirPark of theirParks) {
+        const qsoData = { ...baseFields, mySig: xr.program.toUpperCase(), mySigInfo: xr.ref };
+        if (xr.program === 'WWFF') qsoData.myWwffRef = xr.ref;
+        if (theirPark) { qsoData.sig = 'POTA'; qsoData.sigInfo = theirPark.ref; }
+        allQsoData.push(qsoData);
+      }
+    }
 
     // Save all cross-product records via existing pipeline
     // Only forward the first record to external logbook — ACLog etc. only
@@ -9602,6 +11758,29 @@ async function activatorLogContact() {
         const qsoData = allQsoData[qi];
         if (qi > 0) qsoData.skipLogbookForward = true;
         await window.api.saveQso(qsoData);
+      }
+      // Fire cross-program self-spots (WWFF/LLOTA) via quick-respot
+      for (const xr of activatorCrossRefs) {
+        if (xr.program === 'WWFF' && xr.ref) {
+          window.api.quickRespot({
+            callsign: myCallsign,
+            frequency: freqKhz ? String(freqKhz) : '',
+            mode,
+            wwffRespot: true,
+            wwffReference: xr.ref,
+            comment: '',
+          }).catch(err => console.warn('[Activator] WWFF self-spot failed:', err));
+        }
+        if (xr.program === 'LLOTA' && xr.ref) {
+          window.api.quickRespot({
+            callsign: myCallsign,
+            frequency: freqKhz ? String(freqKhz) : '',
+            mode,
+            llotaRespot: true,
+            llotaReference: xr.ref,
+            comment: '',
+          }).catch(err => console.warn('[Activator] LLOTA self-spot failed:', err));
+        }
       }
     } catch (err) {
       console.error('[Activator] Failed to save QSO:', err);
@@ -9616,8 +11795,9 @@ async function activatorLogContact() {
       band,
       rstSent,
       rstRcvd,
+      state: stateVal,
       name: '',
-      myParks: myParks.map(p => p.ref),
+      myParks: [...myParks.map(p => p.ref), ...activatorCrossRefs.map(xr => xr.ref)],
       theirParks: hunterParkRefs.map(p => p.ref),
       qsoData: allQsoData[0], // backward compat
       qsoDataList: allQsoData, // all cross-product records for export
@@ -9632,11 +11812,12 @@ async function activatorLogContact() {
       });
     }
 
-    // Fire-and-forget QRZ lookup for name + grid
+    // Fire-and-forget QRZ lookup for name + grid + state (if not already set)
     window.api.qrzLookup(callsign).then(info => {
       if (info) {
         contact.name = qrzDisplayName(info);
         if (info.grid) contact.grid = info.grid;
+        if (!contact.state && info.state) contact.state = info.state;
         renderActivatorLog();
         // Update pop-out map with precise grid location
         if (actmapPopoutOpen && info.grid) {
@@ -9656,6 +11837,7 @@ async function activatorLogContact() {
   // Clear and refocus
   activatorCallsignInput.value = '';
   activatorOpNameEl.textContent = '';
+  if (activatorStateInput) activatorStateInput.value = '';
   resetActivatorRst();
   // Reset hunter parks for next QSO
   hunterParkRefs = [];
@@ -9682,6 +11864,7 @@ if (activatorCallsignInput) {
         window.api.qrzLookup(val).then(info => {
           if (info && activatorCallsignInput.value.trim().toUpperCase() === val) {
             activatorOpNameEl.textContent = qrzDisplayName(info);
+            if (activatorStateInput) activatorStateInput.value = info.state || '';
           }
         }).catch(() => {});
       }
@@ -9694,6 +11877,13 @@ setupRstAutoAdvance('activator-rst-sent', 'activator-rst-rcvd', () => {
   const mode = activatorModeSelect.value;
   return (mode === 'SSB' || mode === 'FM') ? 2 : 3;
 });
+
+// Enter key in state field triggers log
+if (activatorStateInput) {
+  activatorStateInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); activatorLogContact(); }
+  });
+}
 
 // Enter key in any activator RST field (both modes) triggers log
 document.querySelectorAll('#activator-rst-sent, #activator-rst-rcvd, #activator-rst-sent-digits .rst-digit, #activator-rst-rcvd-digits .rst-digit').forEach(el => {
@@ -9719,8 +11909,8 @@ if (activatorExportBtn) {
     // Flatten all cross-product records for export
     const qsos = activatorContacts.flatMap(c => c.qsoDataList || [c.qsoData]);
 
-    // Multi-park: offer per-park or combined export
-    if (activatorParkRefs.length > 1) {
+    // Multi-park or cross-program: offer per-park or combined export
+    if (activatorParkRefs.length > 1 || activatorCrossRefs.length > 0) {
       const dlg = document.getElementById('export-choice-dlg');
       dlg.showModal();
       const chosen = await new Promise(resolve => {
@@ -9764,6 +11954,35 @@ if (activatorExportBtn) {
     });
     if (result && result.success) {
       showLogToast(`Exported ${qsos.length} QSOs to ${result.path.split(/[\\/]/).pop()}`);
+    }
+  });
+}
+
+// --- Self-spot button ---
+if (activatorSpotBtn) {
+  activatorSpotBtn.addEventListener('click', async () => {
+    const ref = primaryParkRef();
+    if (!ref) { showLogToast('Set a park reference first', { warn: true }); return; }
+    if (!myCallsign) { showLogToast('Set your callsign in Settings first', { warn: true }); return; }
+    const freq = activatorFreqKhz;
+    if (!freq) { showLogToast('No frequency — tune your radio first', { warn: true }); return; }
+    const mode = document.getElementById('activator-mode').value || _currentMode || 'SSB';
+    try {
+      const result = await window.api.quickRespot({
+        callsign: myCallsign,
+        frequency: String(Math.round(freq * 10) / 10),
+        mode,
+        potaRespot: true,
+        potaReference: ref,
+        comment: `${myCallsign} activating ${ref} via POTACAT`,
+      });
+      if (result && result.success) {
+        showLogToast(`Spotted on POTA: ${ref} ${Math.round(freq)} kHz ${mode}`);
+      } else {
+        showLogToast('Self-spot failed: ' + (result?.error || 'unknown error'), { warn: true });
+      }
+    } catch (err) {
+      showLogToast('Self-spot failed: ' + (err.message || err), { warn: true });
     }
   });
 }
@@ -10185,12 +12404,14 @@ if (activatorCallsignInput) {
     const val = activatorCallsignInput.value.trim().toUpperCase();
     if (val.length < 3) {
       activatorOpNameEl.textContent = '';
+      if (activatorStateInput) activatorStateInput.value = '';
       return;
     }
     activatorQrzTimeout = setTimeout(async () => {
       const info = await window.api.qrzLookup(val);
       if (info && activatorCallsignInput.value.trim().toUpperCase() === val) {
         activatorOpNameEl.textContent = qrzDisplayName(info);
+        if (activatorStateInput) activatorStateInput.value = info.state || '';
       }
     }, 400);
   });
@@ -10434,6 +12655,1201 @@ window.api.getActiveEvents().then((events) => {
 applyColOrder();
 initColumnResizing();
 initColumnDragging();
+
+
+// ===== JTCAT (FT8/FT4 Digital Modes) =====
+
+var jtcatAudioCtx = null;
+var jtcatAudioStream = null;
+var jtcatAudioProcessor = null;
+var jtcatAnalyser = null;
+var jtcatRemoteActive = false; // true when phone is driving JTCAT
+var jtcatQuietFreq = 1500;     // auto-detected quiet TX frequency (Hz)
+var jtcatQuietFreqFrame = 0;   // frame counter for throttling quiet freq updates
+var jtcatSpectrumFrame = 0;    // frame counter for throttling spectrum IPC to ~10fps
+
+async function startJtcatAudio() {
+  try {
+    var s = await window.api.getSettings();
+    var audioConstraints = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: { ideal: 12000 }
+    };
+    // Use the same audio input device as ECHOCAT (remoteAudioInput)
+    if (s.remoteAudioInput) {
+      audioConstraints.deviceId = { exact: s.remoteAudioInput };
+    }
+    try {
+      jtcatAudioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    } catch (e) {
+      // Fall back to default device if configured one fails
+      console.warn('[JTCAT] Configured audio input not found, using default:', e.message);
+      delete audioConstraints.deviceId;
+      jtcatAudioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    }
+    jtcatAudioCtx = new AudioContext({ sampleRate: 12000 });
+    var source = jtcatAudioCtx.createMediaStreamSource(jtcatAudioStream);
+
+    // AnalyserNode for waterfall FFT (2048-point → 1024 frequency bins covering 0–6000 Hz)
+    jtcatAnalyser = jtcatAudioCtx.createAnalyser();
+    jtcatAnalyser.fftSize = 2048;
+    jtcatAnalyser.smoothingTimeConstant = 0.3;
+    source.connect(jtcatAnalyser);
+
+    // ScriptProcessorNode: 4096 samples at 12kHz = ~341ms per callback
+    jtcatAudioProcessor = jtcatAudioCtx.createScriptProcessor(4096, 1, 1);
+    jtcatAudioProcessor.onaudioprocess = function(e) {
+      try {
+        var samples = e.inputBuffer.getChannelData(0);
+        // Send copy of buffer to main process for FT8 decode
+        window.api.jtcatAudio(Array.from(samples));
+      } catch (err) {
+        console.error('[JTCAT] Audio processor error:', err.message || err);
+      }
+    };
+    source.connect(jtcatAudioProcessor);
+    jtcatAudioProcessor.connect(jtcatAudioCtx.destination);
+
+    // Monitor audio stream — some rigs (e.g. Yaesu FT-710) disconnect USB audio during TX
+    var audioTrack = jtcatAudioStream.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.addEventListener('ended', function() {
+        console.warn('[JTCAT] Audio track ended (device disconnected?) — restarting capture in 2s');
+        setTimeout(function() {
+          if (jtcatRunning || jtcatRemoteActive) {
+            stopJtcatAudio();
+            startJtcatAudio();
+          }
+        }, 2000);
+      });
+    }
+
+    // Start waterfall rendering loop
+    jtcatWaterfallLoop();
+
+    console.log('[JTCAT] Audio capture started, device:', s.remoteAudioInput || 'default', 'sample rate:', jtcatAudioCtx.sampleRate);
+  } catch (err) {
+    console.error('[JTCAT] Audio capture failed:', err.message || err);
+  }
+}
+
+function stopJtcatAudio() {
+  if (waterfallAnimFrame) {
+    cancelAnimationFrame(waterfallAnimFrame);
+    waterfallAnimFrame = null;
+  }
+  jtcatAnalyser = null;
+  if (jtcatAudioProcessor) {
+    jtcatAudioProcessor.disconnect();
+    jtcatAudioProcessor = null;
+  }
+  if (jtcatAudioCtx) {
+    jtcatAudioCtx.close().catch(function() {});
+    jtcatAudioCtx = null;
+  }
+  if (jtcatAudioStream) {
+    jtcatAudioStream.getTracks().forEach(function(t) { t.stop(); });
+    jtcatAudioStream = null;
+  }
+}
+
+function startJtcatView() {
+  if (jtcatRunning) return;
+  jtcatRunning = true;
+  jtcatDecodes = [];
+  jtcatDecodeLog = [];
+  jtcatMapClear();
+  // If remote is already driving the engine, just start the UI — don't restart engine/audio
+  if (!jtcatRemoteActive) {
+    window.api.jtcatStart(jtcatModeSelect.value);
+    startJtcatAudio();
+  }
+  startJtcatCountdown();
+}
+
+function stopJtcatView() {
+  if (!jtcatRunning) return;
+  jtcatRunning = false;
+  // If the phone is driving JTCAT, keep audio capture and engine running
+  if (!jtcatRemoteActive) {
+    window.api.jtcatStop();
+    stopJtcatAudio();
+  }
+  if (jtcatCountdownTimer) {
+    clearInterval(jtcatCountdownTimer);
+    jtcatCountdownTimer = null;
+  }
+  jtcatCountdown.textContent = '\u2014';
+  jtcatCycleIndicator.textContent = '\u2014';
+  jtcatSyncStatus.textContent = 'Sync: \u2014';
+}
+
+function startJtcatCountdown() {
+  if (jtcatCountdownTimer) clearInterval(jtcatCountdownTimer);
+  jtcatCountdownTimer = setInterval(() => {
+    if (!jtcatRunning) return;
+    const now = Date.now();
+    const mode = jtcatModeSelect.value;
+    const cycleMs = (mode === 'FT4' ? 7.5 : 15) * 1000;
+    const msInto = now % cycleMs;
+    const remaining = Math.ceil((cycleMs - msInto) / 1000);
+    jtcatCountdown.textContent = remaining + 's';
+    const cycleSec = mode === 'FT4' ? 7.5 : 15;
+    const slot = Math.floor(now / 1000 / cycleSec) % 2 === 0 ? 'Even' : 'Odd';
+    jtcatCycleIndicator.textContent = slot;
+    jtcatCycleIndicator.className = 'jtcat-cycle ' + (slot === 'Even' ? 'jtcat-slot-even' : 'jtcat-slot-odd');
+  }, 200);
+}
+
+// Band buttons
+document.querySelectorAll('.jtcat-band-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var freq = parseInt(btn.dataset.freq, 10);
+    var band = btn.dataset.band;
+    // Use JTCAT-specific slice if configured, otherwise main CAT
+    var slicePort = jtcatSliceSelect.value ? parseInt(jtcatSliceSelect.value, 10) : 0;
+    if (slicePort) {
+      window.api.tune(freq, jtcatModeSelect.value, null, slicePort);
+    } else {
+      window.api.tune(freq, jtcatModeSelect.value);
+    }
+    jtcatCurrentBand = band;
+    document.querySelectorAll('.jtcat-band-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+  });
+});
+
+// Mode select
+jtcatModeSelect.addEventListener('change', function() {
+  if (jtcatRunning) window.api.jtcatSetMode(jtcatModeSelect.value);
+  jtcatDecodes = [];
+  jtcatDecodeLog = [];
+  jtcatMapClear();
+  renderJtcatDecodes();
+});
+
+// JTCAT Flex slice change — save setting
+jtcatSliceSelect.addEventListener('change', async function() {
+  var s = await window.api.getSettings();
+  s.jtcatFlexSlice = jtcatSliceSelect.value || '';
+  await window.api.saveSettings(s);
+});
+
+// TX/RX freq inputs
+jtcatTxFreqInput.addEventListener('change', function() {
+  jtcatTxFreq = parseInt(jtcatTxFreqInput.value, 10) || 1500;
+  jtcatTxFreqLabel.textContent = 'TX: ' + jtcatTxFreq + ' Hz';
+  if (jtcatRunning) window.api.jtcatSetTxFreq(jtcatTxFreq);
+});
+jtcatRxFreqInput.addEventListener('change', function() {
+  jtcatRxFreq = parseInt(jtcatRxFreqInput.value, 10) || 1500;
+  jtcatRxFreqLabel.textContent = jtcatRxFreq + ' Hz';
+  if (jtcatRunning) window.api.jtcatSetRxFreq(jtcatRxFreq);
+});
+jtcatTxSlotSelect.addEventListener('change', function() {
+  window.api.jtcatSetTxSlot(jtcatTxSlotSelect.value);
+});
+
+// Enable TX / Halt TX
+jtcatEnableTxBtn.addEventListener('click', function() {
+  var enabled = jtcatEnableTxBtn.classList.toggle('active');
+  jtcatEnableTxBtn.textContent = enabled ? 'TX Enabled' : 'Enable TX';
+  window.api.jtcatEnableTx(enabled);
+});
+jtcatHaltTxBtn.addEventListener('click', function() {
+  jtcatDisableTxUi();
+  jtcatClearQso();
+});
+
+// CQ-only filter toggle
+jtcatCqFilterBtn.addEventListener('click', function() {
+  jtcatCqFilter = !jtcatCqFilter;
+  jtcatCqFilterBtn.classList.toggle('active', jtcatCqFilter);
+  renderJtcatDecodes();
+});
+
+function renderJtcatDecodes() {
+  // --- Band Activity: full scrolling log grouped by cycle ---
+  var wasAtBottom = jtcatBandActivity.scrollTop + jtcatBandActivity.clientHeight >= jtcatBandActivity.scrollHeight - 20;
+
+  if (jtcatDecodeLog.length === 0) {
+    jtcatBandActivity.innerHTML = '<div class="jtcat-empty">Waiting for decodes...</div>';
+  } else {
+    var html = '';
+    var myCall = getMyCallsign();
+    for (var i = 0; i < jtcatDecodeLog.length; i++) {
+      var entry = jtcatDecodeLog[i];
+      var rows = '';
+      for (var j = 0; j < entry.results.length; j++) {
+        var d = entry.results[j];
+        if (jtcatCqFilter) {
+          var upper = (d.text || '').toUpperCase();
+          var isCq = upper.startsWith('CQ ');
+          var is73 = upper.indexOf('RR73') >= 0 || upper.indexOf(' 73') >= 0;
+          var isDirected = myCall && upper.indexOf(' ' + myCall + ' ') >= 0;
+          if (!isCq && !is73 && !isDirected) continue;
+        }
+        var cls = getJtcatDecodeClass(d);
+        rows += '<div class="jtcat-decode-row ' + cls + '" data-df="' + d.df + '" data-text="' + escJtcat(d.text) + '">' + formatJtcatDecode(d) + '</div>';
+      }
+      if (!jtcatCqFilter || rows) {
+        html += '<div class="jtcat-cycle-separator">' + entry.time + ' UTC &mdash; ' + entry.mode + '</div>' + rows;
+      }
+    }
+    jtcatBandActivity.innerHTML = html || '<div class="jtcat-empty">No CQ/73 decodes yet</div>';
+  }
+
+  // Auto-scroll to bottom if user was already near the bottom
+  if (wasAtBottom) {
+    jtcatBandActivity.scrollTop = jtcatBandActivity.scrollHeight;
+  }
+
+  // --- RX Frequency panel: only current cycle, filtered by RX freq ---
+  var rxNear = jtcatDecodes.filter(function(d) { return Math.abs(d.df - jtcatRxFreq) <= 50; });
+  if (rxNear.length === 0) {
+    jtcatRxActivity.innerHTML = '<div class="jtcat-empty">\u2014</div>';
+  } else {
+    jtcatRxActivity.innerHTML = rxNear.map(function(d) {
+      var cls = getJtcatDecodeClass(d);
+      return '<div class="jtcat-decode-row ' + cls + '" data-df="' + d.df + '" data-text="' + escJtcat(d.text) + '">' + formatJtcatDecode(d) + '</div>';
+    }).join('');
+  }
+
+  // Click handlers
+  jtcatBandActivity.querySelectorAll('.jtcat-decode-row').forEach(function(row) {
+    row.addEventListener('dblclick', onJtcatDecodeClick);
+  });
+  jtcatRxActivity.querySelectorAll('.jtcat-decode-row').forEach(function(row) {
+    row.addEventListener('dblclick', onJtcatDecodeClick);
+  });
+
+  // Auto-advance QSO state machine on incoming decodes
+  if (jtcatQso && jtcatQso.phase !== 'done') {
+    jtcatProcessQsoResponse();
+  }
+}
+
+function onJtcatDecodeClick(e) {
+  var row = e.currentTarget;
+  var df = parseInt(row.dataset.df, 10);
+  var text = row.dataset.text || '';
+  // Set RX freq to this decode's offset
+  jtcatRxFreq = df;
+  jtcatRxFreqInput.value = df;
+  jtcatRxFreqLabel.textContent = df + ' Hz';
+  if (jtcatRunning) window.api.jtcatSetRxFreq(df);
+
+  // If it's a CQ, start a QSO
+  var cqMatch = text.match(/^CQ\s+(?:(\w+)\s+)?([A-Z0-9/]+)\s+([A-R]{2}\d{2})/i);
+  if (cqMatch) {
+    var theirCall = cqMatch[2].toUpperCase();
+    var theirGrid = cqMatch[3].toUpperCase();
+    jtcatStartQso(theirCall, theirGrid, df);
+  }
+  renderJtcatDecodes();
+}
+
+// --- QSO State Machine ---
+//
+// Two flows:
+//   CQ caller:   cq → cq-report → cq-rr73 → done
+//   Responder:   reply → r+report → 73 → done
+//
+// Each phase has a direction (tx/rx) and a message template.
+
+function getMyCallsign() {
+  var el = document.getElementById('set-my-callsign');
+  return el ? el.value.toUpperCase().trim() : '';
+}
+
+function getMyGrid() {
+  var el = document.getElementById('set-grid');
+  return el ? el.value.toUpperCase().trim().substring(0, 4) : '';
+}
+
+// Phase definitions for the sequence display
+var QSO_PHASES_CQ = [
+  { key: 'cq',        dir: 'tx', label: function(q) { return 'CQ ' + q.myCall + ' ' + q.myGrid; } },
+  { key: 'cq-reply',  dir: 'rx', label: function(q) { return (q.call || '?') + ' ' + q.myCall + ' ' + (q.grid || '??'); } },
+  { key: 'cq-report', dir: 'tx', label: function(q) { return (q.call || '?') + ' ' + q.myCall + ' ' + (q.sentReport || '-XX'); } },
+  { key: 'cq-r+rpt',  dir: 'rx', label: function(q) { return q.myCall + ' ' + (q.call || '?') + ' R' + (q.report || '-XX'); } },
+  { key: 'cq-rr73',   dir: 'tx', label: function(q) { return (q.call || '?') + ' ' + q.myCall + ' RR73'; } },
+  { key: 'done',      dir: '--', label: function()  { return 'QSO Complete'; } },
+];
+
+var QSO_PHASES_REPLY = [
+  { key: 'reply',     dir: 'tx', label: function(q) { return q.call + ' ' + q.myCall + ' ' + q.myGrid; } },
+  { key: 'rpt-rx',    dir: 'rx', label: function(q) { return q.myCall + ' ' + q.call + ' ' + (q.report || '-XX'); } },
+  { key: 'r+report',  dir: 'tx', label: function(q) { return q.call + ' ' + q.myCall + ' R' + (q.sentReport || '-XX'); } },
+  { key: 'rr73-rx',   dir: 'rx', label: function(q) { return q.myCall + ' ' + q.call + ' RR73'; } },
+  { key: '73',        dir: 'tx', label: function(q) { return q.call + ' ' + q.myCall + ' 73'; } },
+  { key: 'done',      dir: '--', label: function()  { return 'QSO Complete'; } },
+];
+
+function jtcatSetTxAndSend(msg) {
+  jtcatTxMsgText.textContent = msg;
+  window.api.jtcatSetTxMsg(msg);
+}
+
+function jtcatEnableTxUi() {
+  jtcatEnableTxBtn.classList.add('active');
+  jtcatEnableTxBtn.textContent = 'TX Enabled';
+  window.api.jtcatEnableTx(true);
+}
+
+function jtcatDisableTxUi() {
+  jtcatEnableTxBtn.classList.remove('active');
+  jtcatEnableTxBtn.textContent = 'Enable TX';
+  window.api.jtcatHaltTx();
+  window.api.jtcatSetTxMsg('');
+}
+
+// --- CQ Calling ---
+
+jtcatCallCqBtn.addEventListener('click', function() {
+  jtcatCallCq();
+});
+
+function jtcatCallCq() {
+  var myCall = getMyCallsign();
+  var myGrid = getMyGrid();
+  if (!myCall || !myGrid) {
+    jtcatTxMsgText.textContent = 'Set callsign & grid in Settings first';
+    console.warn('[JTCAT] CQ aborted — callsign:', myCall || '(empty)', 'grid:', myGrid || '(empty)');
+    return;
+  }
+
+  var txMsg = 'CQ ' + myCall + ' ' + myGrid;
+  jtcatQso = {
+    mode: 'cq',
+    call: null,
+    grid: null,
+    phase: 'cq',
+    txMsg: txMsg,
+    report: null,
+    sentReport: null,
+    myCall: myCall,
+    myGrid: myGrid,
+    txRetries: 0,
+  };
+  jtcatSetTxAndSend(txMsg);
+  jtcatEnableTxUi();
+  jtcatCallCqBtn.classList.add('active');
+  renderJtcatQsoTracker();
+  console.log('[JTCAT] Calling CQ:', txMsg);
+}
+
+// --- Reply to CQ (existing, refactored) ---
+
+function jtcatStartQso(theirCall, theirGrid, df) {
+  var myCall = getMyCallsign();
+  var myGrid = getMyGrid();
+  if (!myCall) return;
+
+  // Set TX freq to their freq
+  jtcatTxFreq = df;
+  jtcatTxFreqInput.value = df;
+  jtcatTxFreqLabel.textContent = 'TX: ' + df + ' Hz';
+  if (jtcatRunning) window.api.jtcatSetTxFreq(df);
+
+  // Build initial reply message: "THEIRCALL MYCALL MYGRID"
+  var txMsg = theirCall + ' ' + myCall + ' ' + myGrid;
+  jtcatQso = {
+    mode: 'reply',
+    call: theirCall,
+    grid: theirGrid,
+    phase: 'reply',
+    txMsg: txMsg,
+    report: null,
+    sentReport: null,
+    myCall: myCall,
+    myGrid: myGrid,
+    txRetries: 0,
+  };
+  jtcatSetTxAndSend(txMsg);
+  jtcatEnableTxUi();
+  renderJtcatQsoTracker();
+  console.log('[JTCAT] QSO started with', theirCall, '— sending:', txMsg);
+}
+
+// --- Process incoming decodes for QSO advancement ---
+
+function jtcatProcessQsoResponse() {
+  if (!jtcatQso || jtcatQso.phase === 'done') return;
+  var myCall = jtcatQso.myCall;
+  var phaseBefore = jtcatQso.phase;
+
+  if (jtcatQso.mode === 'cq') {
+    jtcatProcessCqResponse(myCall);
+  } else {
+    jtcatProcessReplyResponse(myCall);
+  }
+
+  // Count retries — if phase didn't advance, increment; if it did, reset
+  if (jtcatQso && jtcatQso.phase === phaseBefore && jtcatQso.phase !== 'done') {
+    jtcatQso.txRetries = (jtcatQso.txRetries || 0) + 1;
+    var max = (jtcatQso.phase === 'cq') ? JTCAT_MAX_CQ_RETRIES : JTCAT_MAX_QSO_RETRIES;
+    if (jtcatQso.txRetries >= max) {
+      console.log('[JTCAT] TX retry limit reached (' + max + ') in phase ' + jtcatQso.phase + ' — giving up');
+      jtcatTxMsgText.textContent = 'No response — TX stopped';
+      jtcatDisableTxUi();
+      jtcatClearQso();
+    }
+  } else if (jtcatQso && jtcatQso.phase !== phaseBefore) {
+    jtcatQso.txRetries = 0; // reset on phase advance
+  }
+}
+
+function jtcatProcessCqResponse(myCall) {
+  var q = jtcatQso;
+
+  if (q.phase === 'cq') {
+    // Waiting for someone to reply: look for "MYCALL THEIRCALL GRID"
+    var reply = jtcatDecodes.find(function(d) {
+      var t = (d.text || '').toUpperCase();
+      // Must contain our call but NOT start with CQ, and not be our own message
+      return t.indexOf(myCall) >= 0 && !t.startsWith('CQ ') && t.indexOf(myCall) !== 0;
+    });
+    if (!reply) return;
+    var text = (reply.text || '').toUpperCase();
+    // Parse "MYCALL THEIRCALL GRID" or "MYCALL THEIRCALL GRID"
+    var m = text.match(new RegExp(myCall.replace(/[/]/g, '\\/') + '\\s+([A-Z0-9/]+)\\s+([A-R]{2}\\d{2})', 'i'));
+    if (!m) return;
+    q.call = m[1];
+    q.grid = m[2];
+    // Send report: "THEIRCALL MYCALL -XX"
+    var rpt = reply.db >= 0 ? '+' + String(reply.db).padStart(2, '0') : String(reply.db).padStart(3, '0');
+    q.sentReport = rpt;
+    q.txMsg = q.call + ' ' + myCall + ' ' + rpt;
+    q.phase = 'cq-report';
+    jtcatSetTxAndSend(q.txMsg);
+    // Set RX freq to their offset
+    jtcatRxFreq = reply.df;
+    jtcatRxFreqInput.value = reply.df;
+    if (jtcatRunning) window.api.jtcatSetRxFreq(reply.df);
+    renderJtcatQsoTracker();
+    console.log('[JTCAT] CQ answered by', q.call, '— sending report:', q.txMsg);
+    return;
+  }
+
+  if (q.phase === 'cq-report') {
+    // Expect "MYCALL THEIRCALL R-XX"
+    var response = jtcatDecodes.find(function(d) {
+      var t = (d.text || '').toUpperCase();
+      return t.indexOf(myCall) >= 0 && t.indexOf(q.call) >= 0;
+    });
+    if (!response) return;
+    var text = (response.text || '').toUpperCase();
+    var rptMatch = text.match(/R([+-]\d{2})/);
+    if (!rptMatch) return;
+    q.report = rptMatch[1];
+    q.txMsg = q.call + ' ' + myCall + ' RR73';
+    q.phase = 'cq-rr73';
+    jtcatSetTxAndSend(q.txMsg);
+    renderJtcatQsoTracker();
+    console.log('[JTCAT] CQ got R+report from', q.call, '— sending RR73');
+    return;
+  }
+
+  if (q.phase === 'cq-rr73') {
+    // QSO complete after we send RR73 (they may send 73 back but we're done)
+    q.phase = 'done';
+    jtcatDisableTxUi();
+    jtcatCallCqBtn.classList.remove('active');
+    jtcatTxMsgText.textContent = 'QSO complete: ' + q.call;
+    renderJtcatQsoTracker();
+    console.log('[JTCAT] CQ QSO complete with', q.call);
+  }
+}
+
+function jtcatProcessReplyResponse(myCall) {
+  var q = jtcatQso;
+  var theirCall = q.call;
+
+  var response = jtcatDecodes.find(function(d) {
+    var t = (d.text || '').toUpperCase();
+    return t.indexOf(myCall) >= 0 && t.indexOf(theirCall) >= 0;
+  });
+  if (!response) return;
+  var text = (response.text || '').toUpperCase();
+
+  if (q.phase === 'reply') {
+    // Expect their signal report: "MYCALL THEIRCALL -XX" or "MYCALL THEIRCALL R-XX"
+    var rptMatch = text.match(/[R]?([+-]\d{2})/);
+    if (!rptMatch) return;
+    q.report = rptMatch[1];
+    var ourReport = response.db >= 0 ? '+' + String(response.db).padStart(2, '0') : String(response.db).padStart(3, '0');
+    q.sentReport = ourReport;
+    if (text.indexOf('R' + rptMatch[1]) >= 0 || text.indexOf('R+') >= 0 || text.indexOf('R-') >= 0) {
+      q.txMsg = theirCall + ' ' + myCall + ' RR73';
+      q.phase = '73';
+    } else {
+      q.txMsg = theirCall + ' ' + myCall + ' R' + ourReport;
+      q.phase = 'r+report';
+    }
+    jtcatSetTxAndSend(q.txMsg);
+    renderJtcatQsoTracker();
+    console.log('[JTCAT] QSO phase:', q.phase, '— sending:', q.txMsg);
+
+  } else if (q.phase === 'r+report') {
+    if (text.indexOf('RR73') >= 0 || text.indexOf('RRR') >= 0 || text.indexOf(' 73') >= 0) {
+      q.txMsg = theirCall + ' ' + myCall + ' 73';
+      q.phase = '73';
+      jtcatSetTxAndSend(q.txMsg);
+      renderJtcatQsoTracker();
+      console.log('[JTCAT] QSO phase: 73 — sending:', q.txMsg);
+    }
+
+  } else if (q.phase === '73') {
+    q.phase = 'done';
+    jtcatDisableTxUi();
+    jtcatTxMsgText.textContent = 'QSO complete: ' + theirCall;
+    renderJtcatQsoTracker();
+    console.log('[JTCAT] QSO complete with', theirCall);
+    // TODO: auto-log the QSO
+  }
+}
+
+// --- QSO state broadcast to pop-out ---
+function broadcastJtcatQsoState() {
+  if (!jtcatPopoutOpen) return;
+  if (jtcatQso) {
+    window.api.sendJtcatQsoState({
+      mode: jtcatQso.mode,
+      call: jtcatQso.call,
+      grid: jtcatQso.grid,
+      phase: jtcatQso.phase,
+      txMsg: jtcatQso.txMsg,
+      report: jtcatQso.report,
+      sentReport: jtcatQso.sentReport,
+      myCall: jtcatQso.myCall,
+      myGrid: jtcatQso.myGrid,
+    });
+  } else {
+    window.api.sendJtcatQsoState({ phase: 'idle' });
+  }
+}
+
+// --- QSO Sequence Display ---
+
+function renderJtcatQsoTracker() {
+  broadcastJtcatQsoState();
+  if (!jtcatQso) {
+    jtcatQsoTracker.classList.add('hidden');
+    return;
+  }
+  jtcatQsoTracker.classList.remove('hidden');
+  var q = jtcatQso;
+  var phases = q.mode === 'cq' ? QSO_PHASES_CQ : QSO_PHASES_REPLY;
+
+  // Header
+  if (q.mode === 'cq') {
+    jtcatQsoLabel.textContent = q.call ? 'CQ \u2192 ' + q.call : 'Calling CQ...';
+  } else {
+    jtcatQsoLabel.textContent = 'Reply \u2192 ' + q.call;
+  }
+
+  // Find current phase index
+  var currentIdx = -1;
+  for (var i = 0; i < phases.length; i++) {
+    if (phases[i].key === q.phase) { currentIdx = i; break; }
+  }
+  // For CQ mode, cq-reply is implicit (rx between cq and cq-report)
+  // Map actual phase to display index
+  if (q.mode === 'cq' && q.phase === 'cq-report') currentIdx = 2;
+  if (q.mode === 'cq' && q.phase === 'cq-rr73') currentIdx = 4;
+  if (q.mode === 'cq' && q.phase === 'done') currentIdx = 5;
+  if (q.mode === 'reply' && q.phase === 'r+report') currentIdx = 2;
+  if (q.mode === 'reply' && q.phase === '73') currentIdx = 4;
+  if (q.mode === 'reply' && q.phase === 'done') currentIdx = 5;
+
+  var html = '';
+  for (var i = 0; i < phases.length; i++) {
+    var p = phases[i];
+    var cls = 'jtcat-qso-step';
+    if (i < currentIdx) cls += ' step-done';
+    else if (i === currentIdx) cls += ' step-current step-' + p.dir;
+
+    var dirTag = '';
+    if (p.dir === 'tx') dirTag = '<span class="step-dir">TX</span> ';
+    else if (p.dir === 'rx') dirTag = '<span class="step-dir">RX</span> ';
+
+    if (i > 0) html += '<span class="jtcat-qso-arrow">\u25B6</span>';
+    html += '<span class="' + cls + '">' + dirTag + escJtcat(p.label(q)) + '</span>';
+  }
+  jtcatQsoSteps.innerHTML = html;
+}
+
+function jtcatClearQso() {
+  jtcatQso = null;
+  jtcatTxMsgText.textContent = '\u2014';
+  jtcatCallCqBtn.classList.remove('active');
+  window.api.jtcatSetTxMsg('');
+  renderJtcatQsoTracker();
+}
+
+// Cancel QSO button
+jtcatQsoCancelBtn.addEventListener('click', function() {
+  jtcatDisableTxUi();
+  jtcatClearQso();
+});
+
+// --- POTA activator lookup ---
+
+function jtcatGetActivatorSpot(callsign) {
+  var upper = callsign.toUpperCase();
+  return allSpots.find(function(s) {
+    return (s.source === 'pota' || s.source === 'sota') && s.callsign && s.callsign.toUpperCase() === upper;
+  });
+}
+
+function formatJtcatDecode(d) {
+  var db = String(d.db).padStart(3, ' ');
+  var dt = d.dt >= 0 ? '+' + d.dt.toFixed(1) : d.dt.toFixed(1);
+  var df = String(d.df).padStart(4, ' ');
+  var text = (d.text || '');
+  var html = '<span class="jtcat-db">' + db + '</span> <span class="jtcat-dt">' + dt + '</span> <span class="jtcat-df">' + df + '</span> <span class="jtcat-msg">' + escJtcat(text) + '</span>';
+
+  // Check for POTA/SOTA activator badge
+  var words = text.split(/\s+/);
+  for (var i = 0; i < words.length; i++) {
+    var spot = jtcatGetActivatorSpot(words[i]);
+    if (spot) {
+      var badge = spot.source === 'pota' ? 'POTA' : 'SOTA';
+      var ref = spot.reference || '';
+      html += ' <span class="jtcat-pota-badge" title="' + escJtcat(ref + ' ' + (spot.parkName || '')) + '">' + badge + '</span>';
+      break;
+    }
+  }
+  return html;
+}
+
+function escJtcat(str) {
+  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function getJtcatDecodeClass(d) {
+  var text = d.text || '';
+  if (text.startsWith('CQ ')) return 'jtcat-cq';
+  var myCall = getMyCallsign();
+  if (myCall && text.toUpperCase().indexOf(' ' + myCall + ' ') >= 0) return 'jtcat-directed';
+  // Highlight if callsign is a POTA/SOTA activator
+  var words = text.split(/\s+/);
+  for (var i = 0; i < words.length; i++) {
+    if (jtcatGetActivatorSpot(words[i])) return 'jtcat-cq'; // green highlight for activators too
+  }
+  return '';
+}
+
+// --- JTCAT Map ---
+var jtcatMap = null;
+var jtcatMapMarkers = L.layerGroup();  // station dot markers
+var jtcatMapArcs = L.layerGroup();     // animated QSO arcs
+var jtcatMapHome = null;
+var jtcatMapStations = {};  // callsign → {marker, grid, lat, lon, lastSeen}
+var jtcatMapQsos = {};      // "CALL1↔CALL2" → {arc, from, to, lastSeen, dir}
+var JTCAT_ARC_SEGMENTS = 32;
+
+function initJtcatMap() {
+  var myGrid = getMyGrid();
+  var center = [20, 0];
+  var zoom = 2;
+  if (myGrid) {
+    var pos = gridToLatLonLocal(myGrid);
+    if (pos) { center = [pos.lat, pos.lon]; zoom = 4; }
+  }
+  jtcatMap = L.map('jtcat-map', { zoomControl: true, worldCopyJump: true }).setView(center, zoom);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OSM',
+    maxZoom: 18,
+    className: 'dark-tiles',
+  }).addTo(jtcatMap);
+  jtcatMapMarkers.addTo(jtcatMap);
+  jtcatMapArcs.addTo(jtcatMap);
+  updateJtcatMapHome();
+}
+
+function updateJtcatMapHome() {
+  if (jtcatMapHome) { jtcatMap.removeLayer(jtcatMapHome); jtcatMapHome = null; }
+  var myGrid = getMyGrid();
+  if (!myGrid || !jtcatMap) return;
+  var bounds = gridToBoundsLocal(myGrid);
+  if (!bounds) return;
+  jtcatMapHome = L.rectangle(bounds, {
+    fillColor: '#e94560', fillOpacity: 0.35, color: '#e94560', weight: 2,
+  }).addTo(jtcatMap).bindTooltip(getMyCallsign() || 'Home', { permanent: false });
+}
+
+// Register/update a station's grid on the map
+function jtcatMapRegisterStation(call, grid) {
+  if (!jtcatMap || !call || call.length < 3) return;
+  if (!grid || !/^[A-R]{2}[0-9]{2}$/i.test(grid)) return;
+  grid = grid.toUpperCase();
+  var bounds = gridToBoundsLocal(grid);
+  var pos = gridToLatLonLocal(grid);
+  if (!bounds || !pos) return;
+  var existing = jtcatMapStations[call];
+  if (existing) {
+    existing.lastSeen = Date.now();
+    if (grid !== existing.grid) {
+      existing.grid = grid;
+      existing.lat = pos.lat;
+      existing.lon = pos.lon;
+      existing.marker.setBounds(bounds);
+      existing.marker.setTooltipContent(call + ' [' + grid + ']');
+    }
+    return;
+  }
+  var myCall = getMyCallsign();
+  var isMe = myCall && call === myCall;
+  var color = isMe ? '#e94560' : '#4fc3f7';
+  var marker = L.rectangle(bounds, {
+    fillColor: color, fillOpacity: isMe ? 0.35 : 0.25, color: color, weight: 1,
+  }).addTo(jtcatMapMarkers).bindTooltip(call + ' [' + grid + ']', { permanent: false });
+  jtcatMapStations[call] = { marker: marker, grid: grid, lat: pos.lat, lon: pos.lon, lastSeen: Date.now() };
+}
+
+// Compute a curved arc between two lat/lon points (returns array of [lat,lon])
+function jtcatComputeArc(lat1, lon1, lat2, lon2) {
+  var points = [];
+  var n = JTCAT_ARC_SEGMENTS;
+  // Great circle midpoint + offset for curvature
+  var toRad = Math.PI / 180;
+  var toDeg = 180 / Math.PI;
+  var dLat = lat2 - lat1;
+  var dLon = lon2 - lon1;
+  var dist = Math.sqrt(dLat * dLat + dLon * dLon); // approx degree-distance
+  var bulge = dist * 0.2; // arc bulge = 20% of distance
+  // Perpendicular direction (rotate 90 deg)
+  var perpLat = -dLon / (dist || 1);
+  var perpLon = dLat / (dist || 1);
+  for (var i = 0; i <= n; i++) {
+    var t = i / n;
+    // Linear interpolation
+    var lat = lat1 + dLat * t;
+    var lon = lon1 + dLon * t;
+    // Parabolic offset (peaks at t=0.5)
+    var offset = 4 * t * (1 - t) * bulge;
+    lat += perpLat * offset;
+    lon += perpLon * offset;
+    points.push([lat, lon]);
+  }
+  return points;
+}
+
+// Draw or update an animated arc for a QSO
+function jtcatMapDrawQsoArc(fromCall, toCall) {
+  var fromStn = jtcatMapStations[fromCall];
+  var toStn = jtcatMapStations[toCall];
+  if (!fromStn || !toStn) return;
+  var key = [fromCall, toCall].sort().join('\u2194');
+  var existing = jtcatMapQsos[key];
+  var arcPoints = jtcatComputeArc(fromStn.lat, fromStn.lon, toStn.lat, toStn.lon);
+
+  var myCall = getMyCallsign();
+  var involvesMe = (fromCall === myCall || toCall === myCall);
+  var color = involvesMe ? '#e94560' : '#4fc3f7';
+
+  if (existing) {
+    existing.arc.setLatLngs(arcPoints);
+    existing.arc.setTooltipContent(fromCall + ' \u2192 ' + toCall);
+    existing.lastSeen = Date.now();
+    existing.from = fromCall;
+    existing.to = toCall;
+    // Update animation direction
+    jtcatAnimateArc(existing.arc, fromCall, toCall, fromStn, toStn, color);
+    return;
+  }
+  var arc = L.polyline(arcPoints, {
+    color: color, weight: 2, opacity: 0.8,
+    dashArray: '8 6', lineCap: 'round',
+  }).addTo(jtcatMapArcs);
+  arc.bindTooltip(fromCall + ' \u2192 ' + toCall, { sticky: true });
+  jtcatMapQsos[key] = { arc: arc, from: fromCall, to: toCall, lastSeen: Date.now() };
+  // SVG element may not be available immediately after addTo()
+  setTimeout(function() { jtcatAnimateArc(arc, fromCall, toCall, fromStn, toStn, color); }, 0);
+}
+
+// Animate the arc's dash to flow from transmitter → receiver
+function jtcatAnimateArc(arc, fromCall, toCall, fromStn, toStn, color) {
+  var el = arc.getElement();
+  if (!el) return;
+  el.style.stroke = color;
+  // Determine if the arc's geometry goes from→to or to→from
+  // Arc points always go from sorted-first to sorted-second
+  var sorted = [fromCall, toCall].sort();
+  var forward = sorted[0] === fromCall; // true = SVG path goes in TX direction
+  el.classList.remove('jtcat-arc-forward', 'jtcat-arc-reverse');
+  el.classList.add(forward ? 'jtcat-arc-forward' : 'jtcat-arc-reverse');
+}
+
+function jtcatMapPlotDecode(d) {
+  if (!jtcatMap) return;
+  var text = (d.text || '').toUpperCase();
+  var parts = text.split(/\s+/);
+
+  if (text.startsWith('CQ ')) {
+    // CQ [DX] CALL GRID — register the CQ caller
+    var idx = 1;
+    if (parts.length > 3 && parts[1].length <= 4 && !/[0-9]/.test(parts[1])) idx = 2;
+    var call = parts[idx] || '';
+    var grid = parts[idx + 1] || '';
+    jtcatMapRegisterStation(call, grid);
+    // Mark CQ callers green
+    var stn = jtcatMapStations[call];
+    if (stn) {
+      stn.marker.setStyle({ fillColor: '#4ecca3', color: '#4ecca3' });
+    }
+  } else if (parts.length >= 2) {
+    // TOCALL FROMCALL [GRID|REPORT|RR73|73]
+    var toCall = parts[0];
+    var fromCall = parts[1];
+    var payload = parts[2] || '';
+
+    // Learn grid if it's in the message
+    if (/^[A-R]{2}[0-9]{2}$/i.test(payload)) {
+      jtcatMapRegisterStation(fromCall, payload);
+    }
+
+    // Update lastSeen for both
+    if (jtcatMapStations[fromCall]) jtcatMapStations[fromCall].lastSeen = Date.now();
+    if (jtcatMapStations[toCall]) jtcatMapStations[toCall].lastSeen = Date.now();
+
+    // Draw QSO arc if both stations have known positions
+    if (jtcatMapStations[fromCall] && jtcatMapStations[toCall]) {
+      jtcatMapDrawQsoArc(fromCall, toCall);
+    }
+  }
+}
+
+function jtcatMapClearOld() {
+  var now = Date.now();
+  // Remove QSO arcs not seen in last 45 seconds (3 FT8 cycles)
+  var arcCutoff = now - 45000;
+  Object.keys(jtcatMapQsos).forEach(function(key) {
+    var q = jtcatMapQsos[key];
+    if (q.lastSeen < arcCutoff) {
+      jtcatMapArcs.removeLayer(q.arc);
+      delete jtcatMapQsos[key];
+    }
+  });
+  // Remove stations not seen in 3 minutes
+  var stnCutoff = now - 180000;
+  Object.keys(jtcatMapStations).forEach(function(call) {
+    var s = jtcatMapStations[call];
+    if (s.lastSeen < stnCutoff) {
+      jtcatMapMarkers.removeLayer(s.marker);
+      delete jtcatMapStations[call];
+    }
+  });
+}
+
+function jtcatMapClear() {
+  jtcatMapMarkers.clearLayers();
+  jtcatMapArcs.clearLayers();
+  jtcatMapStations = {};
+  jtcatMapQsos = {};
+}
+
+// Waterfall rendering
+var waterfallCtx = jtcatWaterfall.getContext('2d');
+var waterfallAnimFrame = null;
+
+function jtcatWaterfallLoop() {
+  if (!jtcatRunning || !jtcatAnalyser) return;
+
+  try {
+  var freqData = new Uint8Array(jtcatAnalyser.frequencyBinCount);
+  jtcatAnalyser.getByteFrequencyData(freqData);
+
+  // AnalyserNode at 12kHz with fftSize=2048 gives 1024 bins covering 0–6000 Hz.
+  // FT8 passband is 0–3000 Hz = first half of bins (512 bins).
+  var passbandBins = Math.floor(freqData.length / 2); // 0–3000 Hz
+
+  var w = jtcatWaterfall.width;
+  var h = jtcatWaterfall.height;
+
+  // Scroll existing image down by 1 pixel
+  var imgData = waterfallCtx.getImageData(0, 0, w, h - 1);
+  waterfallCtx.putImageData(imgData, 0, 1);
+
+  // Draw new line at top row
+  var lineData = waterfallCtx.createImageData(w, 1);
+  for (var x = 0; x < w; x++) {
+    var binIdx = Math.floor(x * passbandBins / w);
+    var val = freqData[binIdx]; // 0–255
+
+    // Color map: dark blue → cyan → yellow → red → white
+    var norm = val / 255;
+    var r, g, b;
+    if (norm < 0.2) {
+      // Black to dark blue
+      r = 0;
+      g = 0;
+      b = Math.floor(norm * 5 * 140);
+    } else if (norm < 0.4) {
+      // Dark blue to cyan
+      var t = (norm - 0.2) * 5;
+      r = 0;
+      g = Math.floor(t * 255);
+      b = 140 + Math.floor(t * 115);
+    } else if (norm < 0.6) {
+      // Cyan to yellow
+      var t = (norm - 0.4) * 5;
+      r = Math.floor(t * 255);
+      g = 255;
+      b = Math.floor((1 - t) * 255);
+    } else if (norm < 0.8) {
+      // Yellow to red
+      var t = (norm - 0.6) * 5;
+      r = 255;
+      g = Math.floor((1 - t) * 255);
+      b = 0;
+    } else {
+      // Red to white
+      var t = (norm - 0.8) * 5;
+      r = 255;
+      g = Math.floor(t * 255);
+      b = Math.floor(t * 255);
+    }
+
+    var i = x * 4;
+    lineData.data[i] = r;
+    lineData.data[i + 1] = g;
+    lineData.data[i + 2] = b;
+    lineData.data[i + 3] = 255;
+  }
+  waterfallCtx.putImageData(lineData, 0, 0);
+
+  // Draw frequency markers directly on waterfall canvas
+  var rxX = Math.round(jtcatRxFreq / 3000 * w);
+  var txX = Math.round(jtcatTxFreq / 3000 * w);
+
+  // RX marker (green bar only)
+  if (rxX !== txX) {
+    waterfallCtx.fillStyle = '#000';
+    waterfallCtx.fillRect(rxX - 2, 0, 5, h);
+    waterfallCtx.fillStyle = '#00ff00';
+    waterfallCtx.fillRect(rxX - 1, 0, 3, h);
+  }
+
+  // TX marker (red bar only — freq shown in toolbar)
+  waterfallCtx.fillStyle = '#000';
+  waterfallCtx.fillRect(txX - 2, 0, 5, h);
+  waterfallCtx.fillStyle = '#ff2222';
+  waterfallCtx.fillRect(txX - 1, 0, 3, h);
+
+  // Auto-detect quietest TX frequency — analyze every ~30 frames (~0.5s)
+  jtcatQuietFreqFrame++;
+  if (jtcatQuietFreqFrame % 30 === 0) {
+    // Scan 200–2800 Hz in 50Hz windows (avoid edges)
+    var binHz = 6000 / freqData.length; // ~5.86 Hz per bin
+    var windowBins = Math.round(50 / binHz); // ~8-9 bins per 50Hz window
+    var startBin = Math.round(200 / binHz);
+    var endBin = Math.round(2800 / binHz);
+    var bestEnergy = Infinity;
+    var bestBin = Math.round(1500 / binHz);
+    for (var b = startBin; b <= endBin - windowBins; b++) {
+      var energy = 0;
+      for (var j = 0; j < windowBins; j++) energy += freqData[b + j];
+      if (energy < bestEnergy) {
+        bestEnergy = energy;
+        bestBin = b + Math.floor(windowBins / 2);
+      }
+    }
+    var quietHz = Math.round(bestBin * binHz / 10) * 10; // snap to 10Hz
+    jtcatQuietFreq = Math.max(200, Math.min(2800, quietHz));
+    window.api.jtcatQuietFreq(jtcatQuietFreq);
+  }
+
+  // Send spectrum bins to main process for ECHOCAT/popout (~10fps)
+  jtcatSpectrumFrame++;
+  if (jtcatSpectrumFrame % 6 === 0) {
+    var specBins = new Array(w);
+    for (var sx = 0; sx < w; sx++) {
+      specBins[sx] = freqData[Math.floor(sx * passbandBins / w)];
+    }
+    window.api.jtcatSpectrum(specBins);
+  }
+
+  } catch (err) {
+    console.error('[JTCAT] Waterfall error (will retry):', err.message || err);
+  }
+  waterfallAnimFrame = requestAnimationFrame(jtcatWaterfallLoop);
+}
+
+// Click waterfall to set TX frequency
+jtcatWaterfall.addEventListener('click', function(e) {
+  var rect = jtcatWaterfall.getBoundingClientRect();
+  var x = e.clientX - rect.left;
+  var freq = Math.round(x / rect.width * 3000);
+  freq = Math.max(100, Math.min(3000, freq));
+  // Snap to nearest 10 Hz
+  freq = Math.round(freq / 10) * 10;
+
+  jtcatTxFreq = freq;
+  jtcatTxFreqInput.value = freq;
+  jtcatTxFreqLabel.textContent = 'TX: ' + freq + ' Hz';
+  if (jtcatRunning) window.api.jtcatSetTxFreq(freq);
+
+  // If no active QSO, also set RX freq to match
+  if (!jtcatQso || jtcatQso.phase === 'done') {
+    jtcatRxFreq = freq;
+    jtcatRxFreqInput.value = freq;
+    jtcatRxFreqLabel.textContent = freq + ' Hz';
+    if (jtcatRunning) window.api.jtcatSetRxFreq(freq);
+  }
+
+  // Update the TX message if there's an active QSO (re-encode at new freq)
+  if (jtcatQso && jtcatQso.txMsg) {
+    window.api.jtcatSetTxMsg(jtcatQso.txMsg);
+  }
+
+  console.log('[JTCAT] Waterfall click — TX freq:', freq, 'Hz');
+});
+
+// JTCAT IPC listeners
+window.api.onJtcatDecode(function(data) {
+  jtcatDecodes = data.results || [];
+  // Accumulate into the log
+  if (jtcatDecodes.length > 0) {
+    var now = new Date();
+    var timeStr = String(now.getUTCHours()).padStart(2, '0') + ':' +
+                  String(now.getUTCMinutes()).padStart(2, '0') + ':' +
+                  String(now.getUTCSeconds()).padStart(2, '0');
+    jtcatDecodeLog.push({
+      cycle: data.cycle,
+      time: timeStr,
+      mode: data.mode,
+      results: jtcatDecodes,
+    });
+  }
+  jtcatSyncStatus.textContent = 'Sync: OK';
+  jtcatSyncStatus.classList.add('jtcat-synced');
+  // Plot decodes on JTCAT map
+  jtcatDecodes.forEach(function(d) { jtcatMapPlotDecode(d); });
+  jtcatMapClearOld();
+  renderJtcatDecodes();
+});
+
+window.api.onJtcatCycle(function(data) {
+  jtcatCycleIndicator.textContent = data.slot === 'even' ? 'Even' : 'Odd';
+  jtcatCycleIndicator.className = 'jtcat-cycle ' + (data.slot === 'even' ? 'jtcat-slot-even' : 'jtcat-slot-odd');
+});
+
+// Spectrum/waterfall is rendered directly from AnalyserNode in jtcatWaterfallLoop()
+
+window.api.onJtcatStatus(function(data) {
+  if (data.state === 'running') {
+    jtcatSyncStatus.textContent = 'Sync: OK';
+    jtcatSyncStatus.classList.add('jtcat-synced');
+  } else if (data.state === 'stopped') {
+    jtcatSyncStatus.textContent = 'Sync: \u2014';
+    jtcatSyncStatus.classList.remove('jtcat-synced');
+  }
+});
+
+// --- JTCAT TX Audio Playback ---
+var jtcatTxAudioCtx = null;
+var jtcatTxPlaying = false;
+
+async function playJtcatTxAudio(data) {
+  var samplesArray = data.samples || data;
+  var offsetMs = data.offsetMs || 0;
+  if (jtcatTxPlaying) return;
+  jtcatTxPlaying = true;
+  try {
+    var s = await window.api.getSettings();
+    var outputDeviceId = s.remoteAudioOutput || '';
+
+    // Create or reuse TX audio context at 12kHz (FT8 native sample rate)
+    if (!jtcatTxAudioCtx || jtcatTxAudioCtx.state === 'closed') {
+      jtcatTxAudioCtx = new AudioContext({ sampleRate: 12000 });
+    }
+    if (jtcatTxAudioCtx.state === 'suspended') {
+      await jtcatTxAudioCtx.resume();
+    }
+
+    // Route to the configured output device (DAX TX, USB soundcard, digirig, etc.)
+    if (outputDeviceId && jtcatTxAudioCtx.setSinkId) {
+      try {
+        await jtcatTxAudioCtx.setSinkId(outputDeviceId);
+      } catch (e) {
+        console.warn('[JTCAT] Could not set TX audio output device:', e.message);
+      }
+    }
+
+    var samples = new Float32Array(samplesArray);
+    var buffer = jtcatTxAudioCtx.createBuffer(1, samples.length, 12000);
+    buffer.getChannelData(0).set(samples);
+
+    var source = jtcatTxAudioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(jtcatTxAudioCtx.destination);
+
+    var txDone = false;
+    function finishTx() {
+      if (txDone) return;
+      txDone = true;
+      jtcatTxPlaying = false;
+      window.api.jtcatTxComplete();
+      console.log('[JTCAT] TX audio playback complete');
+    }
+    source.onended = finishTx;
+    // Skip into the audio buffer for late-start TX so we stay within the cycle
+    var offsetSec = offsetMs / 1000;
+    var durationSec = buffer.duration - offsetSec;
+    if (durationSec > 0) {
+      source.start(0, offsetSec, durationSec);
+    } else {
+      source.start(0, offsetSec);
+    }
+    // Safety: force TX complete if onended never fires (device glitch, etc.)
+    var safetyDur = Math.max(durationSec, buffer.duration) + 2;
+    setTimeout(function() {
+      if (!txDone) {
+        console.warn('[JTCAT] TX audio safety timeout — forcing tx-complete');
+        finishTx();
+      }
+    }, safetyDur * 1000);
+    console.log('[JTCAT] TX audio playing, offset=' + offsetSec.toFixed(1) + 's, dur=' + durationSec.toFixed(1) + 's, device:', outputDeviceId || 'default');
+  } catch (err) {
+    jtcatTxPlaying = false;
+    window.api.jtcatTxComplete();
+    console.error('[JTCAT] TX audio playback error:', err.message || err);
+  }
+}
+
+window.api.onJtcatTxAudio(function(data) {
+  playJtcatTxAudio(data);
+});
+
+window.api.onJtcatTxStatus(function(data) {
+  if (data.state === 'tx') {
+    jtcatEnableTxBtn.classList.add('jtcat-transmitting');
+    jtcatTxMsgText.textContent = 'TX: ' + (data.message || '');
+    if (jtcatTxIndicator) jtcatTxIndicator.classList.remove('hidden');
+  } else {
+    jtcatEnableTxBtn.classList.remove('jtcat-transmitting');
+    if (jtcatTxIndicator) jtcatTxIndicator.classList.add('hidden');
+  }
+});
+
+// Remote JTCAT: start/stop audio capture when phone activates FT8
+window.api.onJtcatStartForRemote(function() {
+  console.log('[JTCAT] Remote requested audio start');
+  jtcatRemoteActive = true;
+  if (!jtcatAudioCtx) startJtcatAudio();
+});
+window.api.onJtcatStopForRemote(function() {
+  console.log('[JTCAT] Remote requested audio stop');
+  jtcatRemoteActive = false;
+  // Only stop audio if the desktop JTCAT view isn't active
+  if (!jtcatRunning) stopJtcatAudio();
+});
 
 // Sticky table header via JS transform on each th
 // (CSS position:sticky and transform on <thead> are unreliable in Chromium table rendering)

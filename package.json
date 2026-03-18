@@ -1,10 +1,13 @@
 {
   "name": "potacat",
-  "version": "1.0.6",
+  "version": "1.0.16",
   "description": "Amateur radio spot aggregator with CAT control, QSO logging, and panadapter integration",
   "author": {
     "name": "Casey Stanton",
     "email": "casey@potacat.com"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "main": "main.js",
   "scripts": {
@@ -28,6 +31,7 @@
       "preload-actmap-popout.js",
       "preload-spots-popout.js",
       "preload-cluster-popout.js",
+      "preload-jtcat-popout.js",
       "preload-remote-audio.js",
       "lib/**/*",
       "renderer/**/*",
@@ -59,11 +63,18 @@
       "include": "build/installer.nsh"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
+      "artifactName": "${productName}-Portable-${version}.${ext}"
     },
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "entitlements": null,
+      "entitlementsInherit": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "POTACAT needs microphone access for ECHOCAT remote audio.",
+        "NSCameraUsageDescription": "POTACAT does not use the camera but WebRTC requires this permission."
+      }
     },
     "linux": {
       "target": [
@@ -75,7 +86,9 @@
     "protocols": [
       {
         "name": "POTACAT Protocol",
-        "schemes": ["potacat"]
+        "schemes": [
+          "potacat"
+        ]
       }
     ],
     "extraResources": [
@@ -100,6 +113,7 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.3",
+    "ft8js": "^0.0.3",
     "leaflet": "^1.9.4",
     "serialport": "^13.0.0",
     "sql.js": "^1.14.0",

@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   onColorblindMode: (cb) => ipcRenderer.on('colorblind-mode', (_e, enabled) => cb(enabled)),
   resolveCallsignLocations: (callsigns) => ipcRenderer.invoke('resolve-callsign-locations', callsigns),
   getPark: (ref) => ipcRenderer.invoke('get-park', ref),
+  resendQsosToLogbook: (qsos) => ipcRenderer.invoke('resend-qsos-to-logbook', qsos),
   openExternal: (url) => ipcRenderer.send('open-external', url),
   minimize: () => ipcRenderer.send('qso-popout-minimize'),
   maximize: () => ipcRenderer.send('qso-popout-maximize'),

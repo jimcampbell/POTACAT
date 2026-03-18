@@ -67,6 +67,10 @@ let filterRegion = '';
 let filterFrom = '';
 let filterTo = '';
 
+// --- Selection state ---
+let selectedIdxs = new Set(); // QSO idx values currently selected
+let lastClickedIdx = null;    // for shift-click range select
+
 // --- Map state ---
 let map = null;
 let mapMarkers = [];
@@ -121,6 +125,22 @@ function updateStats(list) {
 // --- Check if any filter is active ---
 function hasActiveFilters() {
   return searchText || filterBand || filterMode || filterRegion || filterFrom || filterTo;
+}
+
+function updateResendLabel() {
+  const btn = document.getElementById('qso-resend');
+  if (selectedIdxs.size > 0) {
+    btn.textContent = `Resend ${selectedIdxs.size} to Logbook`;
+  } else {
+    btn.textContent = 'Resend to Logbook';
+  }
+}
+
+function clearSelection() {
+  selectedIdxs.clear();
+  lastClickedIdx = null;
+  tbody.querySelectorAll('tr.selected').forEach(tr => tr.classList.remove('selected'));
+  updateResendLabel();
 }
 
 // --- Render ---
@@ -206,6 +226,7 @@ function render() {
   for (const q of filtered) {
     const tr = document.createElement('tr');
     tr.dataset.idx = q.idx;
+    if (selectedIdxs.has(q.idx)) tr.classList.add('selected');
 
     const date = q.QSO_DATE ? q.QSO_DATE.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3') : '';
     const time = q.TIME_ON ? q.TIME_ON.slice(0, 2) + ':' + q.TIME_ON.slice(2, 4) : '';
@@ -239,6 +260,12 @@ function render() {
   }
   tbody.innerHTML = '';
   tbody.appendChild(frag);
+
+  // Prune selection to only include QSOs still in filtered view
+  for (const idx of selectedIdxs) {
+    if (!filtered.some(q => q.idx === idx)) selectedIdxs.delete(idx);
+  }
+  updateResendLabel();
 
   updateMap();
 }
@@ -528,6 +555,44 @@ tbody.addEventListener('dblclick', (e) => {
   input.addEventListener('blur', save);
 });
 
+// --- Row selection (click / ctrl+click / shift+click) ---
+tbody.addEventListener('click', (e) => {
+  // Skip clicks on delete buttons, editable inputs, or inline-edit cells being edited
+  if (e.target.closest('.log-delete-btn') || e.target.closest('input')) return;
+  const tr = e.target.closest('tr');
+  if (!tr || tr.dataset.idx == null) return;
+  const idx = parseInt(tr.dataset.idx, 10);
+
+  if (e.ctrlKey || e.metaKey) {
+    // Toggle single row
+    if (selectedIdxs.has(idx)) { selectedIdxs.delete(idx); tr.classList.remove('selected'); }
+    else { selectedIdxs.add(idx); tr.classList.add('selected'); }
+    lastClickedIdx = idx;
+  } else if (e.shiftKey && lastClickedIdx != null) {
+    // Range select from lastClickedIdx to this row
+    const idxList = filtered.map(q => q.idx);
+    const from = idxList.indexOf(lastClickedIdx);
+    const to = idxList.indexOf(idx);
+    if (from !== -1 && to !== -1) {
+      const lo = Math.min(from, to), hi = Math.max(from, to);
+      selectedIdxs.clear();
+      for (let i = lo; i <= hi; i++) selectedIdxs.add(idxList[i]);
+      tbody.querySelectorAll('tr').forEach(r => {
+        const rIdx = parseInt(r.dataset.idx, 10);
+        r.classList.toggle('selected', selectedIdxs.has(rIdx));
+      });
+    }
+  } else {
+    // Single select (clear others)
+    selectedIdxs.clear();
+    selectedIdxs.add(idx);
+    tbody.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+    tr.classList.add('selected');
+    lastClickedIdx = idx;
+  }
+  updateResendLabel();
+});
+
 // --- Delete (two-click) ---
 tbody.addEventListener('click', async (e) => {
   const btn = e.target.closest('.log-delete-btn');
@@ -595,6 +660,30 @@ document.getElementById('qso-export').addEventListener('click', async () => {
   }
 });
 
+// --- Resend to Logbook ---
+document.getElementById('qso-resend').addEventListener('click', async () => {
+  // If rows are selected, resend only those; otherwise resend all filtered
+  const toSend = selectedIdxs.size > 0
+    ? filtered.filter(q => selectedIdxs.has(q.idx))
+    : filtered;
+  if (!toSend.length) { toast('No QSOs to resend'); return; }
+  const label = selectedIdxs.size > 0
+    ? `${toSend.length} selected QSO${toSend.length === 1 ? '' : 's'}`
+    : hasActiveFilters() ? `${toSend.length} filtered QSOs` : `all ${toSend.length} QSOs`;
+  if (!confirm(`Resend ${label} to configured logbook?`)) return;
+  try {
+    const result = await window.api.resendQsosToLogbook(toSend);
+    if (result.success) {
+      toast(`Sent ${result.sent} of ${result.total} QSOs to logbook`);
+      clearSelection();
+    } else {
+      toast('Resend failed: ' + (result.error || 'unknown error'));
+    }
+  } catch (err) {
+    toast('Resend failed: ' + err.message);
+  }
+});
+
 // --- Titlebar ---
 (function setupTitlebar() {
   if (window.api.platform === 'darwin') {
@@ -604,7 +693,18 @@ document.getElementById('qso-export').addEventListener('click', async () => {
   document.getElementById('tb-max').addEventListener('click', () => window.api.maximize());
   document.getElementById('tb-close').addEventListener('click', () => window.api.close());
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') window.api.close();
+    if (e.key === 'Escape') {
+      if (selectedIdxs.size > 0) { clearSelection(); return; }
+      window.api.close();
+    }
+    // Ctrl+A: select all visible rows (if not typing in search)
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a' && document.activeElement !== searchInput) {
+      e.preventDefault();
+      selectedIdxs.clear();
+      for (const q of filtered) selectedIdxs.add(q.idx);
+      tbody.querySelectorAll('tr').forEach(r => r.classList.add('selected'));
+      updateResendLabel();
+    }
   });
 })();
 

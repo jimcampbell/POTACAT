@@ -38,6 +38,7 @@
           <label class="multi-dropdown-item"><input type="checkbox" value="70cm"> 70cm</label>
         </div>
       </div>
+      <div class="band-buttons hidden" id="band-buttons"></div>
       <div class="multi-dropdown" id="mode-filter">
         <button class="multi-dropdown-btn" type="button">Mode: <span class="multi-dropdown-text">All</span></button>
         <div class="multi-dropdown-menu">
@@ -82,6 +83,7 @@
           <label class="spots-toggle"><input type="checkbox" id="spots-hide-worked"> Hide worked stations</label>
           <label class="spots-toggle" id="spots-hide-parks-label"><input type="checkbox" id="spots-hide-parks"> Hide worked parks</label>
           <label class="spots-toggle"><input type="checkbox" id="spots-hide-oob"> Hide out-of-band</label>
+          <label class="spots-toggle"><input type="checkbox" id="spots-show-hidden"> Show hidden spots <span id="spots-hidden-count" class="spots-hidden-badge hidden">0</span></label>
           <div class="spots-panel-divider" id="spots-events-divider"></div>
           <div class="spots-panel-section-label" id="spots-events-label">Events &amp; Awards</div>
           <div id="spots-events-container"></div>
@@ -138,6 +140,8 @@
           </div>
           <div class="spots-panel-divider"></div>
           <label class="spots-toggle compact"><input type="checkbox" id="quick-hide-worked-parks"> Hide Worked Parks</label>
+          <div id="quick-rotor-divider" class="spots-panel-divider hidden"></div>
+          <label id="quick-rotor-label" class="spots-toggle compact hidden"><input type="checkbox" id="quick-rotor"> PSTRotator</label>
           <div class="spots-panel-divider"></div>
           <button type="button" id="open-settings-btn" class="settings-dropdown-link">Open Settings...</button>
         </div>
@@ -147,15 +151,16 @@
         <button id="view-table-btn" class="view-btn active" title="Table view">Table</button>
         <button id="view-map-btn" class="view-btn" title="Map view">Map</button>
         <button id="popout-map-btn" class="view-btn popout-btn" title="Pop-out map window">&#x2197;</button>
-        <button id="view-rbn-btn" class="view-btn hidden" title="Reverse Beacon Network">RBN</button>
+        <button id="view-rbn-btn" class="view-btn hidden" title="Propagation — RBN &amp; PSKReporter">Propagation</button>
         <button id="cluster-terminal-btn" class="view-btn hidden" title="DX Cluster Terminal">Terminal</button>
-        <button id="view-jtcat-btn" class="view-btn" title="JTCAT — FT8/FT4 Digital Modes">JTCAT</button>
+        <button id="view-directory-btn" class="view-btn hidden" title="HF Nets &amp; SWL Broadcast Directory">Directory</button>
+        <button id="view-jtcat-btn" class="view-btn hidden" title="JTCAT — FT8/FT4 Digital Modes">JTCAT</button>
       </div>
     </div>
     <div class="status-bar">
       <span id="utc-clock" class="utc-clock"></span>
       <span id="cat-status" class="status disconnected">CAT</span>
-      <span id="remote-tx-indicator" class="status hidden" style="background:#e94560;color:#fff;font-weight:bold;animation:tx-blink 1s ease-in-out infinite;">ECHOCAT TX</span>
+      <span id="jtcat-tx-indicator" class="status hidden" style="background:#e94560;color:#fff;font-weight:bold;animation:tx-blink 1s ease-in-out infinite;">JTCAT TX</span>
       <span id="wsjtx-status" class="status disconnected hidden">WSJT-X</span>
       <span id="cw-keyer-status" class="status hidden" style="background:#b8860b;color:#fff;cursor:pointer;">CW</span>
       <span id="cw-text-display" class="hidden" style="font-family:monospace;font-size:11px;color:#4fc3f7;margin-left:4px;max-width:300px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;direction:rtl;text-align:left;"></span>
@@ -168,6 +173,29 @@
         <div class="cw-popover-row">
           <label>WPM</label>
           <input type="number" id="cw-popover-wpm" min="5" max="50" value="20" style="width:50px;">
+        </div>
+      </div>
+      <span id="rig-panel-btn" class="status hidden" style="background:#2a6e4e;color:#fff;cursor:pointer;">Rig</span>
+      <div id="rig-popover" class="rig-popover hidden">
+        <div class="rig-popover-row rig-popover-buttons">
+          <button id="rig-atu-btn" class="rig-btn" title="Start ATU tune cycle">ATU Tune</button>
+          <button id="rig-nb-btn" class="rig-btn" title="Toggle Noise Blanker">NB</button>
+          <button id="rig-power-on-btn" class="rig-btn" title="Power On">Power On</button>
+          <button id="rig-power-off-btn" class="rig-btn rig-btn-danger" title="Power Off">Power Off</button>
+        </div>
+        <div class="rig-popover-row">
+          <label>RF Gain</label>
+          <input type="range" id="rig-rfgain" min="0" max="100" value="0" style="flex:1;accent-color:#4ecca3;">
+          <span id="rig-rfgain-label">0</span>
+        </div>
+        <div class="rig-popover-row">
+          <label>TX Power</label>
+          <input type="range" id="rig-txpower" min="0" max="100" value="0" style="flex:1;accent-color:#4ecca3;">
+          <span id="rig-txpower-label">0W</span>
+        </div>
+        <div class="rig-popover-row">
+          <label>Filter</label>
+          <div id="rig-filter-presets" class="rig-filter-presets"></div>
         </div>
       </div>
       <span id="sfi-status" class="status solar-pill hidden">SFI —</span>
@@ -223,6 +251,13 @@
       <span id="activator-park-name" class="activator-park-name"></span>
       <input type="text" id="activator-grid" class="activator-grid" placeholder="Grid" maxlength="6" spellcheck="false" autocomplete="off" title="Park grid square (editable)">
       <span id="activator-park-extra" class="activator-park-extra hidden" title="Additional parks"></span>
+      <div id="activator-crossref-wrap" class="activator-crossref-wrap hidden">
+        <button id="activator-crossref-toggle" class="activator-crossref-toggle" title="Cross-program references (WWFF, LLOTA)">X-Ref</button>
+        <div id="activator-crossref-popover" class="activator-crossref-popover hidden">
+          <div class="crossref-row"><label class="crossref-label">WWFF</label><input type="text" id="activator-crossref-wwff" class="crossref-input" placeholder="KFF-1234" maxlength="20" spellcheck="false" autocomplete="off"></div>
+          <div class="crossref-row"><label class="crossref-label">LLOTA</label><input type="text" id="activator-crossref-llota" class="crossref-input" placeholder="US-0001" maxlength="20" spellcheck="false" autocomplete="off"></div>
+        </div>
+      </div>
       <div class="activator-freq-group">
         <input type="text" id="activator-freq" placeholder="14.074" maxlength="10" spellcheck="false" autocomplete="off" title="Frequency in MHz — type and press Enter to tune radio">
         <span id="activator-band-label" class="activator-band-label">--</span>
@@ -245,11 +280,12 @@
         <button id="activator-map-btn" class="act-btn-group-item" title="Open activation map">Map</button>
         <button id="activator-spots-btn" class="act-btn-group-item" title="Show/hide hunter spots">Spots</button>
         <button id="activator-spots-popout-btn" class="act-btn-group-item act-btn-group-narrow" title="Pop out spots window">&#x2197;</button>
-        <button id="activator-rbn-btn" class="act-btn-group-item hidden" title="Show/hide Reverse Beacon Network">RBN</button>
+        <button id="activator-rbn-btn" class="act-btn-group-item hidden" title="Show/hide Propagation (RBN + PSKReporter)">Prop</button>
       </div>
       <button id="activator-history-btn" class="activator-history-btn" title="Past Activations">Past</button>
       <span id="activator-timer" class="activator-timer" title="Activation duration">--:--</span>
       <span id="activator-utc" class="activator-utc"></span>
+      <button id="activator-spot-btn" class="activator-export-btn" title="Spot yourself on POTA" style="background:#4ecca3;color:#000;">Spot</button>
       <button id="activator-export" class="activator-export-btn" title="Export activation ADIF">Export ADIF</button>
       <button id="activator-logbook-btn" class="activator-export-btn" title="View/Edit Logbook (F2)">Logbook</button>
       <button id="activator-settings-btn" class="activator-export-btn" title="Open Settings">Settings</button>
@@ -282,6 +318,7 @@
         <input type="text" class="rst-input" id="activator-rst-rcvd" maxlength="3" inputmode="numeric" value="599" spellcheck="false" autocomplete="off">
       </div>
       <span id="activator-op-name" class="activator-op-name"></span>
+      <input type="text" id="activator-state" placeholder="State" maxlength="6" spellcheck="false" autocomplete="off" title="State (auto-filled from QRZ, editable)" style="text-transform:uppercase;">
       <div class="activator-hunter-park-wrap">
         <input type="text" id="activator-hunter-park" placeholder="P2P ref" maxlength="12" spellcheck="false" autocomplete="off" title="Hunter's park ref (park-to-park)">
         <span id="activator-hunter-park-extra" class="activator-park-extra hidden"></span>
@@ -311,6 +348,7 @@
             <th>Time</th>
             <th>Callsign</th>
             <th>Name</th>
+            <th>State</th>
             <th>Freq</th>
             <th>Mode</th>
             <th>RST S</th>
@@ -365,6 +403,36 @@
           <input type="text" id="dx-spot-note" class="dx-command-field dx-spot-note" maxlength="60" placeholder="Note">
           <button type="button" id="dx-command-send" class="dx-command-btn">Send</button>
         </div>
+        <div id="banner-logger" class="banner-logger hidden">
+          <select id="bl-type" class="bl-field bl-type" title="Log type">
+            <option value="">Contact</option>
+            <option value="pota">POTA</option>
+            <option value="sota">SOTA</option>
+            <option value="wwff">WWFF</option>
+            <option value="llota">LLOTA</option>
+          </select>
+          <input type="text" id="bl-ref" class="bl-field bl-ref hidden" placeholder="Ref" maxlength="20" spellcheck="false" autocomplete="off" style="text-transform:uppercase;">
+          <input type="text" id="bl-callsign" class="bl-field bl-callsign" placeholder="Callsign" maxlength="20" spellcheck="false" autocomplete="off" autocapitalize="characters">
+          <input type="text" id="bl-name" class="bl-field bl-name" readonly tabindex="-1" placeholder="Name">
+          <input type="text" id="bl-freq" class="bl-field bl-freq" placeholder="Freq MHz" maxlength="10" inputmode="numeric">
+          <select id="bl-mode" class="bl-field bl-mode">
+            <option value="SSB">SSB</option>
+            <option value="USB">USB</option>
+            <option value="LSB">LSB</option>
+            <option value="CW">CW</option>
+            <option value="FT8">FT8</option>
+            <option value="FT4">FT4</option>
+            <option value="FM">FM</option>
+            <option value="AM">AM</option>
+            <option value="RTTY">RTTY</option>
+          </select>
+          <div class="bl-rst-group"><label class="bl-rst-label">S</label><input type="text" id="bl-rst-sent" class="bl-field bl-rst" maxlength="3" inputmode="numeric" value="59"></div>
+          <div class="bl-rst-group"><label class="bl-rst-label">R</label><input type="text" id="bl-rst-rcvd" class="bl-field bl-rst" maxlength="3" inputmode="numeric" value="59"></div>
+          <div class="bl-rst-group"><label class="bl-rst-label">UTC</label><input type="text" id="bl-time" class="bl-field bl-time" placeholder="HH:MM" maxlength="5"></div>
+          <input type="text" id="bl-notes" class="bl-field bl-notes" placeholder="Notes" maxlength="80" spellcheck="false">
+          <label class="bl-respot-label" id="bl-respot-label"><input type="checkbox" id="bl-respot" checked> Spot</label>
+          <button type="button" id="bl-log-btn" class="bl-log-btn">Log</button>
+        </div>
       </div>
       <div id="split-splitter" class="hidden"></div>
       <div id="map-pane" class="hidden">
@@ -396,10 +464,20 @@
             <option value="FT4">FT4</option>
           </select>
         </div>
+        <div id="jtcat-slice-select" class="jtcat-mode-select hidden">
+          <select id="jtcat-slice" title="Flex slice for JTCAT (independent of main CAT slice)">
+            <option value="">Same as CAT</option>
+            <option value="5002">Slice A</option>
+            <option value="5003">Slice B</option>
+            <option value="5004">Slice C</option>
+            <option value="5005">Slice D</option>
+          </select>
+        </div>
+        <span id="jtcat-tx-freq-label" class="jtcat-tx-freq-label">TX: 1500 Hz</span>
         <div class="jtcat-status">
           <span id="jtcat-cycle-indicator" class="jtcat-cycle">&mdash;</span>
           <span id="jtcat-countdown" class="jtcat-countdown">&mdash;</span>
-          <span id="jtcat-sync-status" class="jtcat-sync">Sync: &mdash;</span>
+          <span id="jtcat-sync-status" class="jtcat-sync" title="Click to check clock offset">Sync: &mdash;</span>
         </div>
       </div>
 
@@ -412,10 +490,10 @@
           </div>
         </div>
 
-        <!-- Decode panels (right) -->
+        <!-- Decode panels (center) -->
         <div class="jtcat-decode-pane">
           <div class="jtcat-decode-section">
-            <div class="jtcat-decode-header">Band Activity</div>
+            <div class="jtcat-decode-header">Band Activity <button id="jtcat-cq-filter" class="jtcat-filter-btn" title="Show only CQ and 73 messages">CQ</button></div>
             <div id="jtcat-band-activity" class="jtcat-decode-list">
               <div class="jtcat-empty">Waiting for decodes...</div>
             </div>
@@ -427,6 +505,20 @@
             </div>
           </div>
         </div>
+
+        <!-- JTCAT Map (right) -->
+        <div class="jtcat-map-pane">
+          <div id="jtcat-map" class="jtcat-map"></div>
+        </div>
+      </div>
+
+      <!-- QSO sequence tracker -->
+      <div id="jtcat-qso-tracker" class="jtcat-qso-tracker hidden">
+        <div class="jtcat-qso-tracker-header">
+          <span id="jtcat-qso-label" class="jtcat-qso-label"></span>
+          <button id="jtcat-qso-cancel" class="jtcat-btn jtcat-halt-btn" title="Cancel QSO">Cancel</button>
+        </div>
+        <div id="jtcat-qso-steps" class="jtcat-qso-steps"></div>
       </div>
 
       <div class="jtcat-controls">
@@ -439,6 +531,7 @@
             <input type="number" id="jtcat-rx-freq" value="1500" min="100" max="3000" step="10">
             <span>Hz</span>
           </label>
+          <button id="jtcat-call-cq" class="jtcat-btn jtcat-cq-btn">CQ</button>
           <button id="jtcat-enable-tx" class="jtcat-btn">Enable TX</button>
           <button id="jtcat-halt-tx" class="jtcat-btn jtcat-halt-btn">Halt TX</button>
           <button id="jtcat-log-qso" class="jtcat-btn">Log QSO</button>
@@ -461,8 +554,8 @@
         <span>POTA Stats</span>
         <button id="parks-stats-close" title="Close">&times;</button>
       </div>
-      <div class="parks-stat"><span>Parks Worked</span><strong id="parks-stats-total">0</strong></div>
-      <div class="parks-stat"><span>Total QSOs</span><strong id="parks-stats-qsos">0</strong></div>
+      <div class="parks-stat"><span>Unique Parks</span><strong id="parks-stats-total">0</strong></div>
+      <div class="parks-stat"><span>Park QSOs</span><strong id="parks-stats-qsos">0</strong></div>
       <div class="parks-stat"><span>Locations</span><strong id="parks-stats-locations">0</strong></div>
       <div class="parks-stats-divider"></div>
       <div class="parks-stat"><span>New on Air Now</span><strong id="parks-stats-new-now" class="stat-highlight">0</strong></div>
@@ -539,8 +632,90 @@
       </div>
       <div id="dxcc-placeholder" class="hidden">No QSOs logged yet. Log some contacts or import a log to see DXCC progress.</div>
     </div>
+    <div id="directory-view" class="hidden">
+      <div class="directory-view-header">
+        <div class="directory-tabs">
+          <button id="dirv-tab-nets" class="directory-tab active" type="button">HF Nets</button>
+          <button id="dirv-tab-swl" class="directory-tab" type="button">SWL Broadcasts</button>
+        </div>
+        <input type="text" id="dirv-search" class="directory-search" placeholder="Search nets &amp; broadcasts...">
+        <select id="dirv-band-filter" class="dirv-filter-select">
+          <option value="all">All Bands</option>
+          <option value="160m">160m</option>
+          <option value="80m">80m</option>
+          <option value="60m">60m</option>
+          <option value="40m">40m</option>
+          <option value="30m">30m</option>
+          <option value="20m">20m</option>
+          <option value="17m">17m</option>
+          <option value="15m">15m</option>
+          <option value="12m">12m</option>
+          <option value="10m">10m</option>
+          <option value="6m">6m</option>
+          <option value="2m">2m</option>
+          <option value="MW">MW</option>
+          <option value="SW">SW</option>
+        </select>
+        <select id="dirv-status-filter" class="dirv-filter-select">
+          <option value="all">All</option>
+          <option value="live">On Air Now</option>
+          <option value="today">Scheduled Today</option>
+        </select>
+        <button id="dirv-refresh-btn" type="button" class="directory-refresh" title="Refresh from Google Sheets">&#x21BB;</button>
+        <span id="dirv-count" class="dirv-count"></span>
+      </div>
+      <div id="dirv-nets-container" class="directory-view-table-container">
+        <table class="directory-view-table">
+          <thead>
+            <tr>
+              <th class="dirv-status-col" data-dir-col="status">Status</th>
+              <th class="dirv-name-col" data-dir-col="name">Net Name</th>
+              <th class="dirv-freq-col" data-dir-col="freq">Freq (kHz)</th>
+              <th class="dirv-mode-col" data-dir-col="mode">Mode</th>
+              <th class="dirv-band-col" data-dir-col="band">Band</th>
+              <th class="dirv-days-col" data-dir-col="days">Days</th>
+              <th class="dirv-time-col" data-dir-col="time">Time (UTC)</th>
+              <th class="dirv-next-col" data-dir-col="next">Next</th>
+              <th class="dirv-dur-col" data-dir-col="dur">Dur</th>
+              <th class="dirv-region-col" data-dir-col="region">Region</th>
+              <th class="dirv-notes-col" data-dir-col="notes">Notes</th>
+              <th class="dirv-action-col" data-dir-col="action"></th>
+            </tr>
+          </thead>
+          <tbody id="dirv-nets-body"></tbody>
+        </table>
+      </div>
+      <div id="dirv-swl-container" class="directory-view-table-container hidden">
+        <table class="directory-view-table">
+          <thead>
+            <tr>
+              <th class="dirv-status-col" data-dir-col="status">Status</th>
+              <th class="dirv-name-col" data-dir-col="name">Station</th>
+              <th class="dirv-freq-col" data-dir-col="freq">Freq (kHz)</th>
+              <th class="dirv-mode-col" data-dir-col="mode">Mode</th>
+              <th class="dirv-band-col" data-dir-col="band">Band</th>
+              <th class="dirv-time-col" data-dir-col="startTime">Start (UTC)</th>
+              <th class="dirv-time-col" data-dir-col="endTime">End (UTC)</th>
+              <th class="dirv-next-col" data-dir-col="next">Status</th>
+              <th class="dirv-lang-col" data-dir-col="lang">Lang</th>
+              <th class="dirv-power-col" data-dir-col="power">Power</th>
+              <th class="dirv-region-col" data-dir-col="region">Target</th>
+              <th class="dirv-notes-col" data-dir-col="notes">Notes</th>
+            </tr>
+          </thead>
+          <tbody id="dirv-swl-body"></tbody>
+        </table>
+      </div>
+      <div id="dirv-placeholder" class="hidden">Loading directory data...</div>
+      <div class="dirv-footer">
+        <span class="dir-suggest-link">Want a net or SWL station added? <a href="#" id="dirv-suggest-sheet">Leave a comment on the Google Sheet</a></span>
+        <span class="dirv-hint">Click a row to tune your radio</span>
+      </div>
+    </div>
     <div id="rbn-view" class="hidden">
       <div class="rbn-header">
+        <label class="prop-source-toggle"><input type="checkbox" id="prop-show-rbn" checked> <span style="color:var(--source-rbn)">RBN</span></label>
+        <label class="prop-source-toggle"><input type="checkbox" id="prop-show-pskr" checked> <span style="color:#ff6b6b">PSKReporter</span></label>
         <div class="multi-dropdown" id="rbn-band-filter">
           <button class="multi-dropdown-btn" type="button">Band: <span class="multi-dropdown-text">All</span></button>
           <div class="multi-dropdown-menu">
@@ -558,6 +733,19 @@
             <label class="multi-dropdown-item"><input type="checkbox" value="6m"> 6m</label>
             <label class="multi-dropdown-item"><input type="checkbox" value="2m"> 2m</label>
             <label class="multi-dropdown-item"><input type="checkbox" value="70cm"> 70cm</label>
+          </div>
+        </div>
+        <div class="multi-dropdown" id="prop-mode-filter">
+          <button class="multi-dropdown-btn" type="button">Mode: <span class="multi-dropdown-text">All</span></button>
+          <div class="multi-dropdown-menu">
+            <label class="multi-dropdown-item"><input type="checkbox" value="all" checked> All</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="CW"> CW</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="FT8"> FT8</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="FT4"> FT4</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="FT2"> FT2</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="JS8"> JS8</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="FREEDV"> FreeDV</label>
+            <label class="multi-dropdown-item"><input type="checkbox" value="RTTY"> RTTY</label>
           </div>
         </div>
         <label class="rbn-age-filter">Max age:
@@ -579,14 +767,12 @@
         <table id="rbn-table">
           <thead>
             <tr>
-              <th>Spotter</th>
-              <th>Spotted</th>
+              <th>Station</th>
+              <th>Location</th>
               <th id="rbn-dist-header">Dist (mi)</th>
               <th>Freq</th>
               <th>Mode</th>
-              <th>Type</th>
               <th>SNR</th>
-              <th>Speed</th>
               <th>Time</th>
               <th>Seen</th>
             </tr>
@@ -599,6 +785,21 @@
 
   <div id="col-context-menu" class="hidden">
     <div class="col-ctx-title">Show Columns</div>
+  </div>
+
+  <div id="hide-spot-menu" class="hidden">
+    <div class="hide-spot-title" id="hide-spot-call"></div>
+    <div class="hide-spot-section" id="hide-spot-freq-label">Hide on this frequency</div>
+    <button class="hide-spot-btn" data-dur="3600000" data-scope="freq">1 hour</button>
+    <button class="hide-spot-btn" data-dur="7200000" data-scope="freq">2 hours</button>
+    <button class="hide-spot-btn" data-dur="today" data-scope="freq">Rest of today UTC</button>
+    <button class="hide-spot-btn" data-dur="forever" data-scope="freq">Forever</button>
+    <div class="hide-spot-section">Hide on all bands</div>
+    <button class="hide-spot-btn" data-dur="3600000" data-scope="all">1 hour</button>
+    <button class="hide-spot-btn" data-dur="7200000" data-scope="all">2 hours</button>
+    <button class="hide-spot-btn" data-dur="today" data-scope="all">Rest of today UTC</button>
+    <button class="hide-spot-btn" data-dur="forever" data-scope="all">Forever</button>
+    <button class="hide-spot-btn hide-spot-unhide hidden" data-dur="unhide">Unhide (all)</button>
   </div>
 
   <div id="cat-log-panel" class="hidden">
@@ -614,16 +815,31 @@
 
   <!-- Settings dialog -->
   <dialog id="settings-dialog">
-    <h3>Settings <span style="float:right;font-size:11px;font-weight:normal;color:#666;margin-top:4px;">ESC to close without saving</span></h3>
+    <h3 style="display:flex;justify-content:space-between;align-items:baseline;">Settings <span style="font-size:11px;font-weight:normal;color:#666;">ESC to close</span></h3>
     <!-- 0. Connection Status (only visible when sources are enabled) -->
     <div id="settings-conn-status" class="settings-conn-bar hidden">
       <span id="conn-cluster" class="conn-pill hidden"><span class="conn-dot"></span> DX Cluster</span>
       <span id="conn-rbn" class="conn-pill hidden"><span class="conn-dot"></span> RBN</span>
       <span id="conn-pskr" class="conn-pill hidden"><span class="conn-dot"></span> FreeDV</span>
+      <span id="conn-pskr-map" class="conn-pill hidden"><span class="conn-dot"></span> PSKReporter</span>
       <span id="conn-remote" class="conn-pill hidden"><span class="conn-dot"></span> Echo CAT</span>
     </div>
+    <!-- Settings tab bar -->
+    <div class="settings-tab-bar">
+      <div class="settings-tabs-row">
+        <button type="button" class="settings-tab active" data-tab="station">Station</button>
+        <button type="button" class="settings-tab" data-tab="radio">Radio</button>
+        <button type="button" class="settings-tab" data-tab="spots">Spots</button>
+        <button type="button" class="settings-tab" data-tab="tuning">Tuning</button>
+        <button type="button" class="settings-tab" data-tab="logging">Logging</button>
+        <button type="button" class="settings-tab" data-tab="network">ECHOCAT</button>
+        <button type="button" class="settings-tab" data-tab="display">Display</button>
+      </div>
+      <input type="text" id="settings-search" class="settings-search" placeholder="Search settings...">
+    </div>
+    <div class="settings-scroll-area">
     <!-- 0.5 App Mode -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="station">
       <legend>App Mode</legend>
       <div style="display:flex;gap:16px;align-items:center;">
         <label class="radio-label"><input type="radio" name="set-app-mode" value="hunter" checked> Hunter <span style="color:#888;font-size:12px;">(spot browser)</span></label>
@@ -632,7 +848,7 @@
       <span class="help-text" style="display:block;margin-top:4px;">Hunter mode shows live spots. Activator mode provides a rapid logging interface for park activations.</span>
     </fieldset>
     <!-- 1. Station -->
-    <fieldset class="source-toggles collapsible">
+    <fieldset class="source-toggles collapsible" data-settings-tab="station">
       <legend class="collapsible-legend" data-target="station-body">Station <span class="collapse-arrow">&#9662;</span></legend>
       <div id="station-body">
       <label>My Callsign: <input type="text" id="set-my-callsign" maxlength="10" placeholder="WB6ACU"></label>
@@ -688,7 +904,7 @@
       </div>
     </fieldset>
     <!-- 2. Radio -->
-    <fieldset class="radio-config">
+    <fieldset class="radio-config" data-settings-tab="radio">
       <legend>Radio</legend>
       <div id="my-rigs-list"></div>
       <button type="button" id="rig-add-btn" class="rig-action-btn">+ Add Rig</button>
@@ -697,6 +913,12 @@
         <label>Rig Name:
           <input type="text" id="set-rig-name" placeholder="My Radio" maxlength="40">
         </label>
+        <label>Radio Model:
+          <select id="set-rig-model-select">
+            <option value="">(not set)</option>
+          </select>
+        </label>
+        <span class="help-text" style="margin-bottom:8px;display:block;">Selecting your model enables model-specific features: CW keying, ATU commands, CI-V address, filter control, and power limits.</span>
         <label class="radio-label"><input type="radio" name="radio-type" value="flex" checked> FlexRadio (SmartSDR)</label>
         <div id="flex-config" class="radio-sub hidden">
           <label>Slice: <select id="set-flex-slice">
@@ -722,8 +944,9 @@
           <label>Serial Port:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="set-serialcat-port" style="flex:1;"></select>
-              <input type="text" id="set-serialcat-port-manual" placeholder="COM5" style="width:70px;" title="Type a port manually if not listed">
+              <input type="text" id="set-serialcat-port-manual" placeholder="or type COM port" style="width:120px;" title="Type a port manually if not listed (e.g. virtual COM port from Win4Icom)">
             </div>
+            <span class="help-text" style="margin-top:2px;display:block;">Port not listed? Type it in the box — virtual COM ports from Win4Icom/Win4Yaesu may not appear in the dropdown.</span>
           </label>
           <label>Baud Rate:
             <select id="set-serialcat-baud">
@@ -744,6 +967,40 @@
             <span id="serialcat-test-result" style="font-size:12px;"></span>
           </div>
         </div>
+        <label class="radio-label"><input type="radio" name="radio-type" value="icom"> Icom (CI-V)</label>
+        <div id="icom-config" class="radio-sub hidden">
+          <span class="help-text" style="font-size:12px;">Direct CI-V binary protocol over USB. For IC-7300, IC-705, and other Icom radios with USB port.</span>
+          <label>Radio Model:
+            <select id="set-icom-model">
+              <option value="0x94">IC-7300</option>
+              <option value="0xB6">IC-7300 MK II</option>
+              <option value="0xA4">IC-705</option>
+              <option value="0x98">IC-7610</option>
+              <option value="0x88">IC-7100</option>
+              <option value="0x7A">IC-7600</option>
+              <option value="0x8E">IC-7851</option>
+              <option value="0xA2">IC-9700</option>
+            </select>
+          </label>
+          <label>Serial Port:
+            <div style="display:flex;gap:6px;margin-top:4px;">
+              <select id="set-icom-port" style="flex:1;"></select>
+              <input type="text" id="set-icom-port-manual" placeholder="or type COM port" style="width:120px;">
+            </div>
+          </label>
+          <label>Baud Rate:
+            <select id="set-icom-baud">
+              <option value="9600">9600</option>
+              <option value="19200">19200</option>
+              <option value="115200" selected>115200</option>
+            </select>
+          </label>
+          <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+            <button type="button" id="icom-test-btn">Test Connection</button>
+            <span id="icom-test-result" style="font-size:12px;"></span>
+          </div>
+          <span class="help-text" style="margin-top:6px;display:block;">For CW paddle keying via ECHOCAT, set your radio menu: SET > Connectors > USB SEND/Keying > USB Keying (CW) = DTR</span>
+        </div>
         <label class="radio-label"><input type="radio" name="radio-type" value="hamlib"> Other Rig (Hamlib)</label>
         <div id="hamlib-config" class="radio-sub hidden">
           <label>Rig Model:
@@ -752,11 +1009,12 @@
               <option value="">Select a rig...</option>
             </select>
           </label>
-          <label>Serial Port:
+          <label>Port / Address:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="set-rig-port" style="flex:1;"></select>
-              <input type="text" id="set-rig-port-manual" placeholder="COM5" style="width:70px;" title="Type a port manually if not listed">
+              <input type="text" id="set-rig-port-manual" placeholder="or type COM port" style="width:120px;" title="Serial port or network address (for FLRig, etc.)">
             </div>
+            <span class="help-text" style="margin-top:2px;display:block;">Port not listed? Type it in the box. For FLRig or OmniRig: enter the host IP and port (e.g. 127.0.0.1:12345).</span>
           </label>
           <label>Baud Rate:
             <select id="set-rig-baud">
@@ -806,7 +1064,7 @@
       </div>
     </fieldset>
     <!-- 3. Spot Sources -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="spots">
       <legend>Spot Sources</legend>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-pota" checked> Enable POTA</label>
       <div id="pota-parks-picker" style="margin-top:6px;margin-left:12px;margin-bottom:8px;">
@@ -844,7 +1102,7 @@
       </div>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-rbn"> Reverse Beacon Network</label>
       <div id="rbn-config" class="radio-sub hidden">
-        <span class="help-text" style="font-size:12px;">Shows where your CQ calls are being heard by RBN skimmers worldwide.</span>
+        <span class="help-text" style="font-size:12px;">Shows where your CQ calls are being heard by RBN skimmers worldwide. Appears in the Propagation view.</span>
         <span class="help-text" style="display:block;margin-top:4px;">RBN spots only appear while POTACAT is open — historical spots are not retrieved.</span>
       </div>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-wsjtx"> WSJT-X Integration</label>
@@ -862,12 +1120,21 @@
       <div id="pskr-config" class="radio-sub hidden">
         <span class="help-text" style="margin-left:12px;display:block;">Live FreeDV reception reports from PSKReporter. Shows who is hearing FreeDV signals worldwide.</span>
       </div>
+      <label class="checkbox-label"><input type="checkbox" id="set-enable-pskr-map"> PSKReporter Propagation</label>
+      <div id="pskr-map-config" class="radio-sub hidden">
+        <span class="help-text" style="margin-left:12px;display:block;">Shows where your FT8/FT4/CW transmissions are being received worldwide. Appears in the Propagation view alongside RBN.</span>
+        <span class="help-text" style="display:block;margin-top:4px;">Polls every 5 minutes (PSKReporter rate limit). Spots appear after the first poll completes. Requires your callsign above.</span>
+      </div>
     </fieldset>
     <!-- 4. Spot Filters (merged Spots + Watchlist) -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="spots">
       <legend>Spot Filters</legend>
       <label>Max Spot Age (minutes):
         <input type="number" id="set-max-age" min="1" max="120" value="5">
+        <span class="help-text">POTA, LLOTA, WWFF, DX</span>
+      </label>
+      <label>SOTA Max Spot Age (minutes):
+        <input type="number" id="set-sota-max-age" min="5" max="120" value="30">
       </label>
       <label>Refresh Interval (seconds):
         <input type="number" id="set-refresh-interval" min="15" max="300" step="15" value="30">
@@ -884,7 +1151,7 @@
       </label>
     </fieldset>
     <!-- 5. Tuning (trimmed — PstRotator moved to Antenna) -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="tuning">
       <legend>Tuning</legend>
       <label>Scan Dwell Time (seconds):
         <input type="number" id="set-scan-dwell" min="2" max="30" value="7">
@@ -910,7 +1177,7 @@
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Play a click when the radio confirms it has changed frequency</span>
     </fieldset>
     <!-- 6. Antenna (beam heading + PstRotator) -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="tuning">
       <legend>Antenna</legend>
       <label class="checkbox-label"><input type="checkbox" id="set-show-bearing"> Show Beam Heading</label>
       <span class="help-text" style="margin-left:12px;display:block;">Compass bearing from your QTH to each spot</span>
@@ -949,9 +1216,11 @@
       </div>
     </fieldset>
     <!-- 7. Logging -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="logging">
       <legend>Logging</legend>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-logging"> Enable QSO Logging</label>
+      <label class="checkbox-label" style="margin-left:12px;"><input type="checkbox" id="set-enable-banner-logger"> Bottom Banner Logger</label>
+      <span class="help-text" style="margin-left:24px;display:block;">Persistent logging bar below the spot table for rapid QSO entry</span>
       <div id="logging-config" class="radio-sub hidden">
         <label>ADIF Log File:
           <div style="display:flex;gap:6px;margin-top:4px;">
@@ -983,6 +1252,7 @@
               <option value="macloggerdx">MacLoggerDX</option>
               <option value="n3fjp">N3FJP</option>
               <option value="wavelog">Wavelog</option>
+              <option value="wrl">World Radio League</option>
             </select>
           </label>
           <div id="logbook-instructions" class="hidden help-text" style="margin-top:6px;line-height:1.5;"></div>
@@ -1024,7 +1294,7 @@
       </div>
     </fieldset>
     <!-- Events & Awards -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="logging">
       <legend>Events &amp; Awards</legend>
       <div id="settings-events-list" style="font-size:12px;color:var(--text-secondary);padding:4px 0;">No active events</div>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-dxcc"> DXCC Tracker</label>
@@ -1032,7 +1302,7 @@
     </fieldset>
 
     <!-- Net Reminders -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="spots">
       <legend>Net Reminders</legend>
       <span class="help-text" style="display:block;margin-bottom:6px;">Schedule recurring nets to appear as pinned spots. Tap to tune your radio at net time.</span>
       <div id="net-reminder-list"></div>
@@ -1106,9 +1376,9 @@
       </div>
       <div style="margin-top:8px;border-top:1px solid var(--border-primary);padding-top:8px;">
         <label class="checkbox-label"><input type="checkbox" id="set-enable-directory"> Community HF Nets &amp; SWL Broadcast Directory</label>
-        <span class="help-text" style="margin-left:12px;display:block;">Browse and add nets from a community-managed directory.</span>
+        <span class="help-text" style="margin-left:12px;display:block;">Browse and add nets from a community-managed directory. Shows a Directory tab in the main view bar.</span>
         <div id="dir-controls" class="hidden" style="margin-top:6px;">
-          <button type="button" id="dir-browse-btn" class="settings-add-btn">Browse Directory</button>
+          <button type="button" id="dir-browse-btn" class="settings-add-btn">Open Directory View</button>
         </div>
       </div>
       <div id="dir-browser" class="hidden">
@@ -1166,7 +1436,7 @@
     </fieldset>
 
     <!-- 8. Display (trimmed — bearing moved to Antenna, SmartSDR absorbed) -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="display">
       <legend>Display</legend>
       <label class="switch-label">
         <span>Dark Mode</span>
@@ -1177,6 +1447,7 @@
         <span>Light Mode</span>
       </label>
       <label class="checkbox-label"><input type="checkbox" id="set-colorblind"> Colorblind mode (deuteranopia)</label>
+      <label class="checkbox-label"><input type="checkbox" id="set-wcag-mode"> High contrast (WCAG AA)</label>
       <label class="checkbox-label"><input type="checkbox" id="set-color-rows" checked> Color table rows by spot source</label>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-solar"> Solar Propagation</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Shows SFI, K, and A indices in the status bar</span>
@@ -1192,6 +1463,10 @@
           </select>
         </label>
       </div>
+    </fieldset>
+    <!-- Panadapter Spots -->
+    <fieldset class="source-toggles" data-settings-tab="spots">
+      <legend>Panadapter Spots</legend>
       <label class="checkbox-label">
         <input type="checkbox" id="set-smartsdr-spots"> Push spots to SmartSDR panadapter
       </label>
@@ -1223,7 +1498,7 @@
       </div>
     </fieldset>
     <!-- 9. CW Keyer -->
-    <fieldset class="source-toggles collapsible">
+    <fieldset class="source-toggles collapsible" data-settings-tab="station">
       <legend>CW Keyer</legend>
       <label class="checkbox-label"><input type="checkbox" id="set-enable-cw-keyer"> CW Keyer (MIDI paddle)</label>
       <div id="cw-keyer-config" class="hidden" style="margin-top:6px;margin-left:12px;">
@@ -1266,9 +1541,9 @@
       </div>
     </fieldset>
     <!-- 10. ECHOCAT -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="network">
       <legend>ECHOCAT</legend>
-      <label class="checkbox-label"><input type="checkbox" id="set-enable-remote"> Enable ECHOCAT (phone browser over Tailscale)</label>
+      <label class="checkbox-label"><input type="checkbox" id="set-enable-remote"> Enable ECHOCAT (Remote Radio over VPN)</label>
       <div id="remote-config" class="radio-sub hidden" style="margin-top:6px;margin-left:12px;">
         <label>Port:
           <input type="number" id="set-remote-port" placeholder="7300" min="1024" max="65535" value="7300" style="width:80px;">
@@ -1280,21 +1555,50 @@
           </label>
           <button type="button" id="remote-regen-token" style="padding:2px 8px;">Random</button>
         </div>
-        <span class="help-text">Tailscale already secures the connection — token is optional</span>
+        <span class="help-text">Your VPN may be plenty secure. Add a remote log-in token if you want added security.</span>
         <div id="remote-audio-display" style="margin-top:8px;font-size:12px;color:#aaa;">
-          Audio: <span id="remote-audio-summary">not configured — set in My Rigs</span>
+          Audio: <span id="remote-audio-summary">not configured</span>
+          <a href="#" id="remote-audio-edit-link" style="margin-left:8px;font-size:11px;color:#4fc3f7;cursor:pointer;">Edit in Radio tab</a>
         </div>
         <div style="margin-top:4px;">
           <label>PTT Safety Timeout (seconds):
             <input type="number" id="set-remote-ptt-timeout" min="30" max="600" value="180" style="width:70px;">
           </label>
         </div>
+        <div class="pi-gated hidden">
+          <label class="checkbox-label" style="margin-top:8px;"><input type="checkbox" id="set-remote-cw-enabled"> Enable Remote CW Keyer</label>
+          <span class="help-text" style="margin-left:12px;display:block;">Send CW via paddle from phone (TinyMIDI / keyboard). Requires SmartSDR (FlexRadio) or CW Key Port.</span>
+          <div style="margin-top:6px;margin-left:12px;">
+            <label>CW Key Port (DTR keying):
+              <select id="set-cw-key-port" style="width:220px;"><option value="">(none)</option></select>
+            </label>
+            <span class="help-text" style="display:block;">External USB-serial adapter for DTR CW keying (QMX, etc). Separate from CAT port.</span>
+          </div>
+        </div>
         <div id="remote-url-display" style="margin-top:8px;font-family:monospace;font-size:12px;"></div>
-        <span class="help-text">To use ECHOCAT securely outside your home network, install <a href="https://tailscale.com" target="_blank" style="color:#4fc3f7;">Tailscale</a> on both your shack computer and phone. Audio, tuning, and PTT are all encrypted over the Tailscale VPN.</span>
+        <span class="help-text">To use ECHOCAT securely outside your home network, install a VPN such as <a href="https://tailscale.com" target="_blank" style="color:#4fc3f7;">Tailscale</a> (free) on both your shack computer and phone. Audio, tuning, and PTT are all encrypted over the VPN tunnel.</span>
+        <!-- Club Station Mode -->
+        <div style="margin-top:12px;border-top:1px solid #333;padding-top:10px;">
+          <label class="checkbox-label"><input type="checkbox" id="set-club-mode"> Club Station Mode</label>
+          <span class="help-text" style="margin-left:12px;display:block;">Members log in with callsign + password. Band enforcement by license class. Audit logging.</span>
+          <div id="club-config" class="hidden" style="margin-top:8px;margin-left:12px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <label>Members CSV:
+                <input type="text" id="set-club-csv-path" readonly placeholder="Choose file..." style="width:200px;cursor:pointer;">
+              </label>
+              <button type="button" id="club-csv-browse" style="padding:2px 8px;">Browse</button>
+              <button type="button" id="club-csv-create" style="padding:2px 8px;">Create New</button>
+            </div>
+            <button type="button" id="club-hash-passwords" style="padding:2px 10px;margin-bottom:8px;">Hash Passwords</button>
+            <span id="club-hash-status" style="font-size:11px;color:#aaa;margin-left:8px;"></span>
+            <div id="club-preview" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:11px;"></div>
+            <div id="club-schedule" style="margin-top:10px;"></div>
+          </div>
+        </div>
       </div>
     </fieldset>
     <!-- 11. About (merged Privacy + Diagnostics) -->
-    <fieldset class="source-toggles">
+    <fieldset class="source-toggles" data-settings-tab="display">
       <legend>About</legend>
       <label class="checkbox-label"><input type="checkbox" id="set-disable-auto-update"> Disable automatic updates</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">When checked, POTACAT will not check for new versions on startup.</span>
@@ -1305,12 +1609,13 @@
       <label class="checkbox-label"><input type="checkbox" id="set-light-icon"> Use light app icon</label>
       <span class="help-text" style="margin-left:12px;margin-bottom:6px;display:block;">Switches the taskbar and title bar icon to a light variant — easier to see on dark desktop panels</span>
     </fieldset>
+    </div><!-- /.settings-scroll-area -->
     <div class="dialog-buttons">
       <button id="settings-save">Save</button>
       <button id="settings-cancel">Cancel</button>
     </div>
-    <div class="settings-footer">
-      <div class="settings-version">v1.0.6 &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
+    <div class="settings-footer" style="position:relative;">
+      <div class="settings-version"><span id="settings-version-label">v1.0.13</span> &mdash; <a href="#" id="bio-link">Casey Stanton, K3SBP</a></div>
       <div class="settings-coffee"><a href="#" id="coffee-link">Buy Me a Coffee</a></div>
       <div class="settings-links">
         <a href="#" id="discord-link">Discord</a>
@@ -1323,8 +1628,14 @@
         <span class="footer-dot">&middot;</span>
         <a href="#" id="check-update-link">Check for Updates</a>
       </div>
+      <span id="pi-access" class="pi-access">&pi;</span>
     </div>
   </dialog>
+
+  <!-- Pi Access overlay (The Net easter egg) -->
+  <div id="pi-overlay" class="pi-overlay hidden">
+    <div class="pi-overlay-text">ACCESS: AUTHORIZED</div>
+  </div>
 
   <!-- Log QSO dialog -->
   <dialog id="log-dialog">
@@ -1609,8 +1920,9 @@
           <label>Serial Port:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="welcome-serialcat-port" style="flex:1;"></select>
-              <input type="text" id="welcome-serialcat-port-manual" placeholder="COM5" style="width:70px;">
+              <input type="text" id="welcome-serialcat-port-manual" placeholder="or type COM port" style="width:120px;">
             </div>
+            <span class="help-text" style="margin-top:2px;display:block;">Port not listed? Type it in the box.</span>
           </label>
           <label>Baud Rate:
             <select id="welcome-serialcat-baud">
@@ -1626,17 +1938,47 @@
             <input type="checkbox" id="welcome-serialcat-dtr-off"> Disable DTR/RTS
           </label>
         </div>
+        <label class="radio-label"><input type="radio" name="welcome-radio-type" value="icom"> Icom (CI-V)</label>
+        <div id="welcome-icom-config" class="radio-sub hidden">
+          <span class="help-text" style="font-size:12px;">Direct CI-V binary protocol over USB. For IC-7300, IC-705, and other Icom radios.</span>
+          <label>Radio Model:
+            <select id="welcome-icom-model">
+              <option value="0x94">IC-7300</option>
+              <option value="0xB6">IC-7300 MK II</option>
+              <option value="0xA4">IC-705</option>
+              <option value="0x98">IC-7610</option>
+              <option value="0x88">IC-7100</option>
+              <option value="0x7A">IC-7600</option>
+              <option value="0x8E">IC-7851</option>
+              <option value="0xA2">IC-9700</option>
+            </select>
+          </label>
+          <label>Serial Port:
+            <div style="display:flex;gap:6px;margin-top:4px;">
+              <select id="welcome-icom-port" style="flex:1;"></select>
+              <input type="text" id="welcome-icom-port-manual" placeholder="or type COM port" style="width:120px;">
+            </div>
+          </label>
+          <label>Baud Rate:
+            <select id="welcome-icom-baud">
+              <option value="9600">9600</option>
+              <option value="19200">19200</option>
+              <option value="115200" selected>115200</option>
+            </select>
+          </label>
+        </div>
         <label class="radio-label"><input type="radio" name="welcome-radio-type" value="hamlib"> Other Rig (Hamlib)</label>
         <div id="welcome-hamlib-config" class="radio-sub hidden">
           <label>Rig Model:
             <input type="text" id="welcome-rig-search" placeholder="Search rigs...">
             <select id="welcome-rig-model" size="4"><option value="">Select a rig...</option></select>
           </label>
-          <label>Serial Port:
+          <label>Port / Address:
             <div style="display:flex;gap:6px;margin-top:4px;">
               <select id="welcome-rig-port" style="flex:1;"></select>
-              <input type="text" id="welcome-rig-port-manual" placeholder="COM5" style="width:70px;">
+              <input type="text" id="welcome-rig-port-manual" placeholder="or type COM port" style="width:120px;">
             </div>
+            <div style="font-size:11px;color:#888;margin-top:2px;">Port not listed? Type it in the box — virtual COM ports from Win4Icom/Win4Yaesu may not appear in the dropdown.</div>
           </label>
           <label>Baud Rate:
             <select id="welcome-rig-baud">

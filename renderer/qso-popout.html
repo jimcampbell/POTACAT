@@ -46,6 +46,9 @@
     .qso-table td:nth-child(10) { white-space: normal; word-break: break-word; max-width: 150px; }
     .qso-table tr:last-child td { border-bottom: none; }
     .qso-table td.editable { cursor: text; }
+    .qso-table tbody tr { cursor: pointer; }
+    .qso-table tbody tr.selected { background: color-mix(in srgb, var(--accent-blue) 20%, transparent); }
+    .qso-table tbody tr.selected td { color: var(--text-primary); }
     .qso-table td input {
       width: 100%; background: var(--bg-input); border: 1px solid var(--accent-blue);
       color: var(--text-primary); padding: 1px 4px; font-size: inherit;
@@ -121,6 +124,7 @@
     <span class="qso-count" id="qso-count"></span>
     <button class="qso-export-btn" id="qso-import">Import ADIF</button>
     <button class="qso-export-btn" id="qso-export">Export ADIF</button>
+    <button class="qso-export-btn" id="qso-resend" title="Resend visible QSOs to configured logbook">Resend to Logbook</button>
   </div>
 
   <div class="qso-filter-bar" id="qso-filter-bar">

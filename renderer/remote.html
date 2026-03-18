@@ -19,8 +19,18 @@
     <div class="connect-box">
       <h1 class="connect-title">ECHOCAT</h1>
       <p class="connect-subtitle">Remote Radio</p>
-      <input type="text" id="token-input" placeholder="Access Token" maxlength="10"
-             autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+      <!-- Token login (default) -->
+      <div id="token-login">
+        <input type="text" id="token-input" placeholder="Access Token" maxlength="10"
+               autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+      </div>
+      <!-- Club login (shown when server sends auth-mode: club) -->
+      <div id="club-login" class="hidden">
+        <input type="text" id="club-callsign" placeholder="Callsign"
+               autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false">
+        <input type="password" id="club-password" placeholder="Password"
+               autocomplete="off">
+      </div>
       <button id="connect-btn" type="button">Connect</button>
       <div id="connect-error" class="hidden"></div>
       <p class="connect-help">
@@ -42,7 +52,12 @@
           <input type="number" id="freq-input" inputmode="decimal" placeholder="kHz" step="any">
           <button id="freq-go" type="button">Go</button>
         </div>
+        <div id="freq-step-btns" class="freq-step-btns">
+          <button type="button" id="freq-down-btn" class="freq-step-btn" title="Frequency down">&#x25BC;</button>
+          <button type="button" id="freq-up-btn" class="freq-step-btn" title="Frequency up">&#x25B2;</button>
+        </div>
       </div>
+      <div id="member-badge" class="member-badge hidden"></div>
       <div class="status-right">
         <button type="button" id="scan-btn" class="scan-status-btn" title="Scan spots">Scan</button>
         <span id="cat-dot" class="cat-dot disconnected" title="Radio disconnected"></span>
@@ -59,9 +74,43 @@
       <button class="mp-btn" data-mode="CW">CW</button>
       <button class="mp-btn" data-mode="FT8">FT8</button>
       <button class="mp-btn" data-mode="FT4">FT4</button>
+      <button class="mp-btn" data-mode="FT2">FT2</button>
       <button class="mp-btn" data-mode="FM">FM</button>
       <button class="mp-btn" data-mode="AM">AM</button>
       <button class="mp-btn" data-mode="RTTY">RTTY</button>
+    </div>
+
+    <!-- Dial pad overlay -->
+    <div id="dial-pad-backdrop" class="hidden"></div>
+    <div id="dial-pad" class="hidden">
+      <div class="dp-freq-row">
+        <span id="dp-freq">---.---.---</span>
+        <span class="dp-unit">kHz</span>
+      </div>
+      <div class="dp-grid">
+        <button class="dp-btn" data-val="1">1</button>
+        <button class="dp-btn" data-val="2">2</button>
+        <button class="dp-btn" data-val="3">3</button>
+        <button class="dp-btn" data-val="4">4</button>
+        <button class="dp-btn" data-val="5">5</button>
+        <button class="dp-btn" data-val="6">6</button>
+        <button class="dp-btn" data-val="7">7</button>
+        <button class="dp-btn" data-val="8">8</button>
+        <button class="dp-btn" data-val="9">9</button>
+        <button class="dp-btn dp-del" data-val="del">&#x232B;</button>
+        <button class="dp-btn" data-val="0">0</button>
+        <button class="dp-btn dp-dot" data-val=".">.</button>
+      </div>
+      <div class="dp-step-row">
+        <button class="dp-step-btn" id="dp-step-down" title="Step down">&#x25BC;</button>
+        <button class="dp-step-size" id="dp-step-size" title="Tap to change step">1 kHz</button>
+        <button class="dp-step-btn" id="dp-step-up" title="Step up">&#x25B2;</button>
+      </div>
+      <div class="dp-actions">
+        <button class="dp-cancel" id="dp-cancel">Cancel</button>
+        <button class="dp-clear" id="dp-clear">Clear</button>
+        <button class="dp-go" id="dp-go">Tune</button>
+      </div>
     </div>
 
     <!-- Settings overlay (replaces inline rig controls strip) -->
@@ -95,10 +144,17 @@
           <div id="rc-atu" class="so-toggle-group hidden">
             <button type="button" class="rc-btn rc-toggle" id="rc-atu-btn">ATU</button>
           </div>
+          <div id="rc-rotor" class="so-toggle-group hidden">
+            <button type="button" class="rc-btn rc-toggle" id="rc-rotor-btn">Rotor</button>
+          </div>
           <div id="rc-vfo" class="so-toggle-group">
             <button type="button" class="rc-btn rc-vfo" id="rc-vfo-a">A</button>
             <button type="button" class="rc-btn rc-vfo" id="rc-vfo-b">B</button>
             <button type="button" class="rc-btn" id="rc-vfo-swap">A&#x21C4;B</button>
+          </div>
+          <div id="rc-power" class="so-toggle-group">
+            <button type="button" class="rc-btn" id="rc-power-on" style="color:#4ecca3;">On</button>
+            <button type="button" class="rc-btn" id="rc-power-off" style="color:#e94560;">Off</button>
           </div>
         </div>
         <div id="so-rfgain-row" class="so-row hidden">
@@ -158,10 +214,41 @@
           </div>
         </div>
 
+        <!-- CW Keyer settings -->
+        <div class="so-section-label">CW Keyer</div>
+        <div class="so-row">
+          <label class="so-label">Remote CW</label>
+          <div class="so-controls">
+            <button type="button" class="rc-btn rc-toggle" id="so-cw-enable">Off</button>
+          </div>
+        </div>
+        <div id="so-cw-macros" class="so-cw-macros hidden">
+          <div class="so-row so-macro-edit" id="so-macro-1">
+            <input type="text" class="so-macro-label" placeholder="Label" maxlength="6">
+            <input type="text" class="so-macro-text" placeholder="CW text ({MYCALL} = your call)" autocapitalize="characters">
+          </div>
+          <div class="so-row so-macro-edit" id="so-macro-2">
+            <input type="text" class="so-macro-label" placeholder="Label" maxlength="6">
+            <input type="text" class="so-macro-text" placeholder="CW text" autocapitalize="characters">
+          </div>
+          <div class="so-row so-macro-edit" id="so-macro-3">
+            <input type="text" class="so-macro-label" placeholder="Label" maxlength="6">
+            <input type="text" class="so-macro-text" placeholder="CW text" autocapitalize="characters">
+          </div>
+          <div class="so-row so-macro-edit" id="so-macro-4">
+            <input type="text" class="so-macro-label" placeholder="Label" maxlength="6">
+            <input type="text" class="so-macro-text" placeholder="CW text" autocapitalize="characters">
+          </div>
+          <div class="so-row so-macro-edit" id="so-macro-5">
+            <input type="text" class="so-macro-label" placeholder="Label" maxlength="6">
+            <input type="text" class="so-macro-text" placeholder="CW text" autocapitalize="characters">
+          </div>
+        </div>
+
         <div class="so-footer">
           <div class="so-footer-by">Casey Stanton, K3SBP</div>
           <div class="so-footer-links">
-            <a href="https://discord.gg/JjdKSshej" target="_blank" rel="noopener">Discord</a>
+            <a href="https://discord.gg/cuNQpES38C" target="_blank" rel="noopener">Discord</a>
             <span class="so-footer-dot">&middot;</span>
             <a href="https://buymeacoffee.com/potacat" target="_blank" rel="noopener">Buy Me a Coffee</a>
           </div>
@@ -189,8 +276,10 @@
       <button class="tab active" data-tab="spots">Spots</button>
       <button class="tab" data-tab="map">Map</button>
       <button class="tab" data-tab="log">Log</button>
-      <button class="tab" data-tab="logbook">Logbook</button>
-      <button class="tab" data-tab="activate">Activate <span id="tab-activate-badge" class="tab-badge hidden">0</span></button>
+      <button class="tab" data-tab="logbook">LB</button>
+      <button class="tab" data-tab="activate">Act <span id="tab-activate-badge" class="tab-badge hidden">0</span></button>
+      <button class="tab" data-tab="ft8">FT8</button>
+      <button class="tab" data-tab="dir">Dir</button>
     </div>
 
     <!-- Filter toolbar -->
@@ -213,6 +302,21 @@
           <label class="rc-dropdown-item"><input type="checkbox" value="6m"> 6m</label>
           <label class="rc-dropdown-item"><input type="checkbox" value="2m"> 2m</label>
           <label class="rc-dropdown-item"><input type="checkbox" value="70cm"> 70cm</label>
+        </div>
+      </div>
+
+      <!-- Mode multi-select dropdown -->
+      <div class="rc-dropdown" id="rc-mode-filter">
+        <button class="rc-dropdown-btn" type="button">Mode: <span class="rc-dd-text">All</span></button>
+        <div class="rc-dropdown-menu">
+          <label class="rc-dropdown-item"><input type="checkbox" value="all" checked> All</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="CW"> CW</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="SSB"> SSB</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="FT8"> FT8</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="FT4"> FT4</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="FM"> FM</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="RTTY"> RTTY</label>
+          <label class="rc-dropdown-item"><input type="checkbox" value="other"> Other</label>
         </div>
       </div>
 
@@ -247,9 +351,9 @@
 
       <!-- Sort dropdown -->
       <select id="sort-select" class="rc-sort-select">
-        <option value="age">Newest</option>
-        <option value="freq">Frequency</option>
-        <option value="dist">Nearest</option>
+        <option value="age">New</option>
+        <option value="freq">Freq</option>
+        <option value="dist">Near</option>
       </select>
 
       <!-- Refresh rate chip -->
@@ -405,7 +509,95 @@
       <div id="lb-list" class="lb-list"></div>
     </div>
 
+    <!-- CW Keyer panel (shown when CW available from desktop) -->
+    <div id="cw-panel" class="hidden">
+      <div class="cw-panel-row">
+        <div class="cw-indicator" id="cw-indicator"></div>
+        <div class="cw-wpm-wrap">
+          <button type="button" class="cw-wpm-btn" id="cw-wpm-dn">&minus;</button>
+          <span class="cw-wpm-label" id="cw-wpm-label">20 WPM</span>
+          <button type="button" class="cw-wpm-btn" id="cw-wpm-up">+</button>
+        </div>
+        <div class="cw-mode-wrap">
+          <button type="button" class="cw-mode-btn active" data-mode="iambicB" id="cw-mode-b">B</button>
+          <button type="button" class="cw-mode-btn" data-mode="iambicA" id="cw-mode-a">A</button>
+          <button type="button" class="cw-mode-btn" data-mode="straight" id="cw-mode-str">Key</button>
+        </div>
+        <div class="cw-tone-wrap">
+          <label class="cw-tone-label">Tone</label>
+          <input type="range" id="cw-tone-slider" class="cw-slider" min="400" max="900" value="600" step="50">
+          <span id="cw-tone-val" class="cw-tone-val">600</span>
+        </div>
+        <div class="cw-vol-wrap">
+          <label class="cw-vol-label">Vol</label>
+          <input type="range" id="cw-vol-slider" class="cw-slider" min="0" max="100" value="80">
+        </div>
+      </div>
+      <!-- CW Macro buttons -->
+      <div class="cw-macro-row" id="cw-macro-row"></div>
+      <!-- Free-text CW input -->
+      <div class="cw-text-row">
+        <input type="text" id="cw-text-input" class="cw-text-input" placeholder="Type CW text..."
+               autocapitalize="characters" autocorrect="off" spellcheck="false">
+        <button type="button" id="cw-text-send" class="cw-text-send">Send</button>
+      </div>
+    </div>
+
     <!-- Bottom controls -->
+    <!-- FT8/JTCAT view -->
+    <div id="ft8-view" class="hidden">
+      <div id="ft8-band-bar">
+        <button class="ft8-band-btn" data-band="80m" data-freq="3573">80</button>
+        <button class="ft8-band-btn" data-band="40m" data-freq="7074">40</button>
+        <button class="ft8-band-btn" data-band="30m" data-freq="10136">30</button>
+        <button class="ft8-band-btn active" data-band="20m" data-freq="14074">20</button>
+        <button class="ft8-band-btn" data-band="17m" data-freq="18100">17</button>
+        <button class="ft8-band-btn" data-band="15m" data-freq="21074">15</button>
+        <button class="ft8-band-btn" data-band="12m" data-freq="24915">12</button>
+        <button class="ft8-band-btn" data-band="10m" data-freq="28074">10</button>
+        <button class="ft8-band-btn" data-band="6m" data-freq="50313">6</button>
+      </div>
+      <div id="ft8-status-strip">
+        <select id="ft8-mode-select" class="ft8-mode-select">
+          <option value="FT8">FT8</option>
+          <option value="FT4">FT4</option>
+          <option value="FT2">FT2</option>
+        </select>
+        <span id="ft8-rx-tx-badge" class="ft8-rx-badge">RX</span>
+        <span id="ft8-cycle-indicator">--</span>
+        <span id="ft8-countdown">--</span>
+        <span id="ft8-tx-freq-display" class="ft8-tx-freq">TX: 1500 Hz</span>
+        <span id="ft8-sync-status">Sync: --</span>
+        <button type="button" id="ft8-cq-filter" class="ft8-filter-btn" title="Show only CQ and 73">CQ/73</button>
+        <button type="button" id="ft8-erase-btn" class="ft8-erase-btn">Erase</button>
+      </div>
+      <div id="ft8-decode-log" class="ft8-decode-log">
+        <div class="ft8-empty">Tap a band to start</div>
+      </div>
+      <canvas id="ft8-waterfall" class="ft8-waterfall hidden" width="320" height="100"></canvas>
+      <div id="ft8-control-bar">
+        <button type="button" id="ft8-tx-btn" class="ft8-ctrl-btn ft8-tx-btn">TX</button>
+        <button type="button" id="ft8-slot-btn" class="ft8-ctrl-btn ft8-slot-btn">Auto</button>
+        <button type="button" id="ft8-cq-btn" class="ft8-ctrl-btn ft8-cq-btn">CQ</button>
+        <span id="ft8-tx-msg" class="ft8-tx-msg">--</span>
+        <button type="button" id="ft8-log-btn" class="ft8-ctrl-btn ft8-log-btn">LOG</button>
+        <button type="button" id="ft8-wf-toggle" class="ft8-ctrl-btn ft8-wf-btn" title="Toggle waterfall">WF</button>
+      </div>
+      <div id="ft8-qso-exchange" class="ft8-qso-exchange hidden"></div>
+    </div>
+
+    <!-- Directory view (HF Nets & SWL) -->
+    <div id="dir-view" class="hidden">
+      <div class="dir-toolbar">
+        <div class="dir-tabs">
+          <button class="dir-tab active" data-dtab="nets">HF Nets</button>
+          <button class="dir-tab" data-dtab="swl">SWL</button>
+        </div>
+        <input type="text" id="dir-search" placeholder="Search..." class="dir-search">
+      </div>
+      <div id="dir-list" class="dir-list"></div>
+    </div>
+
     <div id="bottom-bar">
       <button id="audio-btn" type="button" class="audio-button">
         <span class="audio-icon">&#x1F50A;</span>

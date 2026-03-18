@@ -1207,6 +1207,20 @@ th.col-drop-right { border-right: 2px solid var(--accent-blue) !important; }
   background: var(--bg-hover);
 }
 
+.hide-spot-section {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--border-primary);
+  margin-top: 2px;
+}
+
+.hide-spot-section:first-of-type {
+  border-top: none;
+  margin-top: 0;
+}
+
 .hide-spot-unhide {
   color: var(--accent-green, #4ecca3);
   border-top: 1px solid var(--border-primary);

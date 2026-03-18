@@ -34,26 +34,58 @@ let enableBandActivity = false;
 let licenseClass = 'none';
 let hideOutOfBand = false;
 let showHiddenSpots = false;
-// Hidden spots: { CALLSIGN: expiryMs | Infinity }
+// Hidden spots: { CALLSIGN: { "*": expiryMs, "14074": expiryMs, ... } }
+// Legacy compat: bare number values are treated as { "*": expiry }
 const HIDDEN_SPOTS_KEY = 'pota-cat-hidden-spots';
 let hiddenSpots = {};
 try { hiddenSpots = JSON.parse(localStorage.getItem(HIDDEN_SPOTS_KEY)) || {}; } catch { hiddenSpots = {}; }
+// Migrate legacy format (bare number/Infinity → { "*": value })
+for (const call of Object.keys(hiddenSpots)) {
+  if (typeof hiddenSpots[call] === 'number' || hiddenSpots[call] === Infinity) {
+    hiddenSpots[call] = { '*': hiddenSpots[call] };
+  }
+}
 function saveHiddenSpots() { localStorage.setItem(HIDDEN_SPOTS_KEY, JSON.stringify(hiddenSpots)); }
 function pruneHiddenSpots() {
   const now = Date.now();
   let changed = false;
   for (const call of Object.keys(hiddenSpots)) {
-    if (hiddenSpots[call] !== Infinity && hiddenSpots[call] < now) { delete hiddenSpots[call]; changed = true; }
+    const entry = hiddenSpots[call];
+    for (const freq of Object.keys(entry)) {
+      if (entry[freq] !== Infinity && entry[freq] < now) { delete entry[freq]; changed = true; }
+    }
+    if (Object.keys(entry).length === 0) { delete hiddenSpots[call]; changed = true; }
   }
   if (changed) saveHiddenSpots();
 }
-function isSpotHidden(callsign) {
-  const exp = hiddenSpots[callsign.toUpperCase()];
-  if (exp == null) return false;
-  if (exp === Infinity) return true;
-  if (exp > Date.now()) return true;
-  delete hiddenSpots[callsign.toUpperCase()];
+function isSpotHidden(callsign, freqStr) {
+  const entry = hiddenSpots[callsign.toUpperCase()];
+  if (!entry) return false;
+  const now = Date.now();
+  // Check all-freq hide
+  const allExp = entry['*'];
+  if (allExp === Infinity || (allExp && allExp > now)) return true;
+  // Check frequency-specific hide
+  if (freqStr) {
+    const fKey = String(Math.round(parseFloat(freqStr)));
+    const fExp = entry[fKey];
+    if (fExp === Infinity || (fExp && fExp > now)) return true;
+  }
   return false;
+}
+function hideSpotEntry(callsign, freqKey, expiry) {
+  const call = callsign.toUpperCase();
+  if (!hiddenSpots[call]) hiddenSpots[call] = {};
+  hiddenSpots[call][freqKey] = expiry;
+  saveHiddenSpots();
+}
+function unhideSpot(callsign) {
+  delete hiddenSpots[callsign.toUpperCase()];
+  saveHiddenSpots();
+}
+function hiddenSpotCount() {
+  pruneHiddenSpots();
+  return Object.keys(hiddenSpots).length;
 }
 // Prune expired entries every 60s
 setInterval(pruneHiddenSpots, 60000);
@@ -3097,7 +3129,7 @@ function getFiltered() {
     if (hideOutOfBand && isOutOfPrivilege(parseFloat(s.frequency), s.mode, licenseClass)) return false;
     if (hideWorked && isWorkedSpot(s)) return false;
     if (hideWorkedParks && s.source === 'pota' && s.reference && workedParksSet.has(s.reference)) return false;
-    if (!showHiddenSpots && isSpotHidden(s.callsign)) return false;
+    if (!showHiddenSpots && isSpotHidden(s.callsign, s.frequency)) return false;
     return true;
   });
 }
@@ -5290,14 +5322,14 @@ function render() {
       }
 
       // Mark hidden spots visually when "show hidden" is on
-      if (showHiddenSpots && isSpotHidden(s.callsign)) {
+      if (showHiddenSpots && isSpotHidden(s.callsign, s.frequency)) {
         tr.classList.add('spot-hidden-row');
       }
 
       // Right-click to hide spot
       tr.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        showHideSpotMenu(e.clientX, e.clientY, s.callsign);
+        showHideSpotMenu(e.clientX, e.clientY, s.callsign, s.frequency);
       });
 
       // WSJT-X decode indicator — show if this activator was recently decoded
@@ -6057,10 +6089,9 @@ function syncSpotsPanel() {
   spotsHideParks.checked = hideWorkedParks;
   spotsHideOob.checked = hideOutOfBand;
   spotsShowHidden.checked = showHiddenSpots;
-  pruneHiddenSpots();
-  const hiddenCount = Object.keys(hiddenSpots).length;
-  spotsHiddenCount.textContent = hiddenCount;
-  spotsHiddenCount.classList.toggle('hidden', hiddenCount === 0);
+  const hCount = hiddenSpotCount();
+  spotsHiddenCount.textContent = hCount;
+  spotsHiddenCount.classList.toggle('hidden', hCount === 0);
   spotsDxcc.checked = enableDxcc;
   spotsHideParksLabel.classList.toggle('hidden', workedParksSet.size === 0);
 }
@@ -6126,14 +6157,18 @@ document.querySelector('.spots-dropdown-panel').addEventListener('change', async
 // --- Hide spot context menu ---
 const hideSpotMenu = document.getElementById('hide-spot-menu');
 const hideSpotCallEl = document.getElementById('hide-spot-call');
+const hideSpotFreqLabel = document.getElementById('hide-spot-freq-label');
 let hideSpotTarget = '';
+let hideSpotFreq = '';
 
-function showHideSpotMenu(x, y, callsign) {
+function showHideSpotMenu(x, y, callsign, frequency) {
   hideSpotTarget = callsign.toUpperCase();
+  hideSpotFreq = String(Math.round(parseFloat(frequency)));
   hideSpotCallEl.textContent = callsign;
+  hideSpotFreqLabel.textContent = `Hide on ${frequency} kHz only`;
   // Show unhide button if already hidden
   const unhideBtn = hideSpotMenu.querySelector('.hide-spot-unhide');
-  unhideBtn.classList.toggle('hidden', !isSpotHidden(callsign));
+  unhideBtn.classList.toggle('hidden', !isSpotHidden(callsign, frequency));
   hideSpotMenu.classList.remove('hidden');
   // Position near click, keep on screen
   const rect = hideSpotMenu.getBoundingClientRect();
@@ -6149,23 +6184,27 @@ document.addEventListener('click', (e) => {
   if (!hideSpotMenu.contains(e.target)) closeHideSpotMenu();
 });
 
+function computeExpiry(dur) {
+  if (dur === 'forever') return Infinity;
+  if (dur === 'today') {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).getTime();
+  }
+  return Date.now() + parseInt(dur, 10);
+}
+
 hideSpotMenu.addEventListener('click', (e) => {
   const btn = e.target.closest('.hide-spot-btn');
   if (!btn || !hideSpotTarget) return;
   const dur = btn.dataset.dur;
+  const scope = btn.dataset.scope;
   if (dur === 'unhide') {
-    delete hiddenSpots[hideSpotTarget];
-  } else if (dur === 'forever') {
-    hiddenSpots[hideSpotTarget] = Infinity;
-  } else if (dur === 'today') {
-    // End of current UTC day
-    const now = new Date();
-    const endOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-    hiddenSpots[hideSpotTarget] = endOfDay.getTime();
+    unhideSpot(hideSpotTarget);
+  } else if (scope === 'freq') {
+    hideSpotEntry(hideSpotTarget, hideSpotFreq, computeExpiry(dur));
   } else {
-    hiddenSpots[hideSpotTarget] = Date.now() + parseInt(dur, 10);
+    hideSpotEntry(hideSpotTarget, '*', computeExpiry(dur));
   }
-  saveHiddenSpots();
   closeHideSpotMenu();
   render();
 });

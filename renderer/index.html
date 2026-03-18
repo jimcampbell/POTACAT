@@ -789,11 +789,17 @@
 
   <div id="hide-spot-menu" class="hidden">
     <div class="hide-spot-title" id="hide-spot-call"></div>
-    <button class="hide-spot-btn" data-dur="3600000">Hide 1 hour</button>
-    <button class="hide-spot-btn" data-dur="7200000">Hide 2 hours</button>
-    <button class="hide-spot-btn" data-dur="today">Hide rest of today UTC</button>
-    <button class="hide-spot-btn" data-dur="forever">Hide forever</button>
-    <button class="hide-spot-btn hide-spot-unhide hidden" data-dur="unhide">Unhide</button>
+    <div class="hide-spot-section">Hide on all bands</div>
+    <button class="hide-spot-btn" data-dur="3600000" data-scope="all">1 hour</button>
+    <button class="hide-spot-btn" data-dur="7200000" data-scope="all">2 hours</button>
+    <button class="hide-spot-btn" data-dur="today" data-scope="all">Rest of today UTC</button>
+    <button class="hide-spot-btn" data-dur="forever" data-scope="all">Forever</button>
+    <div class="hide-spot-section" id="hide-spot-freq-label">Hide on this frequency</div>
+    <button class="hide-spot-btn" data-dur="3600000" data-scope="freq">1 hour</button>
+    <button class="hide-spot-btn" data-dur="7200000" data-scope="freq">2 hours</button>
+    <button class="hide-spot-btn" data-dur="today" data-scope="freq">Rest of today UTC</button>
+    <button class="hide-spot-btn" data-dur="forever" data-scope="freq">Forever</button>
+    <button class="hide-spot-btn hide-spot-unhide hidden" data-dur="unhide">Unhide (all)</button>
   </div>
 
   <div id="cat-log-panel" class="hidden">
